@@ -35,7 +35,7 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 - [x] Issue and PR templates
 - [x] Language choice for the client
 - [x] SODB SQLite parser
-- [ ] Steam game discovery
+- [x] Steam game discovery
 - [ ] Coverage comparison CLI (local SODB vs community index)
 
 ### Success criteria

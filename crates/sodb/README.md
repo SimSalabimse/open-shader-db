@@ -15,7 +15,11 @@ does not reuse code from SCSKiller.
 ## API
 
 ```rust
-use sodb::{open, open_with_limits, Limits, SodbSummary};
+use sodb::{is_sodb, open, open_with_limits, probe, Limits, SodbSummary};
+
+// Header-only check (no table load, no bytecode).
+assert!(is_sodb("game.sodb"));
+let _header = probe("game.sodb")?;
 
 let summary: SodbSummary = open("game.sodb")?;
 // summary.pipeline_states[*].desc_hash
@@ -66,8 +70,11 @@ associations contribute the bytecode **key** only).
 
 ## CLI
 
-The `osdb-cli` crate exposes `inspect <file.sodb>`, which prints
-`SodbSummary` as JSON.
+The `osdb-cli` crate exposes:
+
+- `inspect <file.sodb>` — print `SodbSummary` as JSON
+- `discover` — list Steam games and SODB **counts** (paths only with
+  `--show-paths` in human output; JSON never includes paths)
 
 ## Security limits
 

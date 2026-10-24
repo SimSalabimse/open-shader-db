@@ -14,8 +14,8 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    open, open_with_limits, Error, Limits, ObjectKind, TableId, SODB_APPLICATION_ID,
-    SODB_USER_VERSION,
+    is_sodb, open, open_with_limits, probe, Error, Limits, ObjectKind, TableId,
+    SODB_APPLICATION_ID, SODB_USER_VERSION,
 };
 
 const FAKE_VS: &[u8] = b"FAKE_VS_BLOB";
@@ -396,6 +396,33 @@ fn desc_hash_ignores_bytecode_and_changes_with_state() {
         left.pipeline_states[0].bytecode_hashes,
         right.pipeline_states[0].bytecode_hashes
     );
+}
+
+#[test]
+fn probe_reads_header_without_tables() {
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |_| Ok(()));
+    let header = probe(fixture.path()).unwrap();
+    assert_eq!(header.user_version, SODB_USER_VERSION);
+    assert_eq!(header.application_id, SODB_APPLICATION_ID);
+    assert!(is_sodb(fixture.path()));
+}
+
+#[test]
+fn probe_rejects_wrong_magic_and_versions() {
+    let wrong_ver = create_sodb(1, SODB_APPLICATION_ID, |_| Ok(()));
+    let header = probe(wrong_ver.path()).unwrap();
+    assert_eq!(header.user_version, 1);
+    assert!(!is_sodb(wrong_ver.path()));
+
+    let wrong_app = create_sodb(SODB_USER_VERSION, 0, |_| Ok(()));
+    assert_eq!(probe(wrong_app.path()).unwrap().application_id, 0);
+    assert!(!is_sodb(wrong_app.path()));
+
+    let garbage = temp_path();
+    std::fs::write(&garbage, b"not a sqlite database").unwrap();
+    assert!(matches!(probe(&garbage), Err(Error::NotAnSodb)));
+    assert!(!is_sodb(&garbage));
+    let _ = std::fs::remove_file(&garbage);
 }
 
 #[test]

@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 clap.workspace = true
+osdb-steam = { path = "../steam" }
 serde_json.workspace = true
 sodb = { path = "../sodb" }
 

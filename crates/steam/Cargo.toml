@@ -1,0 +1,27 @@
+[package]
+name = "osdb-steam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Steam library discovery for open-shader-db (paths never serialized)"
+readme = "README.md"
+publish = false
+
+[dependencies]
+serde.workspace = true
+sodb = { path = "../sodb" }
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Registry lookup for HKCU/HKLM Steam install paths. Used only behind
+# cfg(windows) in default-root search; tests inject a temp Steam root.
+winreg = "0.52"
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

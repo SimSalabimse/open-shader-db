@@ -25,7 +25,7 @@ This document tracks the implementation status of planned features. Milestone na
 
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
-| Game discovery (Steam) | 📋 Planned | Client | M0 Index and coverage reports | Read Steam library folders |
+| Game discovery (Steam) | ⚠️ Partial | crates/steam (osdb-steam) | M0 Index and coverage reports | Temp-dir fixtures for VDF, two libraries, SODB scan, missing root, hostile VDF, symlink loops (Unix), path isolation. Untested: real Windows registry lookups and real Steam / game folders |
 | SODB file parsing | ✅ Complete | crates/sodb | M0 Index and coverage reports | SQLite `user_version=2`; hashes only |
 | Description hash generation | ⚠️ Partial | crates/sodb | M0 Index and coverage reports | SHA-256 of descriptors and followed tables; `string_associations` is not hashed (see crates/sodb/README.md) |
 | Coverage comparison CLI | 📋 Planned | Client | M0 Index and coverage reports | Local SODB vs community index |
