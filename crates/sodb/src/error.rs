@@ -105,6 +105,10 @@ pub enum Error {
     /// converted to a SQLite URI without opening a different location.
     #[error("path contains unpaired UTF-16 surrogates")]
     InvalidWidePath,
+
+    /// An interned key id was missing from the arena (internal inconsistency).
+    #[error("internal key intern inconsistency")]
+    InternInconsistency,
 }
 
 impl Error {

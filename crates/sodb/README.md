@@ -106,10 +106,11 @@ are computed inline (not cached). One cycle in the follow graph rejects
 the whole file. `sqlite_master` rows are not charged against
 `max_total_rows`.
 
-Peak RSS is measured in tests (Linux debug RSS delta, two runs):
+Peak RSS is measured only for specific fixtures. There is no
+general memory bound for every file at the default caps.
 
-- 50k-row shared-layout fixture: **98–104 MiB**
-- 50k × 4 KiB keys with 11 empty `so_to_*` tables: **398–408 MiB**
-  (under the 512 MiB test bound)
+On Linux debug, the 50k × 4 KiB key fixture with 11 empty `so_to_*`
+tables used **398–408 MiB** extra RSS (under a 512 MiB test bound).
+That figure applies to that fixture only.
 
 Override defaults with `open_with_limits`.

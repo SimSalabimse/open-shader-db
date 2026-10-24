@@ -4,7 +4,11 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
+
+/// RSS is process-wide; serialize tests that assert a peak-memory bound.
+static RSS_MEASURE_LOCK: Mutex<()> = Mutex::new(());
 
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -1046,6 +1050,7 @@ fn desc_hash_covers_stream_output_declarations() {
 
 #[test]
 fn fifty_thousand_rows_without_indexes_finish_quickly() {
+    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
     let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
         conn.execute_batch(
             "
@@ -1119,6 +1124,7 @@ fn so_key(i: u32) -> [u8; 4] {
 
 #[test]
 fn fifty_thousand_state_object_chain_finishes_quickly() {
+    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
     let make = |reverse: bool| {
         create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, move |conn| {
             conn.execute_batch(
@@ -1219,6 +1225,7 @@ fn forty_deep_diamond_finishes_quickly() {
 
 #[test]
 fn fifty_thousand_shared_layout_finishes_quickly() {
+    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
     let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
         conn.execute_batch(
             "
@@ -1520,6 +1527,7 @@ const LARGE_KEY_MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
 
 #[test]
 fn fifty_thousand_wide_keys_with_empty_assocs_stay_under_memory_cap() {
+    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
     const ROWS: u32 = 50_000;
     const KEY_LEN: usize = 4 * 1024;
     let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
@@ -1565,6 +1573,59 @@ fn fifty_thousand_wide_keys_with_empty_assocs_stay_under_memory_cap() {
         assert!(
             delta < LARGE_KEY_MEMORY_LIMIT,
             "RSS grew by {delta} bytes (limit {LARGE_KEY_MEMORY_LIMIT})"
+        );
+    }
+}
+
+const ROOT_SIG_BLOB_MEMORY_LIMIT: u64 = 64 * 1024 * 1024;
+
+#[test]
+fn thirty_large_root_signatures_stay_under_memory_cap() {
+    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    const ROWS: usize = 30;
+    const BLOB_LEN: usize = 8 * 1024 * 1024;
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE root_signatures (Key BLOB, value BLOB);
+            CREATE TABLE pipeline_states (Key BLOB, RootSignature BLOB, Flags INTEGER);
+            ",
+        )?;
+        let tx = conn.transaction()?;
+        {
+            let mut ins_rs =
+                tx.prepare("INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)")?;
+            let mut blob = vec![0_u8; BLOB_LEN];
+            for i in 0..ROWS {
+                let key = (i as u32).to_le_bytes();
+                blob[0] = i as u8;
+                ins_rs.execute(rusqlite::params![&key, &blob])?;
+            }
+            tx.prepare(
+                "INSERT INTO pipeline_states (Key, RootSignature, Flags) VALUES (?1, ?2, 0)",
+            )?
+            .execute(rusqlite::params![
+                &0_u32.to_le_bytes(),
+                &0_u32.to_le_bytes()
+            ])?;
+        }
+        tx.commit()?;
+        Ok(())
+    });
+    let before = rss_bytes();
+    let summary = open(fixture.path()).unwrap();
+    let after = rss_bytes();
+    assert_eq!(summary.pipeline_states.len(), 1);
+    if let (Some(before), Some(after)) = (before, after) {
+        let delta = after.saturating_sub(before);
+        eprintln!(
+            "30x8MiB root_signatures RSS delta: {} bytes ({:.1} MiB)",
+            delta,
+            delta as f64 / (1024.0 * 1024.0)
+        );
+        assert!(
+            delta < ROOT_SIG_BLOB_MEMORY_LIMIT,
+            "RSS grew by {delta} bytes (limit {ROOT_SIG_BLOB_MEMORY_LIMIT})"
         );
     }
 }

@@ -110,7 +110,7 @@ pub fn open_with_limits(path: impl AsRef<Path>, limits: Limits) -> Result<SodbSu
     };
 
     let state_objects = if catalog.present.contains(&TableId::StateObjects) {
-        emit_state_objects(&catalog, &bytecode_by_key)
+        emit_state_objects(&catalog, &bytecode_by_key)?
     } else {
         Vec::new()
     };
@@ -362,7 +362,7 @@ impl KeyIntern {
         let h = hash_key_bytes(bytes);
         if let Some(ids) = self.index.get(&h) {
             for &id in ids {
-                if self.bytes[id as usize].as_ref() == bytes {
+                if self.bytes_for(id)? == bytes {
                     return Ok(id);
                 }
             }
@@ -376,20 +376,32 @@ impl KeyIntern {
         Ok(id)
     }
 
-    fn find(&self, bytes: &[u8]) -> Option<KeyId> {
+    fn find(&self, bytes: &[u8]) -> Result<Option<KeyId>, Error> {
         let h = hash_key_bytes(bytes);
-        let ids = self.index.get(&h)?;
-        ids.iter()
-            .copied()
-            .find(|&id| self.bytes[id as usize].as_ref() == bytes)
+        let Some(ids) = self.index.get(&h) else {
+            return Ok(None);
+        };
+        for &id in ids {
+            if self.bytes_for(id)? == bytes {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
     }
 
-    fn get(&self, id: KeyId) -> &[u8] {
-        self.bytes.get(id as usize).map_or(&[], |b| b.as_ref())
+    fn bytes_for(&self, id: KeyId) -> Result<&[u8], Error> {
+        self.bytes
+            .get(id as usize)
+            .map(|b| b.as_ref())
+            .ok_or(Error::InternInconsistency)
     }
 
-    fn app_key(&self, id: KeyId) -> AppKey {
-        AppKey::new(self.get(id).to_vec())
+    fn get(&self, id: KeyId) -> Result<&[u8], Error> {
+        self.bytes_for(id)
+    }
+
+    fn app_key(&self, id: KeyId) -> Result<AppKey, Error> {
+        Ok(AppKey::new(self.get(id)?.to_vec()))
     }
 }
 
@@ -470,7 +482,7 @@ impl Catalog {
             }
         }
         catalog.attach_existing_assoc_follows();
-        catalog.sort_so_dxil();
+        catalog.sort_so_dxil()?;
         catalog.finalize_subhashes()?;
         Ok(catalog)
     }
@@ -479,13 +491,13 @@ impl Catalog {
         self.columns.get(&table).map_or(&[], Vec::as_slice)
     }
 
-    fn subhash(&self, table: TableId, key: &AppKey) -> Sha256Hash {
-        if let Some(id) = self.intern.find(key.as_bytes()) {
+    fn subhash(&self, table: TableId, key: &AppKey) -> Result<Sha256Hash, Error> {
+        if let Some(id) = self.intern.find(key.as_bytes())? {
             if let Some(hash) = self.subhashes.get(&table).and_then(|m| m.get(&id)) {
-                return *hash;
+                return Ok(*hash);
             }
         }
-        miss_hash(table, key.as_bytes())
+        Ok(miss_hash(table, key.as_bytes()))
     }
 
     fn attach_existing_assoc_follows(&mut self) {
@@ -521,11 +533,17 @@ impl Catalog {
         }
     }
 
-    fn sort_so_dxil(&mut self) {
-        let intern = &self.intern;
-        for keys in self.so_dxil.values_mut() {
-            keys.sort_by(|a, b| intern.get(*a).cmp(intern.get(*b)));
+    fn sort_so_dxil(&mut self) -> Result<(), Error> {
+        for keys in &mut self.so_dxil {
+            let intern = &self.intern;
+            let mut keyed = Vec::with_capacity(keys.1.len());
+            for id in keys.1.iter() {
+                keyed.push((intern.get(*id)?.to_vec(), *id));
+            }
+            keyed.sort_by(|a, b| a.0.cmp(&b.0));
+            *keys.1 = keyed.into_iter().map(|(_, id)| id).collect();
         }
+        Ok(())
     }
 
     fn finalize_subhashes(&mut self) -> Result<(), Error> {
@@ -576,8 +594,16 @@ fn cache_insert(cache: &mut SubHashCache, table: TableId, key: KeyId, hash: Sha2
     cache.insert((table, key), hash);
 }
 
-fn lookup_hash(catalog: &Catalog, cache: &SubHashCache, table: TableId, key: KeyId) -> Sha256Hash {
-    cache_get(cache, table, key).unwrap_or_else(|| miss_hash(table, catalog.intern.get(key)))
+fn lookup_hash(
+    catalog: &Catalog,
+    cache: &SubHashCache,
+    table: TableId,
+    key: KeyId,
+) -> Result<Sha256Hash, Error> {
+    if let Some(hash) = cache_get(cache, table, key) {
+        return Ok(hash);
+    }
+    Ok(miss_hash(table, catalog.intern.get(key)?))
 }
 
 fn follow_exists(catalog: &Catalog, follow: Follow) -> bool {
@@ -614,11 +640,15 @@ fn children_of(catalog: &Catalog, follow: Follow) -> Vec<Follow> {
     }
 }
 
-fn finish_hash(catalog: &Catalog, cache: &SubHashCache, follow: Follow) -> Sha256Hash {
+fn finish_hash(
+    catalog: &Catalog,
+    cache: &SubHashCache,
+    follow: Follow,
+) -> Result<Sha256Hash, Error> {
     match follow {
         Follow::Keyed { table, key } => {
             let Some(node) = catalog.keyed.get(&table).and_then(|m| m.get(&key)) else {
-                return miss_hash(table, catalog.intern.get(key));
+                return Ok(miss_hash(table, catalog.intern.get(key)?));
             };
             let mut hasher = CanonicalHasher::new();
             hasher.tag(b"keyed-sub");
@@ -626,15 +656,15 @@ fn finish_hash(catalog: &Catalog, cache: &SubHashCache, follow: Follow) -> Sha25
             for child in &node.follows {
                 hasher.tag(b"follow");
                 let (t, k) = child.id();
-                hasher.bytes(lookup_hash(catalog, cache, t, k).as_bytes());
+                hasher.bytes(lookup_hash(catalog, cache, t, k)?.as_bytes());
             }
-            hasher.finish()
+            Ok(hasher.finish())
         }
         Follow::Assoc { table, owner } => {
             let mut hasher = CanonicalHasher::new();
             hasher.tag(b"assoc-sub");
             hasher.tag(table.sql_name().as_bytes());
-            hasher.bytes(catalog.intern.get(owner));
+            hasher.bytes(catalog.intern.get(owner)?);
             match catalog.assoc.get(&table).and_then(|m| m.get(&owner)) {
                 None => hasher.tag(b"assoc-miss"),
                 Some(rows) => {
@@ -644,12 +674,12 @@ fn finish_hash(catalog: &Catalog, cache: &SubHashCache, follow: Follow) -> Sha25
                         for child in &row.follows {
                             hasher.tag(b"follow");
                             let (t, k) = child.id();
-                            hasher.bytes(lookup_hash(catalog, cache, t, k).as_bytes());
+                            hasher.bytes(lookup_hash(catalog, cache, t, k)?.as_bytes());
                         }
                     }
                 }
             }
-            hasher.finish()
+            Ok(hasher.finish())
         }
     }
 }
@@ -700,17 +730,17 @@ fn compute_subhash(
                         let node = catalog.keyed.get(&table).and_then(|m| m.get(&key));
                         match node {
                             Some(node) if node.follows.is_empty() => node.own,
-                            _ => finish_hash(catalog, cache, follow),
+                            _ => finish_hash(catalog, cache, follow)?,
                         }
                     }
-                    Follow::Assoc { .. } => finish_hash(catalog, cache, follow),
+                    Follow::Assoc { .. } => finish_hash(catalog, cache, follow)?,
                 };
                 gray.remove(&(table, key));
                 cache_insert(cache, table, key, hash);
             }
         }
     }
-    Ok(lookup_hash(catalog, cache, start_table, start_key))
+    lookup_hash(catalog, cache, start_table, start_key)
 }
 
 fn listed_tables(conn: &Connection, _budget: &mut Budget) -> Result<HashSet<TableId>, Error> {
@@ -1233,14 +1263,19 @@ fn load_keyed_table(
             hasher.tag(cell.name.as_bytes());
             feed_cell(&mut hasher, &cell.value);
             if let Cell::Blob(bytes) = &cell.value {
+                let fk = keyed_fk_table(table, &cell.name);
+                let il = cell.name.eq_ignore_ascii_case("InputLayout");
+                if fk.is_none() && !il {
+                    continue;
+                }
                 let child_id = catalog.intern.intern(bytes)?;
-                if let Some(fk_table) = keyed_fk_table(table, &cell.name) {
+                if let Some(fk_table) = fk {
                     follows.push(Follow::Keyed {
                         table: fk_table,
                         key: child_id,
                     });
                 }
-                if cell.name.eq_ignore_ascii_case("InputLayout") {
+                if il {
                     follows.push(Follow::Assoc {
                         table: TableId::InputLayoutToInputElementAssociations,
                         owner: child_id,
@@ -1486,10 +1521,16 @@ fn feed_value(hasher: &mut CanonicalHasher, value: ValueRef<'_>) {
     }
 }
 
-fn feed_cached(hasher: &mut CanonicalHasher, catalog: &Catalog, table: TableId, key: &AppKey) {
+fn feed_cached(
+    hasher: &mut CanonicalHasher,
+    catalog: &Catalog,
+    table: TableId,
+    key: &AppKey,
+) -> Result<(), Error> {
     hasher.tag(b"follow");
     hasher.tag(table.sql_name().as_bytes());
-    hasher.bytes(catalog.subhash(table, key).as_bytes());
+    hasher.bytes(catalog.subhash(table, key)?.as_bytes());
+    Ok(())
 }
 
 fn read_pipeline_states(
@@ -1568,7 +1609,7 @@ fn read_pipeline_states(
         for fk in PIPELINE_KEYED_FOLLOWS {
             if let Some(col) = select.find(fk.column) {
                 if let Some(fk_key) = read_opt_blob(row, col, table, limits)?.map(AppKey::new) {
-                    feed_cached(&mut hasher, catalog, fk.table, &fk_key);
+                    feed_cached(&mut hasher, catalog, fk.table, &fk_key)?;
                 }
             }
         }
@@ -1579,15 +1620,18 @@ fn read_pipeline_states(
                     catalog,
                     TableId::InputLayoutToInputElementAssociations,
                     &layout,
-                );
+                )?;
             }
         }
 
-        let version = catalog
-            .intern
-            .find(key.as_bytes())
-            .and_then(|id| catalog.pso_version.get(&id).copied())
-            .unwrap_or(ObjectVersion::new(0));
+        let version = match catalog.intern.find(key.as_bytes())? {
+            Some(id) => catalog
+                .pso_version
+                .get(&id)
+                .copied()
+                .unwrap_or(ObjectVersion::new(0)),
+            None => ObjectVersion::new(0),
+        };
         out.push(HashedObject {
             kind: ObjectKind::PipelineState,
             key,
@@ -1600,27 +1644,24 @@ fn read_pipeline_states(
     Ok(out)
 }
 
-fn so_bytecode_keys(catalog: &Catalog, so_key: KeyId) -> Vec<Option<AppKey>> {
-    catalog
-        .so_dxil
-        .get(&so_key)
-        .map(|keys| {
-            keys.iter()
-                .map(|id| Some(catalog.intern.app_key(*id)))
-                .collect()
-        })
-        .unwrap_or_default()
+fn so_bytecode_keys(catalog: &Catalog, so_key: KeyId) -> Result<Vec<Option<AppKey>>, Error> {
+    let Some(keys) = catalog.so_dxil.get(&so_key) else {
+        return Ok(Vec::new());
+    };
+    keys.iter()
+        .map(|id| catalog.intern.app_key(*id).map(Some))
+        .collect()
 }
 
 fn emit_state_objects(
     catalog: &Catalog,
     bytecode_by_key: &BTreeMap<AppKey, Sha256Hash>,
-) -> Vec<HashedObject> {
+) -> Result<Vec<HashedObject>, Error> {
     let mut out = Vec::new();
     if let Some(map) = catalog.subhashes.get(&TableId::StateObjects) {
         out.reserve(map.len());
         for (key, desc_hash) in map {
-            let bytecode_keys = so_bytecode_keys(catalog, *key);
+            let bytecode_keys = so_bytecode_keys(catalog, *key)?;
             let version = catalog
                 .so_version
                 .get(key)
@@ -1628,7 +1669,7 @@ fn emit_state_objects(
                 .unwrap_or(ObjectVersion::new(0));
             out.push(HashedObject {
                 kind: ObjectKind::StateObject,
-                key: catalog.intern.app_key(*key),
+                key: catalog.intern.app_key(*key)?,
                 version,
                 desc_hash: *desc_hash,
                 bytecode_hashes: hashes_for_keys(&bytecode_keys, bytecode_by_key),
@@ -1636,7 +1677,7 @@ fn emit_state_objects(
         }
     }
     out.sort_by(|a, b| a.key.cmp(&b.key));
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

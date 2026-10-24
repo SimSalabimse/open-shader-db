@@ -41,11 +41,15 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
     let cli = Cli::parse();
     match cli.command {
         Command::Inspect { file } => {
             let summary = sodb::open(&file)?;
-            println!("{}", serde_json::to_string_pretty(&summary)?);
+            let mut out = std::io::stdout().lock();
+            serde_json::to_writer_pretty(&mut out, &summary)?;
+            writeln!(out)?;
         }
     }
     Ok(())
