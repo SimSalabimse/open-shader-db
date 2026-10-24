@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible problem.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste game install paths or personal data.
+        Never attach game files or archives. Share only minimal logs or screenshots if they help explain the problem.
+        If this is a security issue, use the private vulnerability reporting link shown in the issue chooser instead of opening a public issue.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+      placeholder: The app crashed after ...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the shortest sequence of steps that reproduces the problem.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Share the release, commit, or build that showed the bug.
+      placeholder: v0.1.0 or abc1234
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error messages
+      description: Paste relevant logs, stack traces, or error messages.
+      render: text
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Privacy and safety
+      options:
+        - label: I did not include game install paths, personal data, or game files.
+          required: true

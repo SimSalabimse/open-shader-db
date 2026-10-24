@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest a change or new capability.
+title: "feature: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to describe a concrete improvement or new idea.
+        If your request depends on project direction or tradeoffs, explain the decision you are trying to inform.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Explain the user need or pain point.
+      placeholder: I want ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the change you want to see.
+      placeholder: The project could ...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Share other approaches you considered, if any.
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Describe who benefits and how important this is.
+      placeholder: This would help ...

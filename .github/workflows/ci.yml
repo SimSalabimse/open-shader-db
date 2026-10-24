@@ -1,0 +1,71 @@
+# Markdown, YAML, and (when present) Rust checks for pull requests.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    name: Markdown and YAML
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: |
+          npm install --global markdownlint-cli@0.45.0
+          python3 -m pip install yamllint==1.37.1
+      - name: Run markdownlint
+        run: markdownlint "**/*.md"
+      - name: Run yamllint
+        run: yamllint .
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Detect Cargo workspace
+        id: cargo
+        shell: bash
+        run: |
+          if [ -f Cargo.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No Cargo.toml at repository root; skipping Rust checks."
+          fi
+      - name: Install Rust toolchain
+        if: steps.cargo.outputs.present == 'true'
+        shell: bash
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - name: rustfmt
+        if: steps.cargo.outputs.present == 'true'
+        run: cargo fmt --all -- --check
+      - name: clippy
+        if: steps.cargo.outputs.present == 'true'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        if: steps.cargo.outputs.present == 'true'
+        run: cargo test --workspace

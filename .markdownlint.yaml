@@ -1,0 +1,9 @@
+# Keep existing project docs green. Relax rules that would force a rewrite.
+default: true
+MD013: false # line length
+MD024: false # repeated section headings (e.g. ROADMAP deliverables)
+MD029: false # intentional ordered-list numbering across sections
+MD031: false # blanks around fences
+MD032: false # blanks around lists
+MD034: false # bare URLs in licence text
+MD040: false # unlabeled fences used for commit/PR examples

@@ -1,0 +1,28 @@
+name: Question
+description: Ask for clarification about the project, docs, or workflow.
+title: "question: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for general questions about the repository.
+        If you are reporting a vulnerability, do not use a public issue; use the private security reporting link instead.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: Ask the question as clearly as possible.
+      placeholder: How do I ...
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Add any relevant background or constraints.
+  - type: textarea
+    id: docs
+    attributes:
+      label: Relevant docs or links
+      description: Point to any document, issue, or PR that might help answer the question.
+      render: text

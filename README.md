@@ -1,0 +1,105 @@
+# open-shader-db
+
+[![CI](https://github.com/SimSalabimse/open-shader-db/actions/workflows/ci.yml/badge.svg)](https://github.com/SimSalabimse/open-shader-db/actions/workflows/ci.yml)
+
+A free, open, community-driven shader hash database and client for Direct3D 12 games using Microsoft's Advanced Shader Delivery (ASD) framework.
+
+**Status:** Early design phase – not yet functional.
+
+## What is open-shader-db?
+
+open-shader-db is a community project that provides a free and open alternative to proprietary shader hash databases. It aims to help reduce shader compilation stuttering in Direct3D 12 games by distributing precompiled shader databases that work with Microsoft's Advanced Shader Delivery system.
+
+This project consists of:
+
+- **A community shader hash database** in Microsoft's SODB (State Object Database) format
+- **A client tool** to download, merge, and apply shader databases locally
+- **An upload and validation pipeline** to safely aggregate community contributions
+
+## Why open-shader-db?
+
+Shader compilation stutter is a significant problem in modern PC gaming. Microsoft's Advanced Shader Delivery (ASD) provides a technical solution, but requires games to ship SODB files. This project enables the community to build and share these databases for games that don't provide them officially.
+
+**open-shader-db is:**
+- **Free and open:** No paywalls, no accounts, no tracking
+- **Privacy-first:** No IP logging, no game path collection, upload preview before sending
+- **Community-driven:** Data comes only from opt-in contributors
+- **Safe:** Anti-poisoning validation, sandboxed compilation, signed releases
+
+## How is this different from SCSKiller?
+
+[SCSKiller](https://github.com/BlueHeisenberg/SCSKiller) is an existing GPL-3.0-or-later shader compilation stutter mitigation tool. open-shader-db is a separate project with different design goals:
+
+- **Freely redistributable:** Anyone can host and distribute the database
+- **Community-run:** No single gatekeeper; transparent validation process
+- **Privacy-first:** No accounts, no IP logging, upload preview before transmission
+- **Open governance:** Community can audit, fork, and propose changes
+
+Both projects aim to reduce shader stutter. We take different approaches to achieve that goal.
+
+## Privacy promises
+
+We are committed to protecting contributor privacy:
+
+- **No user accounts or authentication required**
+- **No IP address logging or storage**
+- **Upload preview** before any data is transmitted
+- **No game installation paths** are collected or transmitted
+- **Only shader hashes and build identifiers** are shared – no game binaries, no personal data
+
+All data collection is opt-in. You control what you share.
+
+## How to contribute
+
+**Currently:** This project is in early design. There is no working client or upload system yet.
+
+**Soon:** Contributors will be able to:
+
+1. Run the client tool to scan supported games
+2. Preview the collected shader hashes locally
+3. Upload anonymized data to the community database
+4. Download the latest validated database for improved game performance
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing code, documentation, or design feedback.
+
+## Project status
+
+This project is in **early design phase**. Current work focuses on:
+
+- Defining the architecture and data model
+- Researching Microsoft's SODB format and ASD pipeline
+- Designing privacy and anti-poisoning safeguards
+- Building community consensus on licensing and governance
+
+See [ROADMAP.md](ROADMAP.md) for planned milestones and [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) for current feature status.
+
+## Important disclaimer
+
+**This project is UNOFFICIAL and NOT AFFILIATED with [SCSKiller](https://github.com/BlueHeisenberg/SCSKiller), its developers, or any game publishers.**
+
+We do not use, copy, or derive from SCSKiller's code or data. All data in this database comes exclusively from opt-in community contributors who choose to share information with this project.
+
+## License
+
+- **Code:** MIT License (see [LICENSE](LICENSE))
+- **Data:** CC0 1.0 Universal (see [DATA-LICENSE.md](DATA-LICENSE.md))
+
+See [LICENSE-PROPOSAL.md](LICENSE-PROPOSAL.md) for rationale.
+
+## Learn more
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) – Technical design and data model
+- [ROADMAP.md](ROADMAP.md) – Development milestones and planned features
+- [CONTRIBUTING.md](CONTRIBUTING.md) – How to contribute
+- [SECURITY.md](SECURITY.md) – Security policy and reporting
+
+## References
+
+- [Microsoft: Advanced Shader Delivery overview](https://learn.microsoft.com/en-us/windows/win32/direct3d12/advanced-shader-delivery)
+- [Microsoft: State Object Database specification](https://microsoft.github.io/DirectX-Specs/d3d/StateObjectDatabase.html)
+- [Microsoft: DirectX Graphics Samples - Advanced Shader Delivery](https://github.com/microsoft/DirectX-Graphics-Samples/tree/master/Samples/Desktop/D3D12AdvancedShaderDelivery)
+
+---
+
+**Maintainer:** Simsalabim  
+**License:** Code is MIT ([LICENSE](LICENSE)); published data is CC0 1.0 Universal ([DATA-LICENSE.md](DATA-LICENSE.md))
