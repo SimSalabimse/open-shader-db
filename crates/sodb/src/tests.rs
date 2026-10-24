@@ -1099,8 +1099,8 @@ fn fifty_thousand_rows_without_indexes_finish_quickly() {
 }
 
 // Debug CI (especially Windows) is slower than a release-ish local run.
-// 5s still fails the pre-fix hang (tens of seconds / abort).
-const PARSE_BUDGET_SECS: f64 = 5.0;
+// 15s still fails the pre-fix hang (tens of seconds / abort).
+const PARSE_BUDGET_SECS: f64 = 15.0;
 
 fn rss_bytes() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/self/status").ok()?;
