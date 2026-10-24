@@ -1,0 +1,23 @@
+[package]
+name = "sodb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Typed State Object Database (SODB) parser for open-shader-db"
+readme = "README.md"
+publish = false
+
+[dependencies]
+rusqlite.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

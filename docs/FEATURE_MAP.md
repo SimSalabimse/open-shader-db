@@ -7,6 +7,7 @@ This document tracks the implementation status of planned features. Milestone na
 ## Legend
 
 - ✅ **Complete:** Implemented and tested
+- ⚠️ **Partial:** Implemented with documented limitations
 - 🚧 **In Progress:** Currently being developed
 - 📋 **Planned:** Designed and scheduled
 - 💭 **Proposed:** Under consideration or unscheduled
@@ -16,17 +17,17 @@ This document tracks the implementation status of planned features. Milestone na
 
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
-| Project documentation | 🚧 In Progress | Repository | M0 Index and coverage reports | Pending merge of the documentation PR |
-| Licence files (MIT + CC0) | 🚧 In Progress | Repository | M0 Index and coverage reports | LICENSE and DATA-LICENSE.md added in this PR |
-| Contributing and security docs | 🚧 In Progress | Repository | M0 Index and coverage reports | Pending merge |
+| Project documentation | ✅ Complete | Repository | M0 Index and coverage reports | README, ARCHITECTURE, ROADMAP, CONTRIBUTING |
+| Licence files (MIT + CC0) | ✅ Complete | Repository | M0 Index and coverage reports | LICENSE and DATA-LICENSE.md |
+| Contributing and security docs | ✅ Complete | Repository | M0 Index and coverage reports | CONTRIBUTING.md and SECURITY.md |
 
 ## Client tool
 
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
 | Game discovery (Steam) | 📋 Planned | Client | M0 Index and coverage reports | Read Steam library folders |
-| SODB file parsing | 📋 Planned | Client | M0 Index and coverage reports | SQLite `user_version=2` |
-| Description hash generation | 📋 Planned | Client | M0 Index and coverage reports | Hash of state descriptors, no bytecode |
+| SODB file parsing | ✅ Complete | crates/sodb | M0 Index and coverage reports | SQLite `user_version=2`; hashes only |
+| Description hash generation | ⚠️ Partial | crates/sodb | M0 Index and coverage reports | SHA-256 of descriptors and followed tables; `string_associations` is not hashed (see crates/sodb/README.md) |
 | Coverage comparison CLI | 📋 Planned | Client | M0 Index and coverage reports | Local SODB vs community index |
 | Shader extraction and matching | 📋 Planned | Client | M1 Pipeline-state records | Needs legal clarity first |
 | SODB rebuild from records + local shaders | 📋 Planned | Client | M1 Pipeline-state records | Needs legal clarity first |
@@ -96,9 +97,9 @@ This document tracks the implementation status of planned features. Milestone na
 
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
-| README, ARCHITECTURE, ROADMAP | 🚧 In Progress | Docs | M0 Index and coverage reports | This PR |
-| CI/CD pipeline | 📋 Planned | Operations | M0 Index and coverage reports | Markdown/YAML checks first |
-| Issue and PR templates | 📋 Planned | Docs | M0 Index and coverage reports | |
+| README, ARCHITECTURE, ROADMAP | ✅ Complete | Docs | M0 Index and coverage reports | In-tree project docs |
+| CI/CD pipeline | ✅ Complete | Operations | M0 Index and coverage reports | Markdown/YAML plus Rust fmt/clippy/test (`--locked`) |
+| Issue and PR templates | ✅ Complete | Docs | M0 Index and coverage reports | Bug, feature, question, and PR templates |
 | User guide and FAQ | 💭 Proposed | Docs | Later / unscheduled | |
 
 ---
