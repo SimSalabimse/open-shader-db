@@ -33,8 +33,8 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 - [x] Licence files (MIT for code, CC0 for published data)
 - [ ] CI/CD pipeline (GitHub Actions)
 - [ ] Issue and PR templates
-- [ ] Language choice for the client
-- [ ] SODB SQLite parser
+- [x] Language choice for the client
+- [x] SODB SQLite parser
 - [ ] Steam game discovery
 - [ ] Coverage comparison CLI (local SODB vs community index)
 

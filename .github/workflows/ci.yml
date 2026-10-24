@@ -65,7 +65,7 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         if: steps.cargo.outputs.present == 'true'
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: test
         if: steps.cargo.outputs.present == 'true'
-        run: cargo test --workspace
+        run: cargo test --workspace --locked

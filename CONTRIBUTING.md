@@ -49,7 +49,7 @@ There are many ways to contribute:
 
 ### Code guidelines
 
-- **Language:** Client in C++, Rust, or C# (TBD); validation in Python or Rust (TBD)
+- **Language:** Client in Rust (Cargo workspace); validation language still TBD
 - **Style:** Follow language-specific conventions (e.g., Rust's `rustfmt`, C++'s clang-format)
 - **Comments:** Explain *why*, not *what*; avoid obvious comments
 - **Tests:** Write unit tests for new functionality
