@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 
@@ -19,6 +19,7 @@ interface VectorIndex {
     readonly path: string;
     readonly verdict: "accept" | "reject";
     readonly error_code: string | null;
+    readonly stored?: string;
   }[];
 }
 
@@ -41,6 +42,33 @@ test("every golden vector matches the Worker parser and the committed index", ()
     index.vectors.map((entry) => entry.path),
     "on-disk vectors must match schemas/vectors/index.json exactly",
   );
+  const storedDir = path.join(repoRoot(), "schemas", "vectors", "stored");
+  const listedStored = index.vectors
+    .filter((entry) => entry.verdict === "accept")
+    .map((entry) => {
+      assert.ok(entry.stored, `${entry.path} accept entry must list stored bytes`);
+      return entry.stored;
+    });
+  const onDiskStored: string[] = [];
+  const walkStored = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walkStored(full);
+        continue;
+      }
+      if (entry.name.endsWith(".json")) {
+        onDiskStored.push(path.relative(path.join(repoRoot(), "schemas", "vectors"), full).replaceAll("\\", "/"));
+      }
+    }
+  };
+  walkStored(storedDir);
+  onDiskStored.sort();
+  assert.deepEqual(
+    onDiskStored,
+    listedStored,
+    "on-disk stored-bytes files must match accept index entries exactly",
+  );
   for (const [i, file] of files.entries()) {
     const listed = index.vectors[i];
     assert.ok(listed);
@@ -53,8 +81,15 @@ test("every golden vector matches the Worker parser and the committed index", ()
     if (value.verdict === "accept") {
       assert.equal(value.error_code, null, `${label} accept must use null error_code`);
       assert.equal(parsed.ok, true, `${label} should accept`);
-      if (parsed.ok && value.body !== undefined) {
-        assert.deepEqual(parsed.storedBytes, bytes, `${label} body must be canonical`);
+      assert.ok(listed.stored, `${label} accept must list stored bytes`);
+      const expected = new Uint8Array(
+        readFileSync(path.join(repoRoot(), "schemas", "vectors", listed.stored)),
+      );
+      if (parsed.ok) {
+        if (value.body !== undefined) {
+          assert.deepEqual(parsed.storedBytes, bytes, `${label} body must be canonical`);
+        }
+        assert.deepEqual(parsed.storedBytes, expected, `${label} stored bytes`);
       }
     } else if (value.verdict === "reject") {
       assert.ok(value.error_code, `${label} reject needs error_code`);

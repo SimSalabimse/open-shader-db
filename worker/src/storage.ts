@@ -21,14 +21,6 @@ export class MemoryStore implements StagingStore {
     this.objects.set(key, new Uint8Array(bytes));
   }
 
-  async putIfAbsent(key: string, bytes: Uint8Array): Promise<"created" | "exists"> {
-    if (await this.head(key)) {
-      return "exists";
-    }
-    await this.put(key, bytes);
-    return "created";
-  }
-
   async countPrefix(prefix: string, limit: number): Promise<number> {
     let count = 0;
     for (const key of this.objects.keys()) {
@@ -52,14 +44,6 @@ export class R2StagingStore implements StagingStore {
 
   async put(key: string, bytes: Uint8Array): Promise<void> {
     await this.bucket.put(key, bytes);
-  }
-
-  async putIfAbsent(key: string, bytes: Uint8Array): Promise<"created" | "exists"> {
-    if (await this.head(key)) {
-      return "exists";
-    }
-    await this.put(key, bytes);
-    return "created";
   }
 
   async countPrefix(prefix: string, limit: number): Promise<number> {

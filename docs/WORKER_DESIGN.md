@@ -70,7 +70,6 @@ interface ErrorBody {
 interface StagingStore {
   head(key: string): Promise<boolean>
   put(key: string, bytes: Uint8Array): Promise<void>
-  putIfAbsent(key: string, bytes: Uint8Array): Promise<"created" | "exists">
   countPrefix(prefix: string, limit: number): Promise<number>
 }
 
@@ -125,11 +124,12 @@ worker/
     limits.ts      // numbers (must match schemas/limits.v1.json)
     errors.ts      // ErrorCode + safe messages
     keys.ts        // R2 key layout + component checks
-    body.ts        // Content-Length + streaming byte counter
+    body.ts        // Content-Length + one preallocated body buffer
     turnstile.ts   // siteverify via injected fetch; omit remoteip
     storage.ts     // R2 adapter behind StagingStore
     rate_limit.ts  // RateGate adapter; constant key only
     privacy.ts     // allowlisted header reads only
+    log.ts         // the only module allowed to touch console
   test/            // node:test; in-memory fakes; no network
   config/          // lifecycle, Logpush field list (placeholders)
   wrangler.toml    // placeholder names; NOT DEPLOYED comment
@@ -345,30 +345,37 @@ generic JSON tree.
 
 Measured Node 22 on the handler path (`--max-old-space-size=96
 --max-semi-space-size=1`). `heapUsed` is V8 old-space; ArrayBuffers
-for the 8 MiB body sit beside it (`heapUsed + arrayBuffers`):
+for the 8 MiB body sit beside it (`heapUsed + arrayBuffers`). CPU is
+`process.cpuUsage` (user + system) on this machine:
 
-| 8 MiB input | Peak heapUsed | heapUsed + ArrayBuffers |
-| --- | ---: | ---: |
-| maximal valid manifest (62 599 + 62 599 hashes) | 7.1 MB | 37.7 MB |
-| many small objects | 7.2 MB | 61.7 MB |
-| many empty arrays | 6.8 MB | 61.3 MB |
-| deep nesting | 6.8 MB | 61.4 MB |
-| one huge string | 6.7 MB | 38.8 MB |
-| number arrays | 6.7 MB | 46.8 MB |
+| 8 MiB input | Peak heapUsed | heapUsed + ArrayBuffers | CPU |
+| --- | ---: | ---: | ---: |
+| compact max-valid (62 599 + 62 599 hashes) | 7.5 MB | 44.9 MB | 100.1 ms |
+| pretty-printed max-valid (leading space, same hashes) | 26.4 MB | 62.5 MB | 181.3 ms |
+| compact max-valid in 1-byte chunks | 7.5 MB | 46.1 MB | 3334.6 ms |
+| compact max-valid in 16-byte chunks | 7.2 MB | 68.2 MB | 290.9 ms |
+| braces inside a string field | 7.3 MB | 92.3 MB | 28.5 ms |
+| huge string inside a hash field | 7.1 MB | 76.1 MB | 24.1 ms |
+| nesting-depth guard (64 brackets) | 6.9 MB | 46.9 MB | 39.3 ms |
 
-CI runs these six cases in a child process under the 96 MB old-space
-limit. The previous "worst case around 50 MiB" claim was wrong: the
-generic tree plus character-by-character strings peaked at 229 MB on
-the maximal valid manifest and 650-820 MB on hostile shapes.
+CI runs these seven cases in a child process under the 96 MB
+old-space limit. The pretty-printed max-valid path used to peak at
+223 MB heap when `hexEncode32` built cons-string ropes; a 256-entry
+lookup table plus one `join` brings it to the 26.4 MB above. Tiny
+chunks used to keep one array entry each and ran out of memory;
+`body.ts` now copies into one preallocated `Uint8Array`.
 
 A 64 MiB local preview document is still not parsed here, which is
 why the wire cap is separate.
 
 ## CPU time
 
-An 8 MiB parse takes about 150-1000 ms of CPU in Node on this
-handler path. The Workers Free plan allows 10 ms of CPU per request.
-A deployment therefore needs a paid plan or smaller caps. That is a
+The table above is what was measured. Compact max-valid is about
+100 ms; pretty-printed is about 181 ms; a 1-byte-chunk stream of the
+same body is about 3.3 s; 16-byte chunks are about 291 ms. Hostile
+rejects are 24-40 ms. The Workers Free plan allows 10 ms of CPU per
+request, which is far below any parse of a real upload. A deployment
+therefore needs a paid plan or smaller caps. That is a
 deployment-time decision for Simsalabim; this repository does not
 pick one.
 
@@ -378,8 +385,11 @@ pick one.
 `verdict` (`accept` or `reject`) and an `error_code` (or `null`).
 `crates/upload` tests and Worker tests both load every file and
 require `index.json` to list each path, verdict, and error code.
-Deleting a vector fails. Valid bodies are produced by the Rust crate
-(canonical bytes). Invalid bodies are hand-written hostile cases.
+Every accept vector also has a `stored/` file with the Rust
+canonicalizer's compact JSON; both languages compare stored bytes
+byte-for-byte. Deleting a vector or its stored-bytes file fails.
+Valid bodies are produced by the Rust crate (canonical bytes).
+Invalid bodies are hand-written hostile cases.
 
 The JSON Schema in `schemas/upload_manifest.v1.json` is looser than
 these checks (no sort order, no real calendar dates, no byte/nesting

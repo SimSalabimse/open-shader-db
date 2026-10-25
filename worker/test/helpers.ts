@@ -34,6 +34,9 @@ function visit(dir: string, out: string[]): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
+      if (entry.name === "stored") {
+        continue;
+      }
       visit(full, out);
       continue;
     }

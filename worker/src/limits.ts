@@ -18,6 +18,21 @@ export const MAX_JSON_NESTING = 8;
 /** Staging objects per `(game_id, build_id)` prefix. Approximate under races. */
 export const PER_BUILD_UPLOAD_CAP = 64;
 
+/** Parse the per-build cap. Bad or missing values fail closed to the default. */
+export function parsePerBuildCap(value: string | undefined): number {
+  if (value === undefined || value.length === 0) {
+    return PER_BUILD_UPLOAD_CAP;
+  }
+  if (!/^[0-9]+$/.test(value)) {
+    return PER_BUILD_UPLOAD_CAP;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isSafeInteger(parsed) || parsed < 1) {
+    return PER_BUILD_UPLOAD_CAP;
+  }
+  return parsed;
+}
+
 export const SCHEMA_VERSION = 1;
 
 export const TURNSTILE_HEADER = "X-Turnstile-Token";

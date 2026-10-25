@@ -1,5 +1,5 @@
 {
-  "count": 54,
+  "count": 79,
   "vectors": [
     {
       "path": "invalid/april-31.json",
@@ -47,6 +47,11 @@
       "error_code": "INVALID_TIMESTAMP"
     },
     {
+      "path": "invalid/day-32.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
       "path": "invalid/dot-game-id.json",
       "verdict": "reject",
       "error_code": "INVALID_BUILD_ID"
@@ -77,6 +82,11 @@
       "error_code": "DUPLICATE_KEY"
     },
     {
+      "path": "invalid/duplicate-ownership-key.json",
+      "verdict": "reject",
+      "error_code": "DUPLICATE_KEY"
+    },
+    {
       "path": "invalid/exe-binding-with-reason.json",
       "verdict": "reject",
       "error_code": "UNKNOWN_FIELD"
@@ -92,6 +102,21 @@
       "error_code": "INVALID_TIMESTAMP"
     },
     {
+      "path": "invalid/hex-length-63.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
+    },
+    {
+      "path": "invalid/hex-length-65.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
+    },
+    {
+      "path": "invalid/hex-non-hex.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
       "path": "invalid/hour-24.json",
       "verdict": "reject",
       "error_code": "INVALID_TIMESTAMP"
@@ -102,7 +127,17 @@
       "error_code": "INVALID_TIMESTAMP"
     },
     {
+      "path": "invalid/leading-zero-schema-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
       "path": "invalid/lowercase-z.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/minutes-14-10.json",
       "verdict": "reject",
       "error_code": "INVALID_TIMESTAMP"
     },
@@ -127,6 +162,11 @@
       "error_code": "NESTING_TOO_DEEP"
     },
     {
+      "path": "invalid/non-hex-exe-hash.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
       "path": "invalid/nonascii-game-id.json",
       "verdict": "reject",
       "error_code": "INVALID_BUILD_ID"
@@ -140,6 +180,16 @@
       "path": "invalid/nonzero-seconds.json",
       "verdict": "reject",
       "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/nov-31.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/odd-exe-hash.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
     },
     {
       "path": "invalid/overlong-game-id.json",
@@ -170,6 +220,11 @@
       "path": "invalid/schema-version-negative.json",
       "verdict": "reject",
       "error_code": "INVALID_INTEGER"
+    },
+    {
+      "path": "invalid/seconds-14-00-10.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
     },
     {
       "path": "invalid/short-hex.json",
@@ -222,6 +277,11 @@
       "error_code": "UNSORTED_OR_DUPLICATE_HASHES"
     },
     {
+      "path": "invalid/uppercase-exe-hash.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
       "path": "invalid/uppercase-hex.json",
       "verdict": "reject",
       "error_code": "MALFORMED_HEX"
@@ -237,39 +297,124 @@
       "error_code": "INVALID_TIMESTAMP"
     },
     {
+      "path": "valid-text/escaped-exe-hash.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/escaped-exe-hash.json"
+    },
+    {
+      "path": "valid-text/escaped-ident.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/escaped-ident.json"
+    },
+    {
+      "path": "valid-text/leading-space-hashes.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/leading-space-hashes.json"
+    },
+    {
+      "path": "valid-text/pretty-hashes.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/pretty-hashes.json"
+    },
+    {
+      "path": "valid-text/pretty-printed.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/pretty-printed.json"
+    },
+    {
+      "path": "valid-text/unsorted-keys.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/unsorted-keys.json"
+    },
+    {
       "path": "valid-text/uppercase-u-escape.json",
       "verdict": "accept",
-      "error_code": null
+      "error_code": null,
+      "stored": "stored/valid-text/uppercase-u-escape.json"
     },
     {
       "path": "valid/brackets-game-id.json",
       "verdict": "accept",
-      "error_code": null
+      "error_code": null,
+      "stored": "stored/valid/brackets-game-id.json"
+    },
+    {
+      "path": "valid/client-version-32.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/client-version-32.json"
+    },
+    {
+      "path": "valid/day-31.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/day-31.json"
     },
     {
       "path": "valid/exe-binding.json",
       "verdict": "accept",
-      "error_code": null
+      "error_code": null,
+      "stored": "stored/valid/exe-binding.json"
+    },
+    {
+      "path": "valid/leap-day-2024.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/leap-day-2024.json"
     },
     {
       "path": "valid/leap-day.json",
       "verdict": "accept",
-      "error_code": null
+      "error_code": null,
+      "stored": "stored/valid/leap-day.json"
     },
     {
       "path": "valid/max-ident.json",
       "verdict": "accept",
-      "error_code": null
+      "error_code": null,
+      "stored": "stored/valid/max-ident.json"
     },
     {
       "path": "valid/minimal.json",
       "verdict": "accept",
-      "error_code": null
+      "error_code": null,
+      "stored": "stored/valid/minimal.json"
+    },
+    {
+      "path": "valid/month-1.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/month-1.json"
+    },
+    {
+      "path": "valid/month-12.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/month-12.json"
     },
     {
       "path": "valid/sorted-hashes.json",
       "verdict": "accept",
-      "error_code": null
+      "error_code": null,
+      "stored": "stored/valid/sorted-hashes.json"
+    },
+    {
+      "path": "valid/year-1970.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/year-1970.json"
+    },
+    {
+      "path": "valid/year-9999.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/year-9999.json"
     }
   ]
 }

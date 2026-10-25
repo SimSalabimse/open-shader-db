@@ -39,6 +39,9 @@ type Ok<T> = { readonly ok: true; readonly value: T };
 type Result<T> = Ok<T> | Fail;
 
 const HEX = "0123456789abcdef";
+const HEX_LUT: readonly string[] = Array.from({ length: 256 }, (_, byte) => {
+  return `${HEX[byte >> 4] as string}${HEX[byte & 0x0f] as string}`;
+});
 const EMPTY_HASHES: readonly Sha256Hex[] = Object.freeze([]);
 const DECODER = new TextDecoder("utf-8", { fatal: true });
 
@@ -965,6 +968,9 @@ function parseNumber(cur: Cursor): Result<{ kind: "int"; value: number } | { kin
   }
   if (cur.peek() === 0x30) {
     cur.consume();
+    if (!cur.atEnd && cur.peek() >= 0x30 && cur.peek() <= 0x39) {
+      return { ok: false, code: "INVALID_JSON" };
+    }
   } else {
     while (!cur.atEnd && cur.peek() >= 0x30 && cur.peek() <= 0x39) {
       cur.consume();
@@ -994,11 +1000,11 @@ function parseNumber(cur: Cursor): Result<{ kind: "int"; value: number } | { kin
       cur.consume();
     }
   }
-  const token = asciiString(cur.sliceBytes(start, cur.pos));
-  if (isFloat || token.startsWith("-")) {
+  const numberToken = asciiString(cur.sliceBytes(start, cur.pos));
+  if (isFloat || numberToken.startsWith("-")) {
     return { ok: true, value: { kind: "float" } };
   }
-  const value = Number(token);
+  const value = Number(numberToken);
   if (!Number.isSafeInteger(value)) {
     return { ok: true, value: { kind: "float" } };
   }
@@ -1027,13 +1033,11 @@ function asciiString(bytes: Uint8Array): string {
 }
 
 function hexEncode32(bytes: Uint8Array): Sha256Hex {
-  let out = "";
+  const parts = new Array<string>(32);
   for (let i = 0; i < 32; i += 1) {
-    const byte = bytes[i] as number;
-    out += HEX[byte >> 4];
-    out += HEX[byte & 0x0f];
+    parts[i] = HEX_LUT[bytes[i] as number] as string;
   }
-  return out;
+  return parts.join("");
 }
 
 function hexList(raw: Uint8Array, count: number): Sha256Hex[] {

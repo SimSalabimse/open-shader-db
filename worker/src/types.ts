@@ -44,7 +44,6 @@ export interface UploadReceipt {
 export interface StagingStore {
   head(key: string): Promise<boolean>;
   put(key: string, bytes: Uint8Array): Promise<void>;
-  putIfAbsent(key: string, bytes: Uint8Array): Promise<"created" | "exists">;
   countPrefix(prefix: string, limit: number): Promise<number>;
 }
 
@@ -68,7 +67,7 @@ export interface InjectedFetch {
 }
 
 export interface TurnstileClient {
-  verify(token: string): Promise<boolean>;
+  verify(turnstileToken: string): Promise<boolean>;
 }
 
 export interface HandlerDeps {

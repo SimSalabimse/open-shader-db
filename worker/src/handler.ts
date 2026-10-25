@@ -5,6 +5,7 @@ import { sha256Hex } from "./canonical.js";
 import { errorBody, httpStatus, type ErrorCode } from "./errors.js";
 import { objectKey } from "./keys.js";
 import { TURNSTILE_TOKEN_MAX_CHARS, WIRE_MAX_JSON_BYTES } from "./limits.js";
+import { logJson } from "./log.js";
 import { parseManifest } from "./parse.js";
 import { isJsonContentType, readAllowedHeader } from "./privacy.js";
 import type { HandlerDeps, UploadManifest, UploadReceipt } from "./types.js";
@@ -31,14 +32,14 @@ export async function handleUpload(
   if (declaredBodyTooLarge(request, deps.wireMaxBytes)) {
     return errorResponse("BODY_TOO_LARGE");
   }
-  const token = readAllowedHeader(request.headers, "X-Turnstile-Token");
-  if (token === null || token.length === 0) {
+  const turnstileToken = readAllowedHeader(request.headers, "X-Turnstile-Token");
+  if (turnstileToken === null || turnstileToken.length === 0) {
     return errorResponse("TURNSTILE_MISSING");
   }
-  if (token.length > TURNSTILE_TOKEN_MAX_CHARS) {
+  if (turnstileToken.length > TURNSTILE_TOKEN_MAX_CHARS) {
     return errorResponse("TURNSTILE_FAILED");
   }
-  const verified = await deps.turnstile.verify(token);
+  const verified = await deps.turnstile.verify(turnstileToken);
   if (!verified) {
     return errorResponse("TURNSTILE_FAILED");
   }
@@ -138,13 +139,11 @@ function logOutcome(
     bytecode_hash_count?: number;
   },
 ): void {
-  console.log(
-    JSON.stringify({
-      event: "upload",
-      code,
-      ...extra,
-    }),
-  );
+  logJson({
+    event: "upload",
+    code,
+    ...extra,
+  });
 }
 
 export const WIRE_CAP = WIRE_MAX_JSON_BYTES;

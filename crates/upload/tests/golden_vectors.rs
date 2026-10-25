@@ -17,23 +17,33 @@ fn vectors_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../schemas/vectors")
 }
 
+fn relative_unix(dir: &Path, path: &Path) -> String {
+    path.strip_prefix(dir)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 fn json_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     visit(dir, &mut out);
-    out.retain(|path| path.file_name().and_then(|n| n.to_str()) != Some("index.json"));
-    out.sort_by(|left, right| {
-        let a = left
-            .strip_prefix(dir)
-            .unwrap_or(left)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let b = right
-            .strip_prefix(dir)
-            .unwrap_or(right)
-            .to_string_lossy()
-            .replace('\\', "/");
-        a.cmp(&b)
+    out.retain(|path| {
+        let rel = relative_unix(dir, path);
+        path.file_name().and_then(|n| n.to_str()) != Some("index.json")
+            && !rel.starts_with("stored/")
     });
+    out.sort_by_key(|left| relative_unix(dir, left));
+    out
+}
+
+fn stored_files(dir: &Path) -> Vec<PathBuf> {
+    let stored = dir.join("stored");
+    if !stored.is_dir() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    visit(&stored, &mut out);
+    out.sort_by_key(|left| relative_unix(dir, left));
     out
 }
 
@@ -48,6 +58,7 @@ struct VectorIndexEntry {
     path: String,
     verdict: String,
     error_code: Option<String>,
+    stored: Option<String>,
 }
 
 fn load_index(dir: &Path) -> VectorIndex {
@@ -144,6 +155,34 @@ fn every_golden_vector_matches_rust_parser() {
         relative, listed,
         "on-disk vectors must match schemas/vectors/index.json exactly"
     );
+    let accept_stored: Vec<String> = index
+        .vectors
+        .iter()
+        .filter(|entry| entry.verdict == "accept")
+        .map(|entry| {
+            entry
+                .stored
+                .clone()
+                .unwrap_or_else(|| panic!("{} accept entry must list stored bytes", entry.path))
+        })
+        .collect();
+    let on_disk_stored: Vec<String> = stored_files(&dir)
+        .iter()
+        .map(|path| relative_unix(&dir, path))
+        .collect();
+    assert_eq!(
+        accept_stored.len(),
+        index
+            .vectors
+            .iter()
+            .filter(|entry| entry.verdict == "accept")
+            .count(),
+        "every accept vector must have a stored-bytes path"
+    );
+    assert_eq!(
+        on_disk_stored, accept_stored,
+        "on-disk stored-bytes files must match accept index entries exactly"
+    );
     for (path, listed) in files.iter().zip(index.vectors.iter()) {
         let text = fs::read_to_string(path).unwrap().replace("\r\n", "\n");
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -186,6 +225,26 @@ fn every_golden_vector_matches_rust_parser() {
                         path.display()
                     );
                 }
+                let stored_rel = listed.stored.as_deref().unwrap_or_else(|| {
+                    panic!(
+                        "{} accept index entry must list stored bytes",
+                        path.display()
+                    )
+                });
+                let stored_path = dir.join(stored_rel);
+                let expected = fs::read(&stored_path).unwrap_or_else(|err| {
+                    panic!(
+                        "{} missing stored bytes {}: {err}",
+                        path.display(),
+                        stored_rel
+                    )
+                });
+                assert_eq!(
+                    canonical,
+                    expected,
+                    "{} stored bytes must match the Rust canonicalizer",
+                    path.display()
+                );
             }
             "reject" => {
                 let expected = error_code
@@ -252,6 +311,39 @@ fn rebuild_from_typed(parsed: &UploadManifest) -> UploadManifest {
                 Sha256Hex::parse(&response.to_hex()).unwrap(),
             ),
         },
+    }
+}
+
+#[test]
+#[ignore = "run with OSDB_WRITE_STORED=1 to refresh stored-byte oracles"]
+fn write_stored_byte_oracles() {
+    assert_eq!(
+        std::env::var("OSDB_WRITE_STORED").ok().as_deref(),
+        Some("1"),
+        "refusing to write stored bytes without OSDB_WRITE_STORED=1"
+    );
+    let dir = vectors_dir();
+    let files = json_files(&dir);
+    for path in files {
+        let text = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if value["verdict"].as_str() != Some("accept") {
+            continue;
+        }
+        let bytes = payload(&value, &path);
+        let manifest = UploadManifest::parse(&bytes).unwrap_or_else(|err| {
+            panic!(
+                "{} should accept while writing stored bytes: {err}",
+                path.display()
+            )
+        });
+        let canonical = manifest.to_canonical_bytes().unwrap();
+        let rel = relative_unix(&dir, &path);
+        let stored = dir.join("stored").join(&rel);
+        if let Some(parent) = stored.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&stored, canonical).unwrap();
     }
 }
 

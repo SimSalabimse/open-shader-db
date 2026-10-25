@@ -10,6 +10,7 @@ export interface TurnstileOptions {
   readonly timeoutMs?: number;
   readonly expectedHostname?: string;
   readonly expectedAction?: string;
+  readonly schedule?: typeof setTimeout;
 }
 
 export function createTurnstileClient(
@@ -25,21 +26,26 @@ export function createTurnstileClient(
       }
       const body = `secret=${encodeURIComponent(options.secret)}&response=${encodeURIComponent(token)}`;
       const timeoutMs = options.timeoutMs ?? TURNSTILE_TIMEOUT_MS;
+      const schedule = options.schedule ?? setTimeout;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const timer = schedule(() => controller.abort(), timeoutMs);
       try {
-        const response = await options.fetchImpl(options.siteverifyUrl, {
-          method: "POST",
-          headers: { "content-type": "application/x-www-form-urlencoded" },
-          body,
-          signal: controller.signal,
-        });
+        const response = await raceDeadline(
+          options.fetchImpl(options.siteverifyUrl, {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body,
+            signal: controller.signal,
+          }),
+          timeoutMs,
+          schedule,
+        );
         if (!response.ok) {
           return false;
         }
         let json: unknown;
         try {
-          json = await response.json();
+          json = await raceDeadline(response.json(), timeoutMs, schedule);
         } catch {
           return false;
         }
@@ -51,6 +57,22 @@ export function createTurnstileClient(
       }
     },
   };
+}
+
+export function raceDeadline<T>(
+  work: Promise<T>,
+  timeoutMs: number,
+  schedule: typeof setTimeout = setTimeout,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = schedule(() => reject(new Error("turnstile-deadline")), timeoutMs);
+  });
+  return Promise.race([work, timeout]).finally(() => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  });
 }
 
 function normalizeOptions(

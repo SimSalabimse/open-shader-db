@@ -1360,7 +1360,9 @@ fn string_matches_schema_pattern(pattern: &str, text: &str) -> bool {
                 })
         }
         crate::schema::IDENT_PATTERN => {
-            (1..=128).contains(&text.len())
+            text != "."
+                && text != ".."
+                && (1..=128).contains(&text.len())
                 && text.bytes().all(|b| {
                     (0x21..=0x2e).contains(&b)
                         || (0x30..=0x39).contains(&b)

@@ -67,6 +67,14 @@ function maxValidManifest(target: number): Uint8Array {
   return out;
 }
 
+function prettyMaxValid(): Uint8Array {
+  const compact = maxValidManifest(WIRE_MAX_JSON_BYTES - 1);
+  const out = new Uint8Array(compact.length + 1);
+  out[0] = 0x20;
+  out.set(compact, 1);
+  return out;
+}
+
 function fillPattern(prefix: string, unit: string, suffix: string, target: number): Uint8Array {
   const room = target - prefix.length - suffix.length;
   const n = Math.max(1, Math.floor(room / unit.length));
@@ -81,12 +89,41 @@ function fillPattern(prefix: string, unit: string, suffix: string, target: numbe
   return out;
 }
 
+function chunkedRequest(bytes: Uint8Array, chunkSize: number): Request {
+  let offset = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.length) {
+        controller.close();
+        return;
+      }
+      const end = Math.min(offset + chunkSize, bytes.length);
+      controller.enqueue(bytes.subarray(offset, end));
+      offset = end;
+    },
+  });
+  return new Request("https://example.invalid/v1/upload", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Turnstile-Token": "ok",
+      "Content-Length": String(bytes.byteLength),
+    },
+    body: stream,
+    duplex: "half",
+  } as RequestInit);
+}
+
 function sampleMemory(): { heapUsed: number; arrayBuffers: number; rss: number } {
   const mem = process.memoryUsage();
   return { heapUsed: mem.heapUsed, arrayBuffers: mem.arrayBuffers, rss: mem.rss };
 }
 
-async function runCase(name: string, body: Uint8Array, expectedStatus: number): Promise<void> {
+async function runCase(
+  name: string,
+  request: Request,
+  expectedStatus: number,
+): Promise<void> {
   let peakHeap = 0;
   let peakExternal = 0;
   let peakRss = 0;
@@ -97,7 +134,11 @@ async function runCase(name: string, body: Uint8Array, expectedStatus: number): 
     peakRss = Math.max(peakRss, mem.rss);
   }, 5);
   timer.unref();
-  const response = await handleUpload(uploadRequest(body), testDeps());
+  const cpuStart = process.cpuUsage();
+  const wallStart = process.hrtime.bigint();
+  const response = await handleUpload(request, testDeps());
+  const cpu = process.cpuUsage(cpuStart);
+  const wallMs = Number(process.hrtime.bigint() - wallStart) / 1e6;
   const after = sampleMemory();
   clearInterval(timer);
   peakHeap = Math.max(peakHeap, after.heapUsed);
@@ -107,32 +148,45 @@ async function runCase(name: string, body: Uint8Array, expectedStatus: number): 
   const heapMb = (peakHeap / (1024 * 1024)).toFixed(1);
   const totalMb = (peakExternal / (1024 * 1024)).toFixed(1);
   const rssMb = (peakRss / (1024 * 1024)).toFixed(1);
+  const cpuMs = ((cpu.user + cpu.system) / 1000).toFixed(1);
   console.log(
-    `HEAP_CASE ${name} status=${response.status} peak_heap_mb=${heapMb} peak_heap_plus_ab_mb=${totalMb} peak_rss_mb=${rssMb} bytes=${body.byteLength}`,
+    `HEAP_CASE ${name} status=${response.status} peak_heap_mb=${heapMb} peak_heap_plus_ab_mb=${totalMb} peak_rss_mb=${rssMb} cpu_ms=${cpuMs} wall_ms=${wallMs.toFixed(1)} bytes=${request.headers.get("content-length") ?? "?"}`,
   );
 }
 
 const CASES = [
   "max_valid",
-  "many_objects",
-  "empty_arrays",
+  "max_valid_pretty",
+  "max_valid_chunk_1",
+  "max_valid_chunk_16",
+  "in_field_braces",
+  "in_field_huge",
   "deep_nesting",
-  "huge_string",
-  "number_arrays",
 ] as const;
 
 async function main(): Promise<void> {
-  const body = maxValidManifest(WIRE_MAX_JSON_BYTES);
-  assert.ok(body.byteLength <= WIRE_MAX_JSON_BYTES);
-  assert.ok(body.byteLength > WIRE_MAX_JSON_BYTES - 200);
-  await runCase("max_valid", body, 200);
-  await runCase("many_objects", fillPattern('{"x":[', "{},", "{}]}", WIRE_MAX_JSON_BYTES), 400);
-  await runCase("empty_arrays", fillPattern('{"x":[', "[],", "[]]}", WIRE_MAX_JSON_BYTES), 400);
+  const compact = maxValidManifest(WIRE_MAX_JSON_BYTES);
+  assert.ok(compact.byteLength <= WIRE_MAX_JSON_BYTES);
+  assert.ok(compact.byteLength > WIRE_MAX_JSON_BYTES - 200);
+  const pretty = prettyMaxValid();
+  assert.ok(pretty.byteLength <= WIRE_MAX_JSON_BYTES);
+  await runCase("max_valid", uploadRequest(compact), 200);
+  await runCase("max_valid_pretty", uploadRequest(pretty), 200);
+  await runCase("max_valid_chunk_1", chunkedRequest(compact, 1), 200);
+  await runCase("max_valid_chunk_16", chunkedRequest(compact, 16), 200);
+  await runCase(
+    "in_field_braces",
+    uploadRequest(fillPattern('{"x":"', "{", '"}', WIRE_MAX_JSON_BYTES)),
+    400,
+  );
+  await runCase(
+    "in_field_huge",
+    uploadRequest(fillPattern('{"description_hashes":["', "a", '"]}', WIRE_MAX_JSON_BYTES)),
+    400,
+  );
   const depth = 64;
   const nest = `${"[".repeat(depth)}0${"]".repeat(depth)}`;
-  await runCase("deep_nesting", fillPattern(nest, " ", "", WIRE_MAX_JSON_BYTES), 400);
-  await runCase("huge_string", fillPattern('{"x":"', "a", '"}', WIRE_MAX_JSON_BYTES), 400);
-  await runCase("number_arrays", fillPattern('{"x":[', "0,", "1]}", WIRE_MAX_JSON_BYTES), 400);
+  await runCase("deep_nesting", uploadRequest(fillPattern(nest, " ", "", WIRE_MAX_JSON_BYTES)), 400);
   console.log(`HEAP_CHILD_OK cases=${CASES.length}`);
 }
 

@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { handleUpload } from "./handler.js";
-import {
-  DEFAULT_SITEVERIFY_URL,
-  PER_BUILD_UPLOAD_CAP,
-  WIRE_MAX_JSON_BYTES,
-} from "./limits.js";
+import { DEFAULT_SITEVERIFY_URL, parsePerBuildCap, WIRE_MAX_JSON_BYTES } from "./limits.js";
 import { createRateGate } from "./rate_limit.js";
 import { R2StagingStore } from "./storage.js";
 import { createTurnstileClient } from "./turnstile.js";
@@ -13,7 +9,7 @@ import type { WorkerEnv } from "./types.js";
 
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
-    const cap = parseCap(env.PER_BUILD_UPLOAD_CAP);
+    const cap = parsePerBuildCap(env.PER_BUILD_UPLOAD_CAP);
     const siteverify =
       env.TURNSTILE_SITEVERIFY_URL !== undefined && env.TURNSTILE_SITEVERIFY_URL.length > 0
         ? env.TURNSTILE_SITEVERIFY_URL
@@ -51,13 +47,3 @@ function emptyToUndefined(value: string | undefined): string | undefined {
   return value;
 }
 
-function parseCap(value: string | undefined): number {
-  if (value === undefined) {
-    return PER_BUILD_UPLOAD_CAP;
-  }
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    return PER_BUILD_UPLOAD_CAP;
-  }
-  return parsed;
-}

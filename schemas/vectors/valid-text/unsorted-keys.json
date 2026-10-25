@@ -1,0 +1,5 @@
+{
+  "verdict": "accept",
+  "error_code": null,
+  "body_text": "{\"schema_version\":1,\"ownership\":{\"reason\":\"no_server_challenge\",\"kind\":\"unchallenged\"},\"description_hashes\":[],\"collected_hour\":\"2026-10-25T14:00:00Z\",\"client_version\":\"0.1.0\",\"build_id\":{\"version\":\"1.0.0\",\"game_id\":\"synthetic\",\"exe_hash\":\"00000000000000000000000000000000000000000000000000000000000000ee\"},\"bytecode_hashes\":[]}"
+}

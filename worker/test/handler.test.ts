@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { handleUpload } from "../src/handler.js";
-import { WIRE_MAX_JSON_BYTES } from "../src/limits.js";
+import { TURNSTILE_TIMEOUT_MS, WIRE_MAX_JSON_BYTES } from "../src/limits.js";
 import { parseManifest } from "../src/parse.js";
 import { MemoryStore } from "../src/storage.js";
 import { createTurnstileClient } from "../src/turnstile.js";
@@ -158,6 +158,19 @@ test("non-JSON Content-Type is 415 and stores nothing", async () => {
   assert.equal(await store.countPrefix("", 8), 0);
 });
 
+test("Content-Length above the safe-integer range is 413", async () => {
+  const bytes = minimalBytes();
+  for (const length of ["1e30", "1000000000000000000000000000000", "9007199254740992"]) {
+    const response = await handleUpload(
+      uploadRequest(bytes, { "Content-Length": length }),
+      testDeps(),
+    );
+    assert.equal(response.status, 413, length);
+    const err = (await response.json()) as { code: string };
+    assert.equal(err.code, "BODY_TOO_LARGE", length);
+  }
+});
+
 test("streaming counter catches a missing or lying Content-Length", async () => {
   const deps = testDeps({ wireMaxBytes: 16 });
   const bytes = new Uint8Array(32);
@@ -211,22 +224,6 @@ test("Turnstile failure paths return 403 and store nothing", async () => {
     name: "success false",
     request: uploadRequest(bytes),
     deps: testDeps({ store, turnstile: failedClient }),
-  });
-  const timeoutClient = createTurnstileClient({
-    secret: "placeholder-secret",
-    siteverifyUrl: "https://example.invalid/siteverify",
-    timeoutMs: 20,
-    fetchImpl: async (_input, init) => {
-      await new Promise<void>((_, reject) => {
-        init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
-      });
-      return { ok: true, json: async () => ({ success: true }) };
-    },
-  });
-  cases.push({
-    name: "timeout",
-    request: uploadRequest(bytes),
-    deps: testDeps({ store, turnstile: timeoutClient }),
   });
   const serverError = createTurnstileClient(
     "placeholder-secret",
@@ -300,6 +297,108 @@ test("siteverify client mutants fail closed", async () => {
     }),
   });
   assert.equal(await okClient.verify("tok"), true);
+  assert.equal(
+    await createTurnstileClient(secret, url, async () => ({
+      ok: true,
+      json: async () => ({ success: "true" }),
+    })).verify("tok"),
+    false,
+  );
+  assert.equal(
+    await createTurnstileClient(secret, url, async () => ({
+      ok: true,
+      json: async () => ({ success: 1 }),
+    })).verify("tok"),
+    false,
+  );
+  let fetched2048 = false;
+  assert.equal(
+    await createTurnstileClient(secret, url, async () => {
+      fetched2048 = true;
+      return { ok: true, json: async () => ({ success: true }) };
+    }).verify("t".repeat(2048)),
+    true,
+  );
+  assert.equal(fetched2048, true);
+  let fetched2049 = false;
+  assert.equal(
+    await createTurnstileClient(secret, url, async () => {
+      fetched2049 = true;
+      return { ok: true, json: async () => ({ success: true }) };
+    }).verify("t".repeat(2049)),
+    false,
+  );
+  assert.equal(fetched2049, false);
+  const unsetHostAction = createTurnstileClient({
+    secret,
+    siteverifyUrl: url,
+    fetchImpl: async () => ({ ok: true, json: async () => ({ success: true }) }),
+  });
+  assert.equal(await unsetHostAction.verify("tok"), true);
+});
+
+test("siteverify hard deadline uses fake timers when fetch or json hang", async () => {
+  const fakeSchedule = ((fn: () => void, _ms?: number) => {
+    queueMicrotask(fn);
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  const hangingFetch = createTurnstileClient({
+    secret: "placeholder-secret",
+    siteverifyUrl: "https://example.invalid/siteverify",
+    timeoutMs: TURNSTILE_TIMEOUT_MS,
+    schedule: fakeSchedule,
+    fetchImpl: () => new Promise(() => {}),
+  });
+  assert.equal(await hangingFetch.verify("tok"), false);
+  const hangingJson = createTurnstileClient({
+    secret: "placeholder-secret",
+    siteverifyUrl: "https://example.invalid/siteverify",
+    timeoutMs: TURNSTILE_TIMEOUT_MS,
+    schedule: fakeSchedule,
+    fetchImpl: () =>
+      Promise.resolve({
+        ok: true,
+        json: () => new Promise(() => {}),
+      }),
+  });
+  assert.equal(await hangingJson.verify("tok"), false);
+});
+
+test("empty Turnstile token is MISSING and 2048-character tokens reach verify", async () => {
+  const empty = await handleUpload(
+    uploadRequest(minimalBytes(), { "X-Turnstile-Token": "" }),
+    testDeps(),
+  );
+  assert.equal(empty.status, 403);
+  const emptyBody = (await empty.json()) as { code: string };
+  assert.equal(emptyBody.code, "TURNSTILE_MISSING");
+  let seen = "";
+  const atCap = await handleUpload(
+    uploadRequest(minimalBytes(), { "X-Turnstile-Token": "t".repeat(2048) }),
+    testDeps({
+      turnstile: {
+        verify: async (value) => {
+          seen = value;
+          return value.length === 2048;
+        },
+      },
+    }),
+  );
+  assert.equal(seen.length, 2048);
+  assert.equal(atCap.status, 200);
+  const over = await handleUpload(
+    uploadRequest(minimalBytes(), { "X-Turnstile-Token": "t".repeat(2049) }),
+    testDeps({
+      turnstile: {
+        verify: async () => {
+          throw new Error("oversized token must not reach verify");
+        },
+      },
+    }),
+  );
+  assert.equal(over.status, 403);
+  const overBody = (await over.json()) as { code: string };
+  assert.equal(overBody.code, "TURNSTILE_FAILED");
 });
 
 test("Turnstile failures and rate denials do not store objects", async () => {

@@ -35,7 +35,8 @@ pub const UTC_HOUR_PATTERN: &str = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:00:00Z$
 pub const CLIENT_VERSION_PATTERN: &str = "^[0-9]+\\.[0-9]+\\.[0-9]+$";
 
 /// Game id / version identifier pattern (ASCII graphic minus `/`, `\\`, `:`).
-pub const IDENT_PATTERN: &str = "^[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$";
+pub const IDENT_PATTERN: &str =
+    "^(?!\\.\\.?$)[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$";
 
 /// Hand-maintained JSON Schema (draft-07). `maxItems` follows [`Limits::DEFAULT`].
 ///
