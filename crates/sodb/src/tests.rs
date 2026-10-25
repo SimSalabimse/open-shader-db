@@ -4,8 +4,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Mutex};
-use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::sync::mpsc;
+use std::sync::Mutex;
+#[cfg(unix)]
+use std::time::Duration;
+use std::time::Instant;
 
 /// RSS is process-wide; serialize tests that assert a peak-memory bound.
 static RSS_MEASURE_LOCK: Mutex<()> = Mutex::new(());
