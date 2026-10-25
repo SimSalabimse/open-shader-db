@@ -468,7 +468,9 @@ fn schema_file_matches_rust_document() {
     assert_eq!(from_file, from_rust);
     let mut pretty = serde_json::to_string_pretty(&from_rust).unwrap();
     pretty.push('\n');
-    assert_eq!(pretty, SCHEMA_JSON);
+    // Git on Windows may check the file out with CRLF; compare LF form.
+    let checked_in = SCHEMA_JSON.replace("\r\n", "\n");
+    assert_eq!(pretty, checked_in);
 }
 
 #[test]
