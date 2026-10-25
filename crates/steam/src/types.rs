@@ -9,7 +9,8 @@
 //! `LocalPath(<redacted>)` so logs cannot leak an install directory.
 //!
 //! Upload-safe data is [`GameIdentity`] (`app_id`, `build_id`, `name`) and
-//! [`UploadSafeDiscovery`] (identities plus SODB **counts**). [`InstalledGame`]
+//! [`UploadSafeDiscovery`] (identities plus SODB **counts**). Their fields are
+//! private so a path string cannot be assigned by accident. [`InstalledGame`]
 //! and [`Discovery`] are intentionally not `Serialize`. A unit test serializes
 //! every public `Serialize` type in this crate and asserts that the fixture
 //! directory path and a fake username do not appear.
@@ -41,12 +42,18 @@ impl fmt::Display for BuildId {
     }
 }
 
-/// Display name from the app manifest. Upload-safe.
+/// Display name from the app manifest. Upload-safe. Control characters are stripped.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 #[serde(transparent)]
-pub struct GameName(pub String);
+pub struct GameName(String);
 
 impl GameName {
+    /// Build a name with ASCII/Unicode control characters (including NUL) removed.
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into().chars().filter(|c| !c.is_control()).collect())
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -82,9 +89,35 @@ impl fmt::Debug for LocalPath {
 /// Upload-safe game identity. No filesystem paths.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct GameIdentity {
-    pub app_id: AppId,
-    pub build_id: BuildId,
-    pub name: GameName,
+    app_id: AppId,
+    build_id: BuildId,
+    name: GameName,
+}
+
+impl GameIdentity {
+    #[must_use]
+    pub fn new(app_id: AppId, build_id: BuildId, name: GameName) -> Self {
+        Self {
+            app_id,
+            build_id,
+            name,
+        }
+    }
+
+    #[must_use]
+    pub fn app_id(&self) -> AppId {
+        self.app_id
+    }
+
+    #[must_use]
+    pub fn build_id(&self) -> BuildId {
+        self.build_id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &GameName {
+        &self.name
+    }
 }
 
 /// One installed game. **Not** `Serialize` because it carries [`LocalPath`]s.
@@ -105,7 +138,7 @@ pub struct Warning {
 }
 
 /// Class of a non-fatal discovery problem.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WarningKind {
     MissingSteamRoot,
@@ -113,8 +146,10 @@ pub enum WarningKind {
     MissingLibraryList,
     MalformedVdf,
     IncompleteManifest,
+    InvalidInstallDir,
     UnreadableManifest,
     UnreadableInstallDir,
+    DuplicateApp,
     SodbScanLimited,
 }
 
@@ -129,32 +164,66 @@ impl Discovery {
     /// Identities and SODB counts only. Safe to write to an upload preview.
     #[must_use]
     pub fn upload_safe(&self) -> UploadSafeDiscovery {
-        UploadSafeDiscovery {
-            games: self.games.iter().map(GameListing::from).collect(),
-            warnings: self.warnings.clone(),
-        }
+        UploadSafeDiscovery::new(
+            self.games.iter().map(GameListing::from).collect(),
+            self.warnings.clone(),
+        )
     }
 }
 
 /// One game as it may appear in JSON / upload previews (no paths).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct GameListing {
-    pub identity: GameIdentity,
-    pub sodb_file_count: usize,
+    identity: GameIdentity,
+    sodb_file_count: usize,
+}
+
+impl GameListing {
+    #[must_use]
+    pub fn new(identity: GameIdentity, sodb_file_count: usize) -> Self {
+        Self {
+            identity,
+            sodb_file_count,
+        }
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> &GameIdentity {
+        &self.identity
+    }
+
+    #[must_use]
+    pub fn sodb_file_count(&self) -> usize {
+        self.sodb_file_count
+    }
 }
 
 impl From<&InstalledGame> for GameListing {
     fn from(game: &InstalledGame) -> Self {
-        Self {
-            identity: game.identity.clone(),
-            sodb_file_count: game.sodb_files.len(),
-        }
+        Self::new(game.identity.clone(), game.sodb_files.len())
     }
 }
 
 /// Serialize-only view of a discovery pass. Contains no [`LocalPath`].
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct UploadSafeDiscovery {
-    pub games: Vec<GameListing>,
-    pub warnings: Vec<Warning>,
+    games: Vec<GameListing>,
+    warnings: Vec<Warning>,
+}
+
+impl UploadSafeDiscovery {
+    #[must_use]
+    pub fn new(games: Vec<GameListing>, warnings: Vec<Warning>) -> Self {
+        Self { games, warnings }
+    }
+
+    #[must_use]
+    pub fn games(&self) -> &[GameListing] {
+        &self.games
+    }
+
+    #[must_use]
+    pub fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
 }

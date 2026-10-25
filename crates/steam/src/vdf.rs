@@ -4,8 +4,11 @@
 //!
 //! Handles quoted strings, escapes, nested blocks, `//` and `/* */` comments.
 //! Rejects hostile input: 1 MiB file cap, depth 32, token cap.
+//!
+//! Duplicate keys in a table keep the **last** value.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -20,17 +23,37 @@ pub const MAX_VDF_DEPTH: u32 = 32;
 pub const MAX_VDF_TOKENS: u32 = 65_536;
 
 /// A parsed VDF document with a single root key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct VdfDocument {
     pub root_key: String,
     pub root: VdfValue,
 }
 
+impl fmt::Debug for VdfDocument {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VdfDocument")
+            .field("root_key", &self.root_key)
+            .field("root", &self.root)
+            .finish()
+    }
+}
+
 /// A VDF string or nested table.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// [`Debug`] redacts string values because they may hold library paths.
+#[derive(Clone, PartialEq, Eq)]
 pub enum VdfValue {
     String(String),
     Table(BTreeMap<String, VdfValue>),
+}
+
+impl fmt::Debug for VdfValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::String(_) => f.write_str("String(<redacted>)"),
+            Self::Table(table) => f.debug_tuple("Table").field(table).finish(),
+        }
+    }
 }
 
 impl VdfValue {
@@ -92,29 +115,7 @@ pub(crate) fn parse_vdf_with_limits(
 }
 
 pub(crate) fn read_regular_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, Error> {
-    // lstat first so we never `open` a FIFO (that would block until a writer).
-    let link_meta = std::fs::symlink_metadata(path)?;
-    if link_meta.file_type().is_symlink() {
-        let meta = std::fs::metadata(path)?;
-        if !meta.is_file() {
-            return Err(Error::NotARegularFile);
-        }
-        if meta.len() > max_bytes {
-            return Err(Error::FileTooLarge {
-                max: max_bytes,
-                got: meta.len(),
-            });
-        }
-    } else if !link_meta.is_file() {
-        return Err(Error::NotARegularFile);
-    } else if link_meta.len() > max_bytes {
-        return Err(Error::FileTooLarge {
-            max: max_bytes,
-            got: link_meta.len(),
-        });
-    }
-
-    let file = File::open(path)?;
+    let file = open_read_file(path)?;
     let opened = file.metadata()?;
     if !opened.is_file() {
         return Err(Error::NotARegularFile);
@@ -135,6 +136,37 @@ pub(crate) fn read_regular_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, 
         });
     }
     Ok(buf)
+}
+
+/// Open for read. On Unix uses `O_NONBLOCK` so a FIFO (or a swap to a FIFO
+/// after a path check) does not block the thread. File type is taken from the
+/// **opened** handle.
+fn open_read_file(path: &Path) -> Result<File, Error> {
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(Error::NotARegularFile);
+        }
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        let meta = std::fs::metadata(path)?;
+        if !meta.is_file() {
+            return Err(Error::NotARegularFile);
+        }
+        let file = File::open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(Error::NotARegularFile);
+        }
+        Ok(file)
+    }
 }
 
 struct Parser<'a> {
@@ -292,6 +324,7 @@ impl Parser<'_> {
             }
             let key = self.parse_string()?;
             let value = self.parse_value(depth.saturating_add(1))?;
+            // Last value wins when the same key appears more than once.
             table.insert(key, value);
         }
     }

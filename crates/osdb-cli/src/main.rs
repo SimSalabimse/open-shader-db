@@ -108,9 +108,9 @@ fn write_human(found: &Discovery, show_paths: bool) -> Result<(), Box<dyn std::e
         writeln!(
             out,
             "{}  app={}  build={}  sodb_files={}",
-            game.identity.name.as_str(),
-            game.identity.app_id,
-            game.identity.build_id,
+            game.identity.name().as_str(),
+            game.identity.app_id(),
+            game.identity.build_id(),
             game.sodb_files.len()
         )?;
         if show_paths {
@@ -132,11 +132,7 @@ mod tests {
     fn sample_discovery(install: PathBuf) -> Discovery {
         Discovery {
             games: vec![InstalledGame {
-                identity: GameIdentity {
-                    app_id: AppId(10),
-                    build_id: BuildId(99),
-                    name: GameName(String::from("Sample")),
-                },
+                identity: GameIdentity::new(AppId(10), BuildId(99), GameName::new("Sample")),
                 install_dir: LocalPath::new(install.clone()),
                 sodb_files: vec![LocalPath::new(install.join("a.sodb"))],
             }],

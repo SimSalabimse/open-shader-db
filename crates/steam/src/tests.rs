@@ -7,8 +7,10 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 #[cfg(unix)]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::scan::ScanLimits;
 use crate::vdf::parse_vdf_with_limits;
@@ -184,12 +186,12 @@ fn vdf_quotes_escapes_comments_and_nesting() {
 fn two_libraries_three_games_sorted_by_app_id() {
     let fx = two_libs_three_games();
     let found = discover(&fx.steam);
-    let ids: Vec<u32> = found.games.iter().map(|g| g.identity.app_id.0).collect();
+    let ids: Vec<u32> = found.games.iter().map(|g| g.identity.app_id().0).collect();
     assert_eq!(ids, vec![50, 100, 200], "games={:?}", found.games);
-    assert_eq!(found.games[0].identity.name.as_str(), "Game Three");
-    assert_eq!(found.games[1].identity.name.as_str(), "Game One");
-    assert_eq!(found.games[2].identity.name.as_str(), "Game Two");
-    assert_eq!(found.games[0].identity.build_id, BuildId(33));
+    assert_eq!(found.games[0].identity.name().as_str(), "Game Three");
+    assert_eq!(found.games[1].identity.name().as_str(), "Game One");
+    assert_eq!(found.games[2].identity.name().as_str(), "Game Two");
+    assert_eq!(found.games[0].identity.build_id(), BuildId(33));
 }
 
 #[test]
@@ -213,7 +215,7 @@ fn game_with_sodb_file() {
     let game = found
         .games
         .iter()
-        .find(|g| g.identity.app_id == AppId(200))
+        .find(|g| g.identity.app_id() == AppId(200))
         .unwrap();
     assert_eq!(game.sodb_files.len(), 2);
 }
@@ -302,21 +304,21 @@ fn missing_manifest_fields() {
     write_manifest(&sa, 4, "NoDir", "unused", Some(9), false, true, true);
 
     let found = discover(&fx.steam);
-    let ids: Vec<u32> = found.games.iter().map(|g| g.identity.app_id.0).collect();
+    let ids: Vec<u32> = found.games.iter().map(|g| g.identity.app_id().0).collect();
     assert_eq!(ids, vec![1, 2, 3]);
     let no_name = found
         .games
         .iter()
-        .find(|g| g.identity.app_id == AppId(2))
+        .find(|g| g.identity.app_id() == AppId(2))
         .unwrap();
-    assert_eq!(no_name.identity.name.as_str(), "unknown");
+    assert_eq!(no_name.identity.name().as_str(), "unknown");
     let no_build = found
         .games
         .iter()
-        .find(|g| g.identity.app_id == AppId(3))
+        .find(|g| g.identity.app_id() == AppId(3))
         .unwrap();
-    assert_eq!(no_build.identity.build_id, BuildId(0));
-    assert!(!found.games.iter().any(|g| g.identity.app_id == AppId(4)));
+    assert_eq!(no_build.identity.build_id(), BuildId(0));
+    assert!(!found.games.iter().any(|g| g.identity.app_id() == AppId(4)));
     assert!(found
         .warnings
         .iter()
@@ -344,7 +346,7 @@ fn symlink_loop_does_not_hang() {
     let game = found
         .games
         .iter()
-        .find(|g| g.identity.app_id == AppId(100))
+        .find(|g| g.identity.app_id() == AppId(100))
         .unwrap();
     assert_eq!(game.sodb_files.len(), 1);
 }
@@ -359,10 +361,24 @@ fn fifo_is_not_opened() {
         .status()
         .unwrap();
     assert!(status.success());
-    let start = Instant::now();
-    let err = parse_vdf_file(&fifo).unwrap_err();
-    assert!(start.elapsed() < Duration::from_secs(2));
+    let fifo_for_thread = fifo.clone();
+    let err = run_with_timeout(Duration::from_secs(2), move || {
+        parse_vdf_file(&fifo_for_thread).unwrap_err()
+    });
     assert!(matches!(err, Error::NotARegularFile), "{err:?}");
+}
+
+#[cfg(unix)]
+fn run_with_timeout<T: Send + 'static>(
+    timeout: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    rx.recv_timeout(timeout)
+        .unwrap_or_else(|_| panic!("guard timed out (open or walk blocked)"))
 }
 
 /// Serialize every public `Serialize` type and assert the fixture path and
@@ -386,25 +402,15 @@ fn serialized_payload_never_contains_paths() {
 
     let safe = found.upload_safe();
     blobs.push(serde_json::to_string(&safe).unwrap());
-    blobs.push(serde_json::to_string(&safe.games).unwrap());
-    blobs.push(serde_json::to_string(&safe.warnings).unwrap());
+    blobs.push(serde_json::to_string(&safe.games()).unwrap());
+    blobs.push(serde_json::to_string(&safe.warnings()).unwrap());
 
-    let identity = GameIdentity {
-        app_id: AppId(1),
-        build_id: BuildId(2),
-        name: GameName(String::from("Unit")),
-    };
+    let identity = GameIdentity::new(AppId(1), BuildId(2), GameName::new("Unit"));
     blobs.push(serde_json::to_string(&identity).unwrap());
-    blobs.push(
-        serde_json::to_string(&GameListing {
-            identity: identity.clone(),
-            sodb_file_count: 3,
-        })
-        .unwrap(),
-    );
+    blobs.push(serde_json::to_string(&GameListing::new(identity.clone(), 3)).unwrap());
     blobs.push(serde_json::to_string(&AppId(9)).unwrap());
     blobs.push(serde_json::to_string(&BuildId(8)).unwrap());
-    blobs.push(serde_json::to_string(&GameName(String::from("N"))).unwrap());
+    blobs.push(serde_json::to_string(&GameName::new("N")).unwrap());
     blobs.push(
         serde_json::to_string(&Warning {
             kind: WarningKind::MissingSteamRoot,
@@ -413,13 +419,7 @@ fn serialized_payload_never_contains_paths() {
         })
         .unwrap(),
     );
-    blobs.push(
-        serde_json::to_string(&UploadSafeDiscovery {
-            games: Vec::new(),
-            warnings: Vec::new(),
-        })
-        .unwrap(),
-    );
+    blobs.push(serde_json::to_string(&UploadSafeDiscovery::new(Vec::new(), Vec::new())).unwrap());
 
     let debugs = format!("{:?} {:?}", found, LocalPath::new(fx.base.clone()));
     assert!(
@@ -465,10 +465,353 @@ fn scan_file_count_bound_emits_warning() {
         ScanLimits {
             max_depth: 4,
             max_files: 2,
+            ..ScanLimits::default()
         },
     );
     assert!(found
         .warnings
         .iter()
         .any(|w| w.kind == WarningKind::SodbScanLimited));
+}
+
+fn write_libraryfolders_keyed(steam: &Path, libraries: &[(&str, &Path)]) {
+    let steamapps = steam.join("steamapps");
+    fs::create_dir_all(&steamapps).unwrap();
+    let mut body = String::from("\"libraryfolders\"\n{\n");
+    for (key, lib) in libraries {
+        body.push_str(&format!(
+            "\t\"{key}\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n",
+            vdf_escape(&lib.to_string_lossy())
+        ));
+    }
+    body.push_str("}\n");
+    fs::write(steamapps.join("libraryfolders.vdf"), body).unwrap();
+}
+
+fn write_manifest_raw(steamapps: &Path, file_app: u32, extra: &str) {
+    fs::create_dir_all(steamapps).unwrap();
+    let body = format!("\"AppState\"\n{{\n{extra}}}\n");
+    fs::write(steamapps.join(format!("appmanifest_{file_app}.acf")), body).unwrap();
+}
+
+#[test]
+fn installdir_must_be_plain_relative() {
+    assert!(!crate::discover::is_plain_relative_installdir(""));
+    assert!(!crate::discover::is_plain_relative_installdir(".."));
+    assert!(!crate::discover::is_plain_relative_installdir("../outside"));
+    assert!(!crate::discover::is_plain_relative_installdir("/tmp/abs"));
+    assert!(!crate::discover::is_plain_relative_installdir(r"C:\x"));
+    assert!(!crate::discover::is_plain_relative_installdir(r"\\?\C:\x"));
+    assert!(crate::discover::is_plain_relative_installdir("GameOne"));
+    assert!(crate::discover::is_plain_relative_installdir("Folder/Sub"));
+
+    let fx = empty_fixture();
+    write_libraryfolders(&fx.steam, &[&fx.steam]);
+    let sa = fx.steam.join("steamapps");
+    let cases: &[(u32, &str)] = &[
+        (1, "/absolute"),
+        (2, ".."),
+        (3, ""),
+        (4, r"C:\x"),
+        (5, r"\\?\C:\x"),
+    ];
+    for (app, dir) in cases {
+        write_manifest(&sa, *app, "Bad", dir, Some(1), true, true, true);
+    }
+    let found = discover(&fx.steam);
+    assert!(found.games.is_empty(), "games={:?}", found.games);
+    assert_eq!(
+        found
+            .warnings
+            .iter()
+            .filter(|w| w.kind == WarningKind::InvalidInstallDir)
+            .count(),
+        5
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn escaping_symlink_is_not_followed() {
+    let fx = two_libs_three_games();
+    let install = fx.steam.join("steamapps").join("common").join("GameOne");
+    let outside = fx.base.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    write_sodb_header(
+        &outside.join("leaked.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    std::os::unix::fs::symlink(&outside, install.join("escape")).unwrap();
+    let found = discover(&fx.steam);
+    let game = found
+        .games
+        .iter()
+        .find(|g| g.identity.app_id() == AppId(100))
+        .unwrap();
+    assert_eq!(game.sodb_files.len(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn internal_symlink_counts_target_once() {
+    let fx = two_libs_three_games();
+    let install = fx.steam.join("steamapps").join("common").join("GameOne");
+    let inner = install.join("real");
+    fs::create_dir_all(&inner).unwrap();
+    write_sodb_header(
+        &inner.join("one.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    std::os::unix::fs::symlink(&inner, install.join("alias")).unwrap();
+    let found = discover(&fx.steam);
+    let game = found
+        .games
+        .iter()
+        .find(|g| g.identity.app_id() == AppId(100))
+        .unwrap();
+    assert_eq!(game.sodb_files.len(), 1);
+}
+
+#[test]
+fn depth_limit_excludes_depth_five() {
+    let fx = two_libs_three_games();
+    let install = fx.steam.join("steamapps").join("common").join("GameOne");
+    let deep4 = install.join("a").join("b").join("c").join("d");
+    let deep5 = deep4.join("e");
+    write_sodb_header(
+        &deep4.join("at4.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    write_sodb_header(
+        &deep5.join("at5.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let found = discover(&fx.steam);
+    let game = found
+        .games
+        .iter()
+        .find(|g| g.identity.app_id() == AppId(100))
+        .unwrap();
+    assert_eq!(game.sodb_files.len(), 1);
+    assert!(game
+        .sodb_files
+        .iter()
+        .any(|p| p.as_path().ends_with("at4.sodb")));
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_to_self_counts_root_file_once() {
+    let fx = two_libs_three_games();
+    let install = fx.steam.join("steamapps").join("common").join("GameOne");
+    std::os::unix::fs::symlink(&install, install.join("self")).unwrap();
+    write_sodb_header(
+        &install.join("root.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let found = discover(&fx.steam);
+    let game = found
+        .games
+        .iter()
+        .find(|g| g.identity.app_id() == AppId(100))
+        .unwrap();
+    assert_eq!(game.sodb_files.len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn followed_symlink_folder_still_respects_depth() {
+    let fx = two_libs_three_games();
+    let install = fx.steam.join("steamapps").join("common").join("GameOne");
+    let real = install.join("real").join("sub");
+    fs::create_dir_all(&real).unwrap();
+    write_sodb_header(
+        &real.join("hidden.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    std::os::unix::fs::symlink(install.join("real"), install.join("link")).unwrap();
+    let found = discover_with_scan(
+        &fx.steam,
+        ScanLimits {
+            max_depth: 1,
+            ..ScanLimits::default()
+        },
+    );
+    let game = found
+        .games
+        .iter()
+        .find(|g| g.identity.app_id() == AppId(100))
+        .unwrap();
+    assert!(
+        game.sodb_files.is_empty(),
+        "depth-1 walk must not enter real/sub via link"
+    );
+}
+
+#[test]
+fn entry_count_bound_stops_walk() {
+    let fx = two_libs_three_games();
+    let install = fx.steam.join("steamapps").join("common").join("GameOne");
+    for i in 0..80 {
+        fs::create_dir_all(install.join(format!("dir-{i}"))).unwrap();
+    }
+    let found = discover_with_scan(
+        &fx.steam,
+        ScanLimits {
+            max_entries: 50,
+            ..ScanLimits::default()
+        },
+    );
+    assert!(found
+        .warnings
+        .iter()
+        .any(|w| w.kind == WarningKind::SodbScanLimited));
+}
+
+#[test]
+fn deadline_bound_stops_walk() {
+    let fx = two_libs_three_games();
+    let install = fx.steam.join("steamapps").join("common").join("GameOne");
+    for i in 0..20 {
+        fs::create_dir_all(install.join(format!("d-{i}"))).unwrap();
+    }
+    let found = discover_with_scan(
+        &fx.steam,
+        ScanLimits {
+            max_duration: Duration::ZERO,
+            ..ScanLimits::default()
+        },
+    );
+    assert!(found
+        .warnings
+        .iter()
+        .any(|w| w.kind == WarningKind::SodbScanLimited));
+}
+
+#[test]
+fn duplicate_app_keeps_higher_build_then_earlier_library() {
+    fn build_dup(first_key: &str, second_key: &str, build_a: u64, build_b: u64) -> Vec<u64> {
+        let fx = empty_fixture();
+        let lib_a = fx.base.join("libA");
+        let lib_b = fx.base.join("libB");
+        fs::create_dir_all(&lib_a).unwrap();
+        fs::create_dir_all(&lib_b).unwrap();
+        write_libraryfolders_keyed(&fx.steam, &[(first_key, &lib_a), (second_key, &lib_b)]);
+        let sa_a = lib_a.join("steamapps");
+        let sa_b = lib_b.join("steamapps");
+        write_manifest(&sa_a, 42, "Dup", "DupA", Some(build_a), true, true, true);
+        write_manifest(&sa_b, 42, "Dup", "DupB", Some(build_b), true, true, true);
+        fs::create_dir_all(sa_a.join("common").join("DupA")).unwrap();
+        fs::create_dir_all(sa_b.join("common").join("DupB")).unwrap();
+        let found = discover(&fx.steam);
+        assert!(found
+            .warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::DuplicateApp && w.app_id == Some(AppId(42))));
+        assert_eq!(found.games.len(), 1);
+        vec![found.games[0].identity.build_id().0]
+    }
+
+    let higher_in_ten = build_dup("2", "10", 5, 9);
+    let higher_in_two = build_dup("10", "2", 9, 5);
+    assert_eq!(higher_in_ten, vec![9]);
+    assert_eq!(higher_in_two, vec![9]);
+
+    let same_created_2_first = build_dup("2", "10", 5, 5);
+    let same_created_10_first = build_dup("10", "2", 5, 5);
+    assert_eq!(same_created_2_first, same_created_10_first);
+    assert_eq!(same_created_2_first, vec![5]);
+}
+
+#[test]
+fn invalid_appid_and_filename_mismatch() {
+    let fx = empty_fixture();
+    write_libraryfolders(&fx.steam, &[&fx.steam]);
+    let sa = fx.steam.join("steamapps");
+    write_manifest_raw(
+        &sa,
+        8,
+        "\t\"appid\"\t\t\"-1\"\n\t\"name\"\t\t\"Neg\"\n\t\"installdir\"\t\t\"Neg\"\n\t\"buildid\"\t\t\"1\"\n",
+    );
+    write_manifest_raw(
+        &sa,
+        9,
+        "\t\"appid\"\t\t\"99999999999\"\n\t\"name\"\t\t\"Big\"\n\t\"installdir\"\t\t\"Big\"\n\t\"buildid\"\t\t\"1\"\n",
+    );
+    write_manifest_raw(
+        &sa,
+        10,
+        "\t\"appid\"\t\t\"20\"\n\t\"name\"\t\t\"Mismatch\"\n\t\"installdir\"\t\t\"Mis\"\n\t\"buildid\"\t\t\"1\"\n",
+    );
+    fs::create_dir_all(sa.join("common").join("Mis")).unwrap();
+    let found = discover(&fx.steam);
+    assert!(found
+        .warnings
+        .iter()
+        .any(|w| w.message == "appid is not a valid u32"));
+    assert_eq!(found.games.len(), 1);
+    assert_eq!(found.games[0].identity.app_id(), AppId(20));
+    assert!(
+        found
+            .warnings
+            .iter()
+            .any(|w| w.message
+                == "manifest appid differs from the filename; using the manifest value")
+    );
+}
+
+#[test]
+fn game_name_strips_control_characters() {
+    let fx = empty_fixture();
+    write_libraryfolders(&fx.steam, &[&fx.steam]);
+    let sa = fx.steam.join("steamapps");
+    write_manifest_raw(
+        &sa,
+        11,
+        "\t\"appid\"\t\t\"11\"\n\t\"name\"\t\t\"Foo\u{0}Bar\nBaz\"\n\t\"installdir\"\t\t\"Ctrl\"\n\t\"buildid\"\t\t\"1\"\n",
+    );
+    fs::create_dir_all(sa.join("common").join("Ctrl")).unwrap();
+    let found = discover(&fx.steam);
+    assert_eq!(found.games[0].identity.name().as_str(), "FooBarBaz");
+}
+
+#[test]
+fn vdf_debug_redacts_string_values() {
+    let doc = parse_vdf("\"libraryfolders\" { \"0\" { \"path\" \"/secret/steam/lib\" } }").unwrap();
+    let rendered = format!("{doc:?}");
+    assert!(rendered.contains("String(<redacted>)"));
+    assert!(!rendered.contains("/secret/steam/lib"));
+}
+
+#[test]
+fn vdf_duplicate_key_keeps_last() {
+    let doc = parse_vdf("\"root\" { \"k\" \"first\" \"k\" \"second\" }").unwrap();
+    assert_eq!(doc.root.get("k").and_then(|v| v.as_str()), Some("second"));
+}
+
+#[test]
+fn warnings_are_sorted() {
+    let fx = empty_fixture();
+    write_libraryfolders(&fx.steam, &[&fx.steam]);
+    let sa = fx.steam.join("steamapps");
+    write_manifest(&sa, 3, "", "A", None, true, false, true);
+    write_manifest(&sa, 1, "", "B", None, true, false, true);
+    fs::create_dir_all(sa.join("common").join("A")).unwrap();
+    fs::create_dir_all(sa.join("common").join("B")).unwrap();
+    let found = discover(&fx.steam);
+    let keyed: Vec<_> = found
+        .warnings
+        .iter()
+        .filter(|w| w.app_id.is_some())
+        .map(|w| (w.app_id, w.kind, w.message.as_str()))
+        .collect();
+    let mut sorted = keyed.clone();
+    sorted.sort();
+    assert_eq!(keyed, sorted);
 }

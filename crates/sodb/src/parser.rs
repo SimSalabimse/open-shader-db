@@ -31,11 +31,7 @@ use crate::{
 #[must_use = "header probe result should be used"]
 pub fn probe(path: impl AsRef<Path>) -> Result<crate::SodbHeader, Error> {
     let path = path.as_ref();
-    let meta = std::fs::metadata(path)?;
-    if !meta.is_file() {
-        return Err(Error::NotARegularFile);
-    }
-    let mut file = File::open(path)?;
+    let mut file = open_read_file(path)?;
     let opened = file.metadata()?;
     if !opened.is_file() {
         return Err(Error::NotARegularFile);
@@ -198,12 +194,38 @@ fn opened_path_for_wal(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn inspect_path(path: &Path, max_file_bytes: u64) -> Result<FileHeader, Error> {
-    let meta = std::fs::metadata(path)?;
-    if !meta.is_file() {
-        return Err(Error::NotARegularFile);
+/// Open for read. On Unix uses `O_NONBLOCK` so a FIFO does not block. File
+/// type is taken from the opened handle, not a prior path `metadata` check.
+fn open_read_file(path: &Path) -> Result<File, Error> {
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(Error::NotARegularFile);
+        }
+        Ok(file)
     }
-    let file = File::open(path)?;
+    #[cfg(not(unix))]
+    {
+        let meta = std::fs::metadata(path)?;
+        if !meta.is_file() {
+            return Err(Error::NotARegularFile);
+        }
+        let file = File::open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(Error::NotARegularFile);
+        }
+        Ok(file)
+    }
+}
+
+fn inspect_path(path: &Path, max_file_bytes: u64) -> Result<FileHeader, Error> {
+    let file = open_read_file(path)?;
     let opened = file.metadata()?;
     if !opened.is_file() {
         return Err(Error::NotARegularFile);

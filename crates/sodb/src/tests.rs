@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant};
 
 /// RSS is process-wide; serialize tests that assert a peak-memory bound.
 static RSS_MEASURE_LOCK: Mutex<()> = Mutex::new(());
@@ -588,6 +588,19 @@ fn directory_is_not_a_regular_file() {
 }
 
 #[cfg(unix)]
+fn run_with_timeout<T: Send + 'static>(
+    timeout: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    rx.recv_timeout(timeout)
+        .unwrap_or_else(|_| panic!("FIFO guard timed out (open blocked)"))
+}
+
+#[cfg(unix)]
 #[test]
 fn fifo_is_not_a_regular_file() {
     let path = temp_path();
@@ -596,9 +609,20 @@ fn fifo_is_not_a_regular_file() {
         .status()
         .unwrap();
     assert!(status.success());
-    let err = open(&path).unwrap_err();
+    let path_open = path.clone();
+    let err = run_with_timeout(Duration::from_secs(2), move || {
+        open(&path_open).unwrap_err()
+    });
+    let path_probe = path.clone();
+    let probe_err = run_with_timeout(Duration::from_secs(2), move || {
+        probe(&path_probe).unwrap_err()
+    });
     let _ = std::fs::remove_file(&path);
     assert!(matches!(err, Error::NotARegularFile), "got {err:?}");
+    assert!(
+        matches!(probe_err, Error::NotARegularFile),
+        "got {probe_err:?}"
+    );
 }
 
 #[test]

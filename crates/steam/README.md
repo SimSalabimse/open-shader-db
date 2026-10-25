@@ -13,11 +13,18 @@ or reuse any third-party shader-cache project.
 `serde::Serialize` or `Display`. Its `Debug` output is a redacted
 placeholder. Upload-safe data lives on `GameIdentity` (`app_id`,
 `build_id`, `name`) and `UploadSafeDiscovery` (identities plus SODB
-**counts**). A unit test serializes every public `Serialize` type from
-a fixture whose directory name contains a fake username and asserts
-that neither the temp path nor that username appears.
+**counts**). Those structs use private fields and constructors.
+`VdfValue` `Debug` redacts string values (they can hold library paths).
+A unit test serializes every public `Serialize` type from a fixture
+whose directory name contains a fake username and asserts that neither
+the temp path nor that username appears.
 
 Game install paths must never appear in anything meant for upload.
+
+`installdir` from an app manifest must be a non-empty relative name
+made only of `Normal` path components. Absolute paths, `..`, empty
+names, and Windows drive / verbatim prefixes (`C:\x`, `\\?\C:\x`) are
+rejected on every OS; that game is skipped.
 
 ## API
 
@@ -34,16 +41,29 @@ let upload: UploadSafeDiscovery = found.upload_safe();
 or a partial app manifest. Those cases produce an empty or partial
 game list plus a typed `Warning` list.
 
+Libraries are ordered by numeric VDF key (`"2"` before `"10"`), then
+text. Manifest files are sorted by path before load. Duplicate app ids
+keep the higher build id, then the earlier library in that order, and
+emit `WarningKind::DuplicateApp`. Warnings are sorted by
+`(app_id, kind, message)`. When a manifest `appid` and the filename
+disagree, the manifest value is used.
+
 ## SODB detection
 
-Candidate files are `*.sodb` or other regular files whose SQLite
-header is SODB v2 (`user_version=2`, `application_id=0xD3D50DB`).
-Confirmation uses `sodb::is_sodb` (100-byte header only). This crate
-does not parse pipeline tables or retain bytecode.
+Candidate files are regular files whose SQLite header is SODB v2
+(`user_version=2`, `application_id=0xD3D50DB`). Confirmation uses
+`sodb::is_sodb` (100-byte header only). This crate does not parse
+pipeline tables or retain bytecode.
 
-The install-dir walk is bounded (default depth 4) and does not follow
-symlink loops. Non-regular files (directories, FIFOs, devices) are
-skipped without opening them.
+The install-dir walk is bounded by **depth** (default 4), **regular
+files considered** (default 10 000), **every directory entry**
+(default 50 000), and **wall-clock time** (default 2 s). Symlinks are
+followed only when `canonicalize` succeeds and the target stays under
+the canonical install dir. Loops (`self -> .`, `a -> b -> a`) are
+skipped after the first visit. A target reached by two paths is
+counted once. Non-regular files (FIFOs, devices) are not opened for
+reading: on Unix, file opens use `O_NONBLOCK` and check the opened
+handle.
 
 ## What is not verified
 
@@ -52,3 +72,7 @@ skipped without opening them.
   not exercised against a live Steam key)
 - Flatpak or macOS Application Support trees on this project's
   Ubuntu fixtures (paths are constructed; existence is not assumed)
+- Windows symlink behaviour (escape / loop / internal-link tests are
+  Unix-only)
+- Creating 100 000 real folders in CI (the entry-count test uses a
+  smaller configurable cap)

@@ -15,6 +15,9 @@ serde.workspace = true
 sodb = { path = "../sodb" }
 thiserror.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 # Registry lookup for HKCU/HKLM Steam install paths. Used only behind
 # cfg(windows) in default-root search; tests inject a temp Steam root.

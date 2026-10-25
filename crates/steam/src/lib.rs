@@ -23,7 +23,9 @@ mod vdf;
 pub use discover::{discover, discover_with_scan};
 pub use error::Error;
 pub use roots::{default_steam_roots, discover_default};
-pub use scan::{ScanLimits, DEFAULT_MAX_FILES, DEFAULT_SODB_DEPTH};
+pub use scan::{
+    ScanLimits, DEFAULT_MAX_DURATION, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_FILES, DEFAULT_SODB_DEPTH,
+};
 pub use types::{
     AppId, BuildId, Discovery, GameIdentity, GameListing, GameName, InstalledGame, LocalPath,
     UploadSafeDiscovery, Warning, WarningKind,
