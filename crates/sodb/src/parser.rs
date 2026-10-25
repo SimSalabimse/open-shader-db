@@ -194,8 +194,9 @@ fn opened_path_for_wal(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Open for read. On Unix uses `O_NONBLOCK` so a FIFO does not block. File
-/// type is taken from the opened handle, not a prior path `metadata` check.
+/// Open for read. On Unix uses `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY` so a
+/// FIFO or symlink does not block or redirect. File type is taken from the
+/// opened handle.
 fn open_read_file(path: &Path) -> Result<File, Error> {
     #[cfg(unix)]
     {
@@ -203,7 +204,7 @@ fn open_read_file(path: &Path) -> Result<File, Error> {
         use std::os::unix::fs::OpenOptionsExt;
         let file = OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NONBLOCK)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
             .open(path)?;
         if !file.metadata()?.is_file() {
             return Err(Error::NotARegularFile);

@@ -92,10 +92,10 @@ fn write_json(found: &Discovery) -> Result<(), Box<dyn std::error::Error>> {
 fn write_human(found: &Discovery, show_paths: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut err = std::io::stderr().lock();
     for warning in &found.warnings {
-        if let Some(app) = warning.app_id {
-            writeln!(err, "warning: {} (app {app})", warning.message)?;
+        if let Some(app) = warning.app_id() {
+            writeln!(err, "warning: {} (app {app})", warning.message())?;
         } else {
-            writeln!(err, "warning: {}", warning.message)?;
+            writeln!(err, "warning: {}", warning.message())?;
         }
     }
 
@@ -127,7 +127,7 @@ fn write_human(found: &Discovery, show_paths: bool) -> Result<(), Box<dyn std::e
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use osdb_steam::{AppId, BuildId, GameIdentity, GameName, InstalledGame, LocalPath, Warning};
+    use osdb_steam::{AppId, BuildId, GameIdentity, GameName, InstalledGame, LocalPath};
 
     fn sample_discovery(install: PathBuf) -> Discovery {
         Discovery {
@@ -136,11 +136,7 @@ mod tests {
                 install_dir: LocalPath::new(install.clone()),
                 sodb_files: vec![LocalPath::new(install.join("a.sodb"))],
             }],
-            warnings: vec![Warning {
-                kind: osdb_steam::WarningKind::MissingLibraryList,
-                app_id: None,
-                message: String::from("libraryfolders.vdf was missing or unreadable; using steamapps on the Steam root"),
-            }],
+            warnings: Vec::new(),
         }
     }
 

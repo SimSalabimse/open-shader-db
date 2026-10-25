@@ -15,7 +15,7 @@ pub const DEFAULT_SODB_DEPTH: u32 = 4;
 pub const DEFAULT_MAX_FILES: u32 = 10_000;
 /// Default cap on every directory entry (files, folders, links, other).
 pub const DEFAULT_MAX_ENTRIES: u32 = 50_000;
-/// Default wall-clock budget for one install-dir walk.
+/// Default wall-clock budget for one install-dir walk (per game).
 pub const DEFAULT_MAX_DURATION: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug)]
@@ -42,13 +42,20 @@ pub(crate) struct ScanOutcome {
     pub warnings: Vec<Warning>,
 }
 
+/// `true` when `canonicalize(path)` succeeds and is under `root`.
+pub(crate) fn is_under_root(path: &Path, root: &Path) -> bool {
+    match fs::canonicalize(path) {
+        Ok(canon) => canon.starts_with(root),
+        Err(_) => false,
+    }
+}
+
 /// Find SODB files under `install_dir`.
 ///
-/// Uses [`sodb::is_sodb`] (header only). Symlinks are followed only when
-/// `canonicalize` succeeds and the target is still under the canonical
-/// install dir. Symlink loops are detected via device/inode (Unix) or
-/// canonical paths (other OS). Every directory entry counts toward
-/// `max_entries`.
+/// Uses [`sodb::is_sodb`] (header only). Folder symlinks are followed only
+/// when `canonicalize` succeeds and the target is still under the canonical
+/// install dir. File symlinks are never followed. Every `read_dir` and file
+/// probe re-checks [`is_under_root`].
 pub(crate) fn find_sodb_files(install_dir: &Path, limits: ScanLimits) -> ScanOutcome {
     let mut files = Vec::new();
     let mut warnings = Vec::new();
@@ -62,11 +69,11 @@ pub(crate) fn find_sodb_files(install_dir: &Path, limits: ScanLimits) -> ScanOut
     let Ok(root) = fs::canonicalize(install_dir) else {
         return ScanOutcome {
             files: Vec::new(),
-            warnings: vec![Warning {
-                kind: WarningKind::UnreadableInstallDir,
-                app_id: None,
-                message: String::from("game install directory could not be canonicalized"),
-            }],
+            warnings: vec![Warning::new(
+                WarningKind::UnreadableInstallDir,
+                None,
+                "game install directory could not be canonicalized",
+            )],
         };
     };
 
@@ -79,19 +86,22 @@ pub(crate) fn find_sodb_files(install_dir: &Path, limits: ScanLimits) -> ScanOut
             stack.clear();
             break;
         }
+        if !is_under_root(&dir, &root) {
+            continue;
+        }
 
         let read = match fs::read_dir(&dir) {
             Ok(rd) => rd,
             Err(_) => {
-                warnings.push(Warning {
-                    kind: WarningKind::UnreadableInstallDir,
-                    app_id: None,
-                    message: if depth == 0 {
-                        String::from("game install directory could not be read")
+                warnings.push(Warning::new(
+                    WarningKind::UnreadableInstallDir,
+                    None,
+                    if depth == 0 {
+                        "game install directory could not be read"
                     } else {
-                        String::from("a subdirectory could not be read")
+                        "a subdirectory could not be read"
                     },
-                });
+                ));
                 continue;
             }
         };
@@ -121,62 +131,51 @@ pub(crate) fn find_sodb_files(install_dir: &Path, limits: ScanLimits) -> ScanOut
                 let Some(canon) = canonicalize_inside(&root, &path) else {
                     continue;
                 };
-                let Ok(meta) = fs::metadata(&canon) else {
+                if !is_under_root(&canon, &root) {
+                    continue;
+                }
+                let Ok(meta) = fs::symlink_metadata(&canon) else {
                     continue;
                 };
+                if !meta.is_dir() {
+                    continue;
+                }
                 if !mark_meta(&meta, &canon, &mut visited) {
                     continue;
                 }
-                if meta.is_dir() {
-                    if depth < limits.max_depth {
-                        stack.push((canon, depth.saturating_add(1)));
-                    }
-                } else if meta.is_file()
-                    && consider_file(
-                        &canon,
-                        &meta,
-                        &mut considered,
-                        &mut seen_files,
-                        limits,
-                        &mut files,
-                        &mut limited,
-                    )
-                {
-                    stack.clear();
-                    break 'walk;
+                if depth < limits.max_depth {
+                    stack.push((canon, depth.saturating_add(1)));
                 }
             } else if ft.is_dir() {
-                if depth < limits.max_depth && mark_visited(&path, &mut visited) {
+                if depth < limits.max_depth
+                    && is_under_root(&path, &root)
+                    && mark_visited(&path, &mut visited)
+                {
                     stack.push((path, depth.saturating_add(1)));
                 }
-            } else if ft.is_file() {
-                let Ok(meta) = fs::metadata(&path) else {
-                    continue;
-                };
-                if consider_file(
+            } else if ft.is_file()
+                && consider_file(
                     &path,
-                    &meta,
+                    &root,
                     &mut considered,
                     &mut seen_files,
                     limits,
                     &mut files,
                     &mut limited,
-                ) {
-                    stack.clear();
-                    break 'walk;
-                }
+                )
+            {
+                stack.clear();
+                break 'walk;
             }
         }
     }
 
     if limited {
-        warnings.push(Warning {
-            kind: WarningKind::SodbScanLimited,
-            app_id: None,
-            message: String::from(
-                "stopped SODB scan after reaching a walk bound (files, entries, or time)",
-            ),
-        });
+        warnings.push(Warning::new(
+            WarningKind::SodbScanLimited,
+            None,
+            "stopped SODB scan after reaching a walk bound (files, entries, or time)",
+        ));
     }
 
     files.sort_by(|a, b| a.as_path().cmp(b.as_path()));
@@ -186,23 +185,27 @@ pub(crate) fn find_sodb_files(install_dir: &Path, limits: ScanLimits) -> ScanOut
 /// Returns `true` when a file-count bound stopped the walk.
 fn consider_file(
     path: &Path,
-    meta: &Metadata,
+    root: &Path,
     considered: &mut u32,
     seen_files: &mut HashSet<FileId>,
     limits: ScanLimits,
     files: &mut Vec<LocalPath>,
     limited: &mut bool,
 ) -> bool {
+    if !is_under_root(path, root) {
+        return false;
+    }
     if *considered >= limits.max_files {
         *limited = true;
         return true;
     }
     *considered = considered.saturating_add(1);
-    if !seen_files.insert(file_id(meta, path)) {
+    let Ok(meta) = open_file_meta(path) else {
+        return false;
+    };
+    if !seen_files.insert(file_id(&meta, path)) {
         return false;
     }
-    // Header-only SODB check. Unix `probe` opens with O_NONBLOCK so a FIFO
-    // swap cannot hang; this walk already skipped non-regular lstat types.
     if sodb::is_sodb(path) {
         files.push(LocalPath::new(path.to_path_buf()));
     }
@@ -219,7 +222,7 @@ fn canonicalize_inside(root: &Path, path: &Path) -> Option<PathBuf> {
 }
 
 fn mark_visited(path: &Path, visited: &mut HashSet<FileId>) -> bool {
-    match fs::metadata(path) {
+    match fs::symlink_metadata(path) {
         Ok(meta) => mark_meta(&meta, path, visited),
         Err(_) => false,
     }
@@ -227,6 +230,40 @@ fn mark_visited(path: &Path, visited: &mut HashSet<FileId>) -> bool {
 
 fn mark_meta(meta: &Metadata, path: &Path, visited: &mut HashSet<FileId>) -> bool {
     visited.insert(file_id(meta, path))
+}
+
+/// Open a candidate file without following a symlink (Unix).
+fn open_file_meta(path: &Path) -> std::io::Result<Metadata> {
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
+            .open(path)?;
+        let meta = file.metadata()?;
+        if meta.is_file() {
+            Ok(meta)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ))
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let meta = fs::symlink_metadata(path)?;
+        if meta.is_file() {
+            Ok(meta)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ))
+        }
+    }
 }
 
 #[cfg(unix)]

@@ -229,7 +229,7 @@ fn missing_steam_root_is_empty_not_a_crash() {
     assert!(found
         .warnings
         .iter()
-        .any(|w| w.kind == WarningKind::MissingSteamRoot));
+        .any(|w| w.kind() == WarningKind::MissingSteamRoot));
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn malformed_vdf_is_a_warning() {
     assert!(found
         .warnings
         .iter()
-        .any(|w| w.kind == WarningKind::MalformedVdf));
+        .any(|w| w.kind() == WarningKind::MalformedVdf));
     assert_eq!(found.games.len(), 1);
 }
 
@@ -323,7 +323,7 @@ fn missing_manifest_fields() {
     assert!(found
         .warnings
         .iter()
-        .any(|w| w.kind == WarningKind::IncompleteManifest && w.app_id == Some(AppId(4))));
+        .any(|w| w.kind() == WarningKind::IncompleteManifest && w.app_id() == Some(AppId(4))));
 }
 
 #[cfg(unix)]
@@ -413,11 +413,11 @@ fn serialized_payload_never_contains_paths() {
     blobs.push(serde_json::to_string(&BuildId(8)).unwrap());
     blobs.push(serde_json::to_string(&GameName::new("N")).unwrap());
     blobs.push(
-        serde_json::to_string(&Warning {
-            kind: WarningKind::MissingSteamRoot,
-            app_id: Some(AppId(1)),
-            message: String::from("Steam root does not exist or is not a directory"),
-        })
+        serde_json::to_string(&Warning::new(
+            WarningKind::MissingSteamRoot,
+            Some(AppId(1)),
+            "Steam root does not exist or is not a directory",
+        ))
         .unwrap(),
     );
     blobs.push(serde_json::to_string(&UploadSafeDiscovery::new(Vec::new(), Vec::new())).unwrap());
@@ -472,7 +472,7 @@ fn scan_file_count_bound_emits_warning() {
     assert!(found
         .warnings
         .iter()
-        .any(|w| w.kind == WarningKind::SodbScanLimited));
+        .any(|w| w.kind() == WarningKind::SodbScanLimited));
 }
 
 fn write_libraryfolders_keyed(steam: &Path, libraries: &[(&str, &Path)]) {
@@ -525,7 +525,7 @@ fn installdir_must_be_plain_relative() {
         found
             .warnings
             .iter()
-            .filter(|w| w.kind == WarningKind::InvalidInstallDir)
+            .filter(|w| w.kind() == WarningKind::InvalidInstallDir)
             .count(),
         5
     );
@@ -629,14 +629,15 @@ fn symlink_to_self_counts_root_file_once() {
 fn followed_symlink_folder_still_respects_depth() {
     let fx = two_libs_three_games();
     let install = fx.steam.join("steamapps").join("common").join("GameOne");
-    let real = install.join("real").join("sub");
-    fs::create_dir_all(&real).unwrap();
+    let level1 = install.join("level1");
+    let target = level1.join("hidden_target");
+    fs::create_dir_all(&target).unwrap();
     write_sodb_header(
-        &real.join("hidden.sodb"),
+        &target.join("hidden.sodb"),
         SODB_USER_VERSION,
         SODB_APPLICATION_ID,
     );
-    std::os::unix::fs::symlink(install.join("real"), install.join("link")).unwrap();
+    std::os::unix::fs::symlink(&target, level1.join("link")).unwrap();
     let found = discover_with_scan(
         &fx.steam,
         ScanLimits {
@@ -651,7 +652,7 @@ fn followed_symlink_folder_still_respects_depth() {
         .unwrap();
     assert!(
         game.sodb_files.is_empty(),
-        "depth-1 walk must not enter real/sub via link"
+        "link at depth == max_depth must not be followed"
     );
 }
 
@@ -672,7 +673,7 @@ fn entry_count_bound_stops_walk() {
     assert!(found
         .warnings
         .iter()
-        .any(|w| w.kind == WarningKind::SodbScanLimited));
+        .any(|w| w.kind() == WarningKind::SodbScanLimited));
 }
 
 #[test]
@@ -692,7 +693,7 @@ fn deadline_bound_stops_walk() {
     assert!(found
         .warnings
         .iter()
-        .any(|w| w.kind == WarningKind::SodbScanLimited));
+        .any(|w| w.kind() == WarningKind::SodbScanLimited));
 }
 
 #[test]
@@ -714,7 +715,7 @@ fn duplicate_app_keeps_higher_build_then_earlier_library() {
         assert!(found
             .warnings
             .iter()
-            .any(|w| w.kind == WarningKind::DuplicateApp && w.app_id == Some(AppId(42))));
+            .any(|w| w.kind() == WarningKind::DuplicateApp && w.app_id() == Some(AppId(42))));
         assert_eq!(found.games.len(), 1);
         vec![found.games[0].identity.build_id().0]
     }
@@ -755,16 +756,12 @@ fn invalid_appid_and_filename_mismatch() {
     assert!(found
         .warnings
         .iter()
-        .any(|w| w.message == "appid is not a valid u32"));
+        .any(|w| w.message() == "appid is not a valid u32"));
     assert_eq!(found.games.len(), 1);
     assert_eq!(found.games[0].identity.app_id(), AppId(20));
-    assert!(
-        found
-            .warnings
-            .iter()
-            .any(|w| w.message
-                == "manifest appid differs from the filename; using the manifest value")
-    );
+    assert!(found.warnings.iter().any(
+        |w| w.message() == "manifest appid differs from the filename; using the manifest value"
+    ));
 }
 
 #[test]
@@ -780,6 +777,12 @@ fn game_name_strips_control_characters() {
     fs::create_dir_all(sa.join("common").join("Ctrl")).unwrap();
     let found = discover(&fx.steam);
     assert_eq!(found.games[0].identity.name().as_str(), "FooBarBaz");
+}
+
+#[test]
+fn game_name_strips_unicode_format_characters() {
+    let name = GameName::new("A\u{202E}B\u{200B}C\u{2066}D\u{FEFF}E");
+    assert_eq!(name.as_str(), "ABCDE");
 }
 
 #[test]
@@ -809,10 +812,142 @@ fn warnings_are_sorted() {
     let keyed: Vec<_> = found
         .warnings
         .iter()
-        .filter(|w| w.app_id.is_some())
-        .map(|w| (w.app_id, w.kind, w.message.as_str()))
+        .filter(|w| w.app_id().is_some())
+        .map(|w| (w.app_id(), w.kind(), w.message()))
         .collect();
     let mut sorted = keyed.clone();
     sorted.sort();
     assert_eq!(keyed, sorted);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_install_dir_is_rejected() {
+    let fx = two_libs_three_games();
+    let common = fx.steam.join("steamapps").join("common");
+    let outside = fx.base.join("outside-lib");
+    fs::create_dir_all(&outside).unwrap();
+    write_sodb_header(
+        &outside.join("leaked.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let sibling = common.join("OtherGame");
+    fs::create_dir_all(&sibling).unwrap();
+    write_sodb_header(
+        &sibling.join("sib.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    std::os::unix::fs::symlink(&outside, common.join("LinkOut")).unwrap();
+    std::os::unix::fs::symlink(&sibling, common.join("LinkSib")).unwrap();
+    let sa = fx.steam.join("steamapps");
+    write_manifest(&sa, 300, "Out", "LinkOut", Some(1), true, true, true);
+    write_manifest(&sa, 301, "Sib", "LinkSib", Some(1), true, true, true);
+    let found = discover(&fx.steam);
+    assert!(!found
+        .games
+        .iter()
+        .any(|g| g.identity.app_id() == AppId(300)));
+    assert!(!found
+        .games
+        .iter()
+        .any(|g| g.identity.app_id() == AppId(301)));
+    assert_eq!(
+        found
+            .warnings
+            .iter()
+            .filter(|w| w.message() == "install dir resolves outside the library; game skipped")
+            .count(),
+        2
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_loop_detected_without_hitting_entry_cap() {
+    let fx = two_libs_three_games();
+    let install = fx.steam.join("steamapps").join("common").join("GameOne");
+    let loop_b = install.join("loop_b");
+    fs::create_dir_all(&loop_b).unwrap();
+    std::os::unix::fs::symlink(&loop_b, install.join("loop_a")).unwrap();
+    std::os::unix::fs::symlink(install.join("loop_a"), loop_b.join("back")).unwrap();
+    write_sodb_header(
+        &install.join("ok.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let found = discover_with_scan(
+        &fx.steam,
+        ScanLimits {
+            max_depth: 32,
+            max_entries: 20,
+            ..ScanLimits::default()
+        },
+    );
+    assert!(
+        found
+            .warnings
+            .iter()
+            .all(|w| w.kind() != WarningKind::SodbScanLimited),
+        "loop must be detected, not stopped by the entry cap"
+    );
+    let game = found
+        .games
+        .iter()
+        .find(|g| g.identity.app_id() == AppId(100))
+        .unwrap();
+    assert_eq!(game.sodb_files.len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn walk_swap_race_never_counts_outside_file() {
+    use std::sync::atomic::{AtomicBool, Ordering as AtomOrdering};
+    use std::sync::Arc;
+
+    let fx = two_libs_three_games();
+    let install = fx.steam.join("steamapps").join("common").join("GameOne");
+    let slot = install.join("slot");
+    fs::create_dir_all(&slot).unwrap();
+    let outside = fx.base.join("race-outside");
+    fs::create_dir_all(&outside).unwrap();
+    write_sodb_header(
+        &outside.join("leaked.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_t = Arc::clone(&stop);
+    let slot_t = slot.clone();
+    let outside_t = outside.clone();
+    let handle = std::thread::spawn(move || {
+        while !stop_t.load(AtomOrdering::Relaxed) {
+            let _ = fs::remove_dir_all(&slot_t);
+            let _ = fs::remove_file(&slot_t);
+            let _ = std::os::unix::fs::symlink(&outside_t, &slot_t);
+            let _ = fs::remove_file(&slot_t);
+            let _ = fs::create_dir_all(&slot_t);
+        }
+    });
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(300) {
+        let out = crate::scan::find_sodb_files(
+            &install,
+            ScanLimits {
+                max_duration: Duration::from_millis(50),
+                ..ScanLimits::default()
+            },
+        );
+        assert!(
+            out.files
+                .iter()
+                .all(|p| !p.as_path().ends_with("leaked.sodb")),
+            "outside SODB leaked through a swapped symlink"
+        );
+    }
+    stop.store(true, AtomOrdering::Relaxed);
+    let _ = handle.join();
 }

@@ -148,7 +148,7 @@ fn open_read_file(path: &Path) -> Result<File, Error> {
         use std::os::unix::fs::OpenOptionsExt;
         let file = OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NONBLOCK)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
             .open(path)?;
         if !file.metadata()?.is_file() {
             return Err(Error::NotARegularFile);

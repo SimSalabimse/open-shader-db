@@ -55,11 +55,11 @@ pub fn discover_default() -> crate::Discovery {
     }
     crate::Discovery {
         games: Vec::new(),
-        warnings: vec![crate::Warning {
-            kind: crate::WarningKind::MissingSteamRoot,
-            app_id: None,
-            message: String::from("no Steam install directory was found"),
-        }],
+        warnings: vec![crate::Warning::new(
+            crate::WarningKind::MissingSteamRoot,
+            None,
+            "no Steam install directory was found",
+        )],
     }
 }
 

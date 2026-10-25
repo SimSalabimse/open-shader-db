@@ -42,22 +42,35 @@ impl fmt::Display for BuildId {
     }
 }
 
-/// Display name from the app manifest. Upload-safe. Control characters are stripped.
+/// Display name from the app manifest. Upload-safe.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 #[serde(transparent)]
 pub struct GameName(String);
 
 impl GameName {
-    /// Build a name with ASCII/Unicode control characters (including NUL) removed.
+    /// Strip control and Unicode format characters (bidi overrides, zero-width, BOM).
     #[must_use]
     pub fn new(raw: impl Into<String>) -> Self {
-        Self(raw.into().chars().filter(|c| !c.is_control()).collect())
+        Self(raw.into().chars().filter(|c| keep_name_char(*c)).collect())
     }
 
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn keep_name_char(c: char) -> bool {
+    if c.is_control() {
+        return false;
+    }
+    !matches!(
+        c,
+        '\u{200B}'..='\u{200D}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 /// Local filesystem path that must never appear in an upload payload.
@@ -129,12 +142,45 @@ pub struct InstalledGame {
 }
 
 /// Non-fatal discovery problem. Messages must not include filesystem paths.
+///
+/// Constructed only inside this crate from `'static` text so a caller cannot
+/// inject a filesystem path.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct Warning {
-    pub kind: WarningKind,
+    kind: WarningKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_id: Option<AppId>,
-    pub message: String,
+    app_id: Option<AppId>,
+    message: String,
+}
+
+impl Warning {
+    pub(crate) fn new(kind: WarningKind, app_id: Option<AppId>, message: &'static str) -> Self {
+        Self {
+            kind,
+            app_id,
+            message: String::from(message),
+        }
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> WarningKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub fn app_id(&self) -> Option<AppId> {
+        self.app_id
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) fn with_app_id(mut self, app_id: AppId) -> Self {
+        self.app_id = Some(app_id);
+        self
+    }
 }
 
 /// Class of a non-fatal discovery problem.
@@ -180,7 +226,7 @@ pub struct GameListing {
 
 impl GameListing {
     #[must_use]
-    pub fn new(identity: GameIdentity, sodb_file_count: usize) -> Self {
+    pub(crate) fn new(identity: GameIdentity, sodb_file_count: usize) -> Self {
         Self {
             identity,
             sodb_file_count,
@@ -213,7 +259,7 @@ pub struct UploadSafeDiscovery {
 
 impl UploadSafeDiscovery {
     #[must_use]
-    pub fn new(games: Vec<GameListing>, warnings: Vec<Warning>) -> Self {
+    pub(crate) fn new(games: Vec<GameListing>, warnings: Vec<Warning>) -> Self {
         Self { games, warnings }
     }
 

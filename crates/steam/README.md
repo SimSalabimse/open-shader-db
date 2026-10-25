@@ -13,18 +13,22 @@ or reuse any third-party shader-cache project.
 `serde::Serialize` or `Display`. Its `Debug` output is a redacted
 placeholder. Upload-safe data lives on `GameIdentity` (`app_id`,
 `build_id`, `name`) and `UploadSafeDiscovery` (identities plus SODB
-**counts**). Those structs use private fields and constructors.
-`VdfValue` `Debug` redacts string values (they can hold library paths).
-A unit test serializes every public `Serialize` type from a fixture
-whose directory name contains a fake username and asserts that neither
-the temp path nor that username appears.
+**counts**). Those structs use private fields. Warnings are built only
+inside this crate from `'static` messages. `VdfValue` `Debug` redacts
+string values (they can hold library paths). A unit test serializes
+every public `Serialize` type from a fixture whose directory name
+contains a fake username and asserts that neither the temp path nor
+that username appears.
 
 Game install paths must never appear in anything meant for upload.
 
 `installdir` from an app manifest must be a non-empty relative name
 made only of `Normal` path components. Absolute paths, `..`, empty
 names, and Windows drive / verbatim prefixes (`C:\x`, `\\?\C:\x`) are
-rejected on every OS; that game is skipped.
+rejected on every OS. **Symlinked install directories are not
+allowed** (a link under `steamapps/common` to a folder outside the
+library, or to another game, is skipped). The canonical install dir
+must stay under the canonical `steamapps/common` directory.
 
 ## API
 
@@ -57,13 +61,16 @@ pipeline tables or retain bytecode.
 
 The install-dir walk is bounded by **depth** (default 4), **regular
 files considered** (default 10 000), **every directory entry**
-(default 50 000), and **wall-clock time** (default 2 s). Symlinks are
+(default 50 000), and **wall-clock time per game** (default 2 s; not
+per whole `discover` run). Folder symlinks inside an install dir are
 followed only when `canonicalize` succeeds and the target stays under
-the canonical install dir. Loops (`self -> .`, `a -> b -> a`) are
-skipped after the first visit. A target reached by two paths is
-counted once. Non-regular files (FIFOs, devices) are not opened for
-reading: on Unix, file opens use `O_NONBLOCK` and check the opened
-handle.
+the canonical install dir. File symlinks are never followed. Loops
+(`self -> .`, `a -> b -> a`) are skipped after the first visit. A
+target reached by two paths is counted once.
+
+On Unix, candidate files are opened with `O_NOFOLLOW | O_NONBLOCK |
+O_NOCTTY`. The opened handle's metadata must report a regular file;
+FIFOs and devices are opened non-blocking, then rejected.
 
 ## What is not verified
 
@@ -72,7 +79,7 @@ handle.
   not exercised against a live Steam key)
 - Flatpak or macOS Application Support trees on this project's
   Ubuntu fixtures (paths are constructed; existence is not assumed)
-- Windows symlink behaviour (escape / loop / internal-link tests are
-  Unix-only)
+- Windows symlink behaviour (escape / loop / internal-link / race
+  tests are Unix-only)
 - Creating 100 000 real folders in CI (the entry-count test uses a
   smaller configurable cap)

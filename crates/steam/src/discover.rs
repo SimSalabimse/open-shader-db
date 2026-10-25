@@ -34,11 +34,11 @@ pub fn discover_with_scan(steam_root: &Path, scan: ScanLimits) -> Discovery {
     let mut warnings = Vec::new();
 
     if !steam_root.is_dir() {
-        warnings.push(Warning {
-            kind: WarningKind::MissingSteamRoot,
-            app_id: None,
-            message: String::from("Steam root does not exist or is not a directory"),
-        });
+        warnings.push(Warning::new(
+            WarningKind::MissingSteamRoot,
+            None,
+            "Steam root does not exist or is not a directory",
+        ));
         sort_warnings(&mut warnings);
         return Discovery {
             games: Vec::new(),
@@ -52,22 +52,22 @@ pub fn discover_with_scan(steam_root: &Path, scan: ScanLimits) -> Discovery {
     for (library_index, library) in libraries.iter().enumerate() {
         let steamapps = library.join("steamapps");
         if !steamapps.is_dir() {
-            warnings.push(Warning {
-                kind: WarningKind::UnreadableLibrary,
-                app_id: None,
-                message: String::from("a library folder has no readable steamapps directory"),
-            });
+            warnings.push(Warning::new(
+                WarningKind::UnreadableLibrary,
+                None,
+                "a library folder has no readable steamapps directory",
+            ));
             continue;
         }
 
         let mut manifests = match list_manifests(&steamapps) {
             Ok(paths) => paths,
             Err(()) => {
-                warnings.push(Warning {
-                    kind: WarningKind::UnreadableLibrary,
-                    app_id: None,
-                    message: String::from("a steamapps directory could not be read"),
-                });
+                warnings.push(Warning::new(
+                    WarningKind::UnreadableLibrary,
+                    None,
+                    "a steamapps directory could not be read",
+                ));
                 continue;
             }
         };
@@ -118,13 +118,11 @@ fn record_game(
         let old_build = existing.installed.identity.build_id();
         let replace = new_build > old_build
             || (new_build == old_build && library_index < existing.library_index);
-        warnings.push(Warning {
-            kind: WarningKind::DuplicateApp,
-            app_id: Some(app_id),
-            message: String::from(
-                "duplicate app id; kept the higher build id, then the earlier library",
-            ),
-        });
+        warnings.push(Warning::new(
+            WarningKind::DuplicateApp,
+            Some(app_id),
+            "duplicate app id; kept the higher build id, then the earlier library",
+        ));
         if replace {
             chosen.insert(
                 app_id,
@@ -150,11 +148,8 @@ fn record_game(
 fn game_scan_warnings(game: &LoadedGame) -> Vec<Warning> {
     game.extra_warnings
         .iter()
-        .map(|w| Warning {
-            kind: w.kind,
-            app_id: Some(game.installed.identity.app_id()),
-            message: w.message.clone(),
-        })
+        .cloned()
+        .map(|w| w.with_app_id(game.installed.identity.app_id()))
         .collect()
 }
 
@@ -197,13 +192,11 @@ fn collect_libraries(steam_root: &Path, warnings: &mut Vec<Warning>) -> Vec<Path
     }
 
     if !parsed_any {
-        warnings.push(Warning {
-            kind: WarningKind::MissingLibraryList,
-            app_id: None,
-            message: String::from(
-                "libraryfolders.vdf was missing or unreadable; using steamapps on the Steam root",
-            ),
-        });
+        warnings.push(Warning::new(
+            WarningKind::MissingLibraryList,
+            None,
+            "libraryfolders.vdf was missing or unreadable; using steamapps on the Steam root",
+        ));
     }
 
     keyed.sort_by_key(|a| library_sort_key(&a.0));
@@ -225,11 +218,11 @@ fn libraries_from_vdf(
     warnings: &mut Vec<Warning>,
 ) -> Vec<(String, PathBuf)> {
     let Some(table) = doc.root.as_table() else {
-        warnings.push(Warning {
-            kind: WarningKind::MalformedVdf,
-            app_id: None,
-            message: String::from("libraryfolders.vdf root is not a table"),
-        });
+        warnings.push(Warning::new(
+            WarningKind::MalformedVdf,
+            None,
+            "libraryfolders.vdf root is not a table",
+        ));
         return Vec::new();
     };
 
@@ -244,18 +237,18 @@ fn libraries_from_vdf(
                 if path.is_dir() {
                     out.push((key.clone(), path));
                 } else {
-                    warnings.push(Warning {
-                        kind: WarningKind::UnreadableLibrary,
-                        app_id: None,
-                        message: String::from("a library path listed in VDF is not a directory"),
-                    });
+                    warnings.push(Warning::new(
+                        WarningKind::UnreadableLibrary,
+                        None,
+                        "a library path listed in VDF is not a directory",
+                    ));
                 }
             }
-            None => warnings.push(Warning {
-                kind: WarningKind::MalformedVdf,
-                app_id: None,
-                message: String::from("a library entry is missing a path"),
-            }),
+            None => warnings.push(Warning::new(
+                WarningKind::MalformedVdf,
+                None,
+                "a library entry is missing a path",
+            )),
         }
     }
     out
@@ -322,54 +315,52 @@ fn load_game(
         Some(s) => match s.parse::<u32>() {
             Ok(n) => Some(n),
             Err(_) => {
-                extra_warnings.push(Warning {
-                    kind: WarningKind::IncompleteManifest,
-                    app_id: None,
-                    message: String::from("appid is not a valid u32"),
-                });
+                extra_warnings.push(Warning::new(
+                    WarningKind::IncompleteManifest,
+                    None,
+                    "appid is not a valid u32",
+                ));
                 return Ok(LoadOutcome::Skipped(extra_warnings));
             }
         },
     };
 
     let Some(raw_app) = parsed_app.or(filename_app) else {
-        extra_warnings.push(Warning {
-            kind: WarningKind::IncompleteManifest,
-            app_id: None,
-            message: String::from("appmanifest is missing appid"),
-        });
+        extra_warnings.push(Warning::new(
+            WarningKind::IncompleteManifest,
+            None,
+            "appmanifest is missing appid",
+        ));
         return Ok(LoadOutcome::Skipped(extra_warnings));
     };
     let app_id = AppId(raw_app);
 
     if parsed_app.is_none() && filename_app.is_some() {
-        extra_warnings.push(Warning {
-            kind: WarningKind::IncompleteManifest,
-            app_id: Some(app_id),
-            message: String::from("appmanifest is missing appid; used the filename"),
-        });
+        extra_warnings.push(Warning::new(
+            WarningKind::IncompleteManifest,
+            Some(app_id),
+            "appmanifest is missing appid; used the filename",
+        ));
     }
 
     if let (Some(from_file), Some(from_name)) = (parsed_app, filename_app) {
         if from_file != from_name {
-            extra_warnings.push(Warning {
-                kind: WarningKind::IncompleteManifest,
-                app_id: Some(app_id),
-                message: String::from(
-                    "manifest appid differs from the filename; using the manifest value",
-                ),
-            });
+            extra_warnings.push(Warning::new(
+                WarningKind::IncompleteManifest,
+                Some(app_id),
+                "manifest appid differs from the filename; using the manifest value",
+            ));
         }
     }
 
     let name = match table.get("name").and_then(VdfValue::as_str) {
         Some(n) if !n.is_empty() => GameName::new(n),
         _ => {
-            extra_warnings.push(Warning {
-                kind: WarningKind::IncompleteManifest,
-                app_id: Some(app_id),
-                message: String::from("appmanifest is missing name"),
-            });
+            extra_warnings.push(Warning::new(
+                WarningKind::IncompleteManifest,
+                Some(app_id),
+                "appmanifest is missing name",
+            ));
             GameName::new("unknown")
         }
     };
@@ -378,57 +369,63 @@ fn load_game(
         Some(s) => match s.parse::<u64>() {
             Ok(n) => BuildId(n),
             Err(_) => {
-                extra_warnings.push(Warning {
-                    kind: WarningKind::IncompleteManifest,
-                    app_id: Some(app_id),
-                    message: String::from("appmanifest buildid is not a number"),
-                });
+                extra_warnings.push(Warning::new(
+                    WarningKind::IncompleteManifest,
+                    Some(app_id),
+                    "appmanifest buildid is not a number",
+                ));
                 BuildId(0)
             }
         },
         None => {
-            extra_warnings.push(Warning {
-                kind: WarningKind::IncompleteManifest,
-                app_id: Some(app_id),
-                message: String::from("appmanifest is missing buildid"),
-            });
+            extra_warnings.push(Warning::new(
+                WarningKind::IncompleteManifest,
+                Some(app_id),
+                "appmanifest is missing buildid",
+            ));
             BuildId(0)
         }
     };
 
     let Some(installdir) = table.get("installdir").and_then(VdfValue::as_str) else {
-        extra_warnings.push(Warning {
-            kind: WarningKind::IncompleteManifest,
-            app_id: Some(app_id),
-            message: String::from("appmanifest is missing installdir; game skipped"),
-        });
+        extra_warnings.push(Warning::new(
+            WarningKind::IncompleteManifest,
+            Some(app_id),
+            "appmanifest is missing installdir; game skipped",
+        ));
         return Ok(LoadOutcome::Skipped(extra_warnings));
     };
 
     if !is_plain_relative_installdir(installdir) {
-        extra_warnings.push(Warning {
-            kind: WarningKind::InvalidInstallDir,
-            app_id: Some(app_id),
-            message: String::from(
-                "appmanifest installdir is not a plain relative name; game skipped",
-            ),
-        });
+        extra_warnings.push(Warning::new(
+            WarningKind::InvalidInstallDir,
+            Some(app_id),
+            "appmanifest installdir is not a plain relative name; game skipped",
+        ));
         return Ok(LoadOutcome::Skipped(extra_warnings));
     }
 
-    let install_dir = steamapps.join("common").join(installdir);
-    let scan_out = if install_dir.is_dir() {
-        find_sodb_files(&install_dir, scan)
-    } else {
-        crate::scan::ScanOutcome {
-            files: Vec::new(),
-            warnings: vec![Warning {
-                kind: WarningKind::UnreadableInstallDir,
-                app_id: None,
-                message: String::from("game install directory is missing"),
-            }],
+    let install_dir = match confine_install_dir(steamapps, installdir, app_id, &mut extra_warnings)
+    {
+        Confine::Skip => return Ok(LoadOutcome::Skipped(extra_warnings)),
+        Confine::Missing(path) => {
+            extra_warnings.push(Warning::new(
+                WarningKind::UnreadableInstallDir,
+                Some(app_id),
+                "game install directory is missing",
+            ));
+            return Ok(LoadOutcome::Game(LoadedGame {
+                installed: InstalledGame {
+                    identity: GameIdentity::new(app_id, build_id, name),
+                    install_dir: LocalPath::new(path),
+                    sodb_files: Vec::new(),
+                },
+                extra_warnings,
+            }));
         }
+        Confine::Ready(path) => path,
     };
+    let scan_out = find_sodb_files(&install_dir, scan);
     extra_warnings.extend(scan_out.warnings);
 
     Ok(LoadOutcome::Game(LoadedGame {
@@ -482,32 +479,82 @@ fn app_id_from_filename(path: &Path) -> Option<u32> {
     digits.parse().ok()
 }
 
+enum Confine {
+    Ready(PathBuf),
+    Missing(PathBuf),
+    Skip,
+}
+
+fn confine_install_dir(
+    steamapps: &Path,
+    installdir: &str,
+    app_id: AppId,
+    extra_warnings: &mut Vec<Warning>,
+) -> Confine {
+    let common = steamapps.join("common");
+    let install_dir = common.join(installdir);
+    match fs::symlink_metadata(&install_dir) {
+        Err(_) => return Confine::Missing(install_dir),
+        Ok(meta) if meta.file_type().is_symlink() => {
+            extra_warnings.push(Warning::new(
+                WarningKind::InvalidInstallDir,
+                Some(app_id),
+                "install dir resolves outside the library; game skipped",
+            ));
+            return Confine::Skip;
+        }
+        Ok(meta) if !meta.is_dir() => return Confine::Missing(install_dir),
+        Ok(_) => {}
+    }
+    let Ok(common_root) = fs::canonicalize(&common) else {
+        extra_warnings.push(Warning::new(
+            WarningKind::UnreadableInstallDir,
+            Some(app_id),
+            "game install directory could not be canonicalized",
+        ));
+        return Confine::Skip;
+    };
+    let Ok(canon) = fs::canonicalize(&install_dir) else {
+        extra_warnings.push(Warning::new(
+            WarningKind::UnreadableInstallDir,
+            Some(app_id),
+            "game install directory could not be canonicalized",
+        ));
+        return Confine::Skip;
+    };
+    if !canon.starts_with(&common_root) {
+        extra_warnings.push(Warning::new(
+            WarningKind::InvalidInstallDir,
+            Some(app_id),
+            "install dir resolves outside the library; game skipped",
+        ));
+        return Confine::Skip;
+    }
+    Confine::Ready(install_dir)
+}
+
 fn sort_warnings(warnings: &mut [Warning]) {
     warnings.sort_by(|a, b| {
-        a.app_id
-            .cmp(&b.app_id)
-            .then_with(|| a.kind.cmp(&b.kind))
-            .then_with(|| a.message.cmp(&b.message))
+        a.app_id()
+            .cmp(&b.app_id())
+            .then_with(|| a.kind().cmp(&b.kind()))
+            .then_with(|| a.message().cmp(b.message()))
     });
 }
 
 fn vdf_warning(err: Error, kind: WarningKind, app_id: Option<AppId>) -> Warning {
     let message = match err {
-        Error::FileTooLarge { .. } => String::from("VDF file exceeds the 1 MiB size limit"),
-        Error::TooDeep { .. } => String::from("VDF nesting exceeds the depth limit"),
-        Error::TooManyTokens { .. } => String::from("VDF token count exceeds the limit"),
-        Error::NotARegularFile => String::from("VDF path is not a regular file"),
+        Error::FileTooLarge { .. } => "VDF file exceeds the 1 MiB size limit",
+        Error::TooDeep { .. } => "VDF nesting exceeds the depth limit",
+        Error::TooManyTokens { .. } => "VDF token count exceeds the limit",
+        Error::NotARegularFile => "VDF path is not a regular file",
         Error::UnclosedString
         | Error::UnclosedBlock
         | Error::UnclosedComment
         | Error::InvalidEscape
         | Error::InvalidUtf8
-        | Error::Syntax => String::from("VDF text is malformed"),
-        Error::Io(_) => String::from("VDF file could not be read"),
+        | Error::Syntax => "VDF text is malformed",
+        Error::Io(_) => "VDF file could not be read",
     };
-    Warning {
-        kind,
-        app_id,
-        message,
-    }
+    Warning::new(kind, app_id, message)
 }
