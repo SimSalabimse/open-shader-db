@@ -2,7 +2,7 @@
 
 This document describes the technical architecture, data model, and trust model for open-shader-db.
 
-**Last updated:** October 24, 2026  
+**Last updated:** October 25, 2026  
 **Status:** Early design – subject to change
 
 ## Table of contents
@@ -294,12 +294,18 @@ interface DescriptionHash {
 }
 
 interface CoverageIndex {
+  format_version: 1       // on-disk field; reject any other value
   buildId: BuildId
-  descriptions: DescriptionHash[]
+  descriptions: DescriptionHash[] // logical model (M1+ / consensus)
+  hashes: string[]        // M0 on-disk: sorted unique descHash hex
   uploadCount: number
   consensusCount: number
   generatedAt: string     // ISO 8601
 }
+
+// M0 on-disk JSON uses snake_case field names and `hashes` only.
+// See docs/COVERAGE_INDEX_FORMAT.md. DescriptionHash objects are not
+// stored in format_version 1.
 ```
 
 ### M1 Pipeline-state records (without bytecode)
@@ -743,5 +749,5 @@ However:
 ---
 
 **Author:** Simsalabim  
-**Last updated:** October 24, 2026  
+**Last updated:** October 25, 2026  
 **Status:** Early design – feedback welcome

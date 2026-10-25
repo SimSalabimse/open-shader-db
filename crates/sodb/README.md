@@ -67,7 +67,8 @@ associations contribute the bytecode **key** only).
 ## CLI
 
 The `osdb-cli` crate exposes `inspect <file.sodb>`, which prints
-`SodbSummary` as JSON.
+`SodbSummary` as JSON, and `coverage --sodb <file> --index <file>`,
+which compares those hashes to an unsigned coverage index.
 
 ## Security limits
 

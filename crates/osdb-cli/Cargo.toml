@@ -11,8 +11,12 @@ publish = false
 
 [dependencies]
 clap.workspace = true
+osdb-coverage = { path = "../coverage" }
 serde_json.workspace = true
 sodb = { path = "../sodb" }
+
+[dev-dependencies]
+rusqlite.workspace = true
 
 [lints]
 workspace = true

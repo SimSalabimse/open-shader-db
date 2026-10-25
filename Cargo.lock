@@ -274,8 +274,22 @@ name = "osdb-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "osdb-coverage",
+ "rusqlite",
  "serde_json",
  "sodb",
+]
+
+[[package]]
+name = "osdb-coverage"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sodb",
+ "thiserror",
 ]
 
 [[package]]
