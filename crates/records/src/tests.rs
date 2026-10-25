@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
 use std::sync::Mutex;
 #[cfg(unix)]
 use std::time::Duration;
@@ -13,7 +14,9 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256 as Sha256Digest};
 
 use crate::build::{BuildIdentity, ExeHash, GameId, GameVersion};
-use crate::extract::{encode_record_file, extract, extract_with_sodb_limits};
+#[cfg(target_os = "linux")]
+use crate::extract::extract_with_sodb_limits;
+use crate::extract::{encode_record_file, extract};
 #[cfg(unix)]
 use crate::file::open_regular_nonblocking;
 use crate::file::{
@@ -27,6 +30,7 @@ use crate::{Error, Limits};
 use sodb::{SODB_APPLICATION_ID, SODB_USER_VERSION};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "linux")]
 static RSS_MEASURE_LOCK: Mutex<()> = Mutex::new(());
 
 const ZERO_EXE: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -571,6 +575,7 @@ fn opened_handle_and_nonblock_reject_fifo_without_hanging() {
     handle.join().unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn rss_bytes() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in text.lines() {

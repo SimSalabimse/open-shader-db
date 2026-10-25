@@ -105,7 +105,7 @@ timestamps.
   `rasterizer_descs`, `render_target_formats`, `view_instancing_descs`,
   `stream_out_descs`, `so_declarations`, `input_element_descs`
 
-**UNVERIFIED**
+### Unverified
 
 - Whether these SQL column values are sufficient to rebuild a game-usable
   SODB (descriptor row `Key` blobs are not preserved)
