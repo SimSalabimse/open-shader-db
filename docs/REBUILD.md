@@ -48,11 +48,14 @@ reported separately. A missing output parent is a typed error. The
 output path must be valid UTF-8 (SQLite needs a UTF-8 filename).
 
 The writer builds in a temp work file created with exclusive
-`create_new`. The compact snapshot name is reserved without creating
-the file; `VACUUM INTO` creates it and refuses an existing target, so
-a planted file or symlink is not written through. SQLite temps stay on
-disk (`temp_store` is not set to MEMORY). The live work file is never
-renamed. On non-Windows, fsync errors on the snapshot are returned
+`create_new`. The compact snapshot name includes the process id and a
+counter and is checked before use, but it is not held exclusive for
+the rest of the build. The output directory is assumed to be writable
+only by the user running the tool. A planted empty file or symlink at
+that compact name during the build can be written through by
+`VACUUM INTO`. A follow-up issue tracks a real fix. SQLite temps stay
+on disk (`temp_store` is not set to MEMORY). The live work file is
+never renamed. On non-Windows, fsync errors on the snapshot are returned
 until publish; after publish they are warnings, and the parent
 directory is synced. On Windows, fsync errors are ignored. If the
 first rename fails, a copy-then-rename fallback runs on every
