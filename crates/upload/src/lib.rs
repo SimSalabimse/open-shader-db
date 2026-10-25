@@ -22,7 +22,10 @@ pub use builder::ManifestBuilder;
 pub use client::ClientVersion;
 pub use error::Error;
 pub use hash::Sha256Hex;
-pub use limits::Limits;
+pub use limits::{
+    Limits, BYTECODE_STAGES_PER_RECORD, DEFAULT_MAX_HASHES_PER_LIST, DEFAULT_MAX_JSON_BYTES,
+    DESCRIPTION_HASHES_PER_RECORD,
+};
 pub use manifest::{parse_with_limits, HashSet, UploadManifest, SCHEMA_VERSION};
 pub use ownership::{OwnershipProof, UnchallengedReason};
 pub use preview::{UploadPreview, NOTHING_SENT_LINE, THESE_EXACT_BYTES_LINE, UNCHALLENGED_LINE};

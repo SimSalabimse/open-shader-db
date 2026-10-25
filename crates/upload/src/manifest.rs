@@ -48,6 +48,26 @@ impl HashSet {
         Ok(Self { hashes })
     }
 
+    /// Accept a list that is already strictly sorted and unique.
+    pub fn from_sorted_unique(hashes: Vec<Sha256Hex>, max_hashes: u64) -> Result<Self, Error> {
+        let got = u64::try_from(hashes.len()).unwrap_or(u64::MAX);
+        if got > max_hashes {
+            return Err(Error::TooManyHashes {
+                max: max_hashes,
+                got,
+            });
+        }
+        if !is_strictly_sorted_unique(&hashes) {
+            return Err(Error::UnsortedOrDuplicateHashes);
+        }
+        Ok(Self { hashes })
+    }
+
+    /// Build from a set that already enforced the hash cap (builder path).
+    pub(crate) fn from_capped_set(hashes: Vec<Sha256Hex>) -> Self {
+        Self { hashes }
+    }
+
     /// Hash count after deduplication.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -65,6 +85,10 @@ impl HashSet {
     pub fn as_slice(&self) -> &[Sha256Hex] {
         &self.hashes
     }
+}
+
+fn is_strictly_sorted_unique(hashes: &[Sha256Hex]) -> bool {
+    hashes.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 impl fmt::Debug for HashSet {
@@ -236,11 +260,11 @@ impl RawManifest {
             build_id: self.build_id,
             client_version: self.client_version,
             collected_hour: self.collected_hour,
-            description_hashes: HashSet::from_unsorted(
+            description_hashes: HashSet::from_sorted_unique(
                 self.description_hashes,
                 limits.max_hashes_per_list,
             )?,
-            bytecode_hashes: HashSet::from_unsorted(
+            bytecode_hashes: HashSet::from_sorted_unique(
                 self.bytecode_hashes,
                 limits.max_hashes_per_list,
             )?,
@@ -457,7 +481,7 @@ impl<'de> Visitor<'de> for RawOwnershipVisitor {
                 }
                 let reason = reason.ok_or_else(|| store_typed(Error::MissingField))?;
                 if reason != UnchallengedReason::NoServerChallenge.as_str() {
-                    return Err(store_typed(Error::UnknownOwnershipKind));
+                    return Err(store_typed(Error::UnknownOwnershipReason));
                 }
                 OwnershipProof::unchallenged()
             }

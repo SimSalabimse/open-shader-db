@@ -904,6 +904,73 @@ fn upload_prepare_canary_path_stays_out_of_stdio() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn write_records_json(game_id: &str, version: &str, exe_hash: &str) -> TempFile {
+    let records = TempFile {
+        path: temp_path("-records.json"),
+    };
+    let json = format!(
+        r#"{{"format_version":1,"build":{{"game_id":"{game_id}","version":"{version}","exe_hash":"{exe_hash}"}},"records":[{{"app_key":"01","version":0,"bytecode_hashes":{{}}}}]}}"#
+    );
+    std::fs::write(&records.path, json).unwrap();
+    records
+}
+
+#[test]
+fn upload_prepare_version_and_exe_hash_overrides() {
+    let ee = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    let aa = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let records = write_records_json("from-records", "1.0.0", ee);
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("from-flag")
+        .arg("--version")
+        .arg("9.9.9")
+        .arg("--exe-hash")
+        .arg(aa)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("from-flag"));
+    assert!(!stdout.contains("from-records"));
+    assert!(stdout.contains("9.9.9"));
+    assert!(stdout.contains(aa));
+    assert!(!stdout.contains(ee));
+}
+
+#[test]
+fn upload_prepare_build_id_wins_over_records_game_id() {
+    let ee = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    let records = write_records_json("from-records", "1.0.0", ee);
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("from-flag")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("from-flag"));
+    assert!(!stdout.contains("from-records"));
+    assert!(stdout.contains("1.0.0"));
+    assert!(stdout.contains(ee));
+}
+
 #[test]
 fn upload_prepare_malformed_records_error_omits_path() {
     let bad = TempFile {

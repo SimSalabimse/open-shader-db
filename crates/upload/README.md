@@ -30,7 +30,7 @@ On-wire JSON is documented in
 [docs/UPLOAD_MANIFEST.md](../../docs/UPLOAD_MANIFEST.md)
 (`schema_version: 1`). The machine-readable schema is
 [schemas/upload_manifest.v1.json](../../schemas/upload_manifest.v1.json).
-A drift test fails if the Rust types and that file disagree.
+A drift test fails if the hand-maintained schema and that file disagree.
 
 ## What is hashed
 
@@ -50,8 +50,8 @@ documented and UNVERIFIED for consensus.
 
 | Limit | Default | Purpose |
 | --- | ---: | --- |
-| `max_json_bytes` | 4 MiB | Reject oversized wire JSON |
-| `max_hashes_per_list` | 50 000 | Cap each hash array |
+| `max_json_bytes` | 64 MiB | Reject oversized wire JSON (fits two 400 000-hash lists) |
+| `max_hashes_per_list` | 400 000 | `50 000` records × 8 bytecode stages |
 | `max_json_nesting` | 8 | Reject deep JSON |
 
 Other hardening:

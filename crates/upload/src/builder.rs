@@ -209,8 +209,8 @@ fn collect_hashes(file: &RecordFile, max_hashes: u64) -> Result<(HashSet, HashSe
         }
     }
     Ok((
-        HashSet::from_unsorted(description.into_iter().collect(), max_hashes)?,
-        HashSet::from_unsorted(bytecode.into_iter().collect(), max_hashes)?,
+        HashSet::from_capped_set(description.into_iter().collect()),
+        HashSet::from_capped_set(bytecode.into_iter().collect()),
     ))
 }
 

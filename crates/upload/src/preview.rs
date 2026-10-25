@@ -12,7 +12,7 @@ use crate::{Error, Limits};
 pub const NOTHING_SENT_LINE: &str = "Nothing is sent by this command. There is no network upload.";
 
 /// Statement that the following JSON is the wire payload.
-pub const THESE_EXACT_BYTES_LINE: &str = "These exact bytes will be sent.";
+pub const THESE_EXACT_BYTES_LINE: &str = "These exact bytes would be sent by a later upload step.";
 
 /// Plain-language ownership warning for the unchallenged state.
 pub const UNCHALLENGED_LINE: &str =
@@ -60,6 +60,10 @@ impl UploadPreview {
         limits: Limits,
     ) -> Result<Self, Error> {
         let parsed = UploadManifest::parse_with_limits(&canonical, limits)?;
+        let recoded = parsed.to_canonical_bytes_with_limits(limits)?;
+        if recoded != canonical {
+            return Err(Error::NonCanonicalJson);
+        }
         let text = render_preview(&canonical, &parsed)?;
         Ok(Self { canonical, text })
     }

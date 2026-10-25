@@ -19,7 +19,10 @@ use crate::ownership::OwnershipProof;
 use crate::preview::{UploadPreview, NOTHING_SENT_LINE, THESE_EXACT_BYTES_LINE, UNCHALLENGED_LINE};
 use crate::schema::{document, MANIFEST_FIELDS, SCHEMA_JSON};
 use crate::time::{FixedClock, UtcHour};
-use crate::{Error, Limits};
+use crate::{
+    Error, Limits, BYTECODE_STAGES_PER_RECORD, DEFAULT_MAX_HASHES_PER_LIST, DEFAULT_MAX_JSON_BYTES,
+    DESCRIPTION_HASHES_PER_RECORD,
+};
 
 const CANARY_USER: &str = "user-alice-fixture";
 const CANARY_PATH: &str = "/home/user-alice-fixture/Games/ExampleTitle";
@@ -187,7 +190,8 @@ fn canary_never_appears_in_manifest_preview_errors_or_debug() {
     let manifest = builder.build().unwrap();
     let bytes = manifest.to_canonical_bytes().unwrap();
     let json = String::from_utf8(bytes.clone()).unwrap();
-    let preview = UploadPreview::from_canonical_bytes(bytes.clone()).unwrap();
+    let preview = UploadPreview::from_manifest(&manifest).unwrap();
+    assert_eq!(preview.canonical_bytes(), bytes.as_slice());
     assert_no_canaries(&json);
     assert_no_canaries(preview.as_text());
     assert_no_canaries(&format!("{manifest:?}"));
@@ -427,17 +431,31 @@ fn preview_is_produced_from_canonical_bytes() {
     assert!(preview.as_text().contains(json));
     let value: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
     let keys = field_paths(&value, "");
-    for line in preview.as_text().lines() {
+    let listed = preview_listed_paths(preview.as_text());
+    assert_eq!(
+        listed, keys,
+        "preview field list must equal every sent JSON path"
+    );
+    assert!(listed.iter().any(|p| p == "build_id.exe_hash"));
+    assert!(listed.iter().any(|p| p == "bytecode_hashes"));
+    assert!(listed.iter().any(|p| p == "description_hashes"));
+}
+
+fn preview_listed_paths(text: &str) -> Vec<String> {
+    let mut listed = Vec::new();
+    for line in text.lines() {
         let Some(rest) = line.strip_prefix("  ") else {
             continue;
         };
+        if rest.starts_with("Ownership") || rest.starts_with("Nothing") {
+            continue;
+        }
         let name = rest.split_once(':').map_or(rest, |(n, _)| n);
         let name = name.split_once(' ').map_or(name, |(n, _)| n);
-        assert!(
-            keys.iter().any(|k| k == name),
-            "preview field {name:?} is not in the manifest keys {keys:?}"
-        );
+        listed.push(name.to_string());
     }
+    listed.sort();
+    listed
 }
 
 fn field_paths(value: &serde_json::Value, prefix: &str) -> Vec<String> {
@@ -452,9 +470,11 @@ fn field_paths(value: &serde_json::Value, prefix: &str) -> Vec<String> {
                 };
                 match child {
                     serde_json::Value::Object(_) => out.extend(field_paths(child, &path)),
+                    serde_json::Value::Array(_) => out.push(path),
                     _ => out.push(path),
                 }
             }
+            out.sort();
             out
         }
         _ => Vec::new(),
@@ -602,13 +622,27 @@ fn run_rss_isolated(test_name: &str) -> bool {
         return false;
     }
     let exe = std::env::current_exe().expect("test exe");
-    let status = std::process::Command::new(exe)
-        .args([test_name, "--exact", "--nocapture"])
+    let qualified = format!("tests::{test_name}");
+    let output = std::process::Command::new(exe)
+        .args([&qualified, "--exact", "--nocapture"])
         .env("OSDB_RSS_CHILD", "1")
         .env("RUST_TEST_THREADS", "1")
-        .status()
+        .output()
         .expect("spawn rss child");
-    assert!(status.success(), "isolated RSS child {test_name} failed");
+    assert!(
+        output.status.success(),
+        "isolated RSS child {qualified} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("running 1 test"),
+        "RSS child matched the wrong filter:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "RSS child did not run exactly one test:\n{stdout}"
+    );
     true
 }
 
@@ -649,4 +683,631 @@ fn hashset_debug_prints_count_only() {
     let text = format!("{set:?}");
     assert!(text.contains("len"));
     assert!(!text.contains(&hex64(1)));
+}
+
+fn record_file_with_build(
+    records: Vec<PipelineStateRecord>,
+    game_id: &str,
+    version: &str,
+    exe: u64,
+) -> RecordFile {
+    let mut file = record_file(records);
+    file.build = BuildIdentity::new(
+        Some(osdb_records::GameId::parse(game_id).unwrap()),
+        Some(osdb_records::GameVersion::parse(version).unwrap()),
+        Some(osdb_records::ExeHash::parse_hex(&hex64(exe)).unwrap()),
+    );
+    file
+}
+
+fn compact(value: &serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(value).unwrap()
+}
+
+fn with_bytecode_hashes(hashes: &[&str]) -> Vec<u8> {
+    let mut json = sample_json();
+    json["bytecode_hashes"] = hashes
+        .iter()
+        .copied()
+        .map(serde_json::Value::from)
+        .collect();
+    compact(&json)
+}
+
+#[test]
+fn default_caps_cover_a_full_record_file() {
+    assert_eq!(BYTECODE_STAGES_PER_RECORD, 8);
+    assert_eq!(DESCRIPTION_HASHES_PER_RECORD, 3);
+    assert_eq!(
+        DEFAULT_MAX_HASHES_PER_LIST,
+        osdb_records::Limits::DEFAULT.max_records * BYTECODE_STAGES_PER_RECORD
+    );
+    assert_eq!(DEFAULT_MAX_HASHES_PER_LIST, 400_000);
+    assert_eq!(DEFAULT_MAX_JSON_BYTES, 64 * 1024 * 1024);
+    assert_eq!(Limits::DEFAULT.max_hashes_per_list, 400_000);
+    assert_eq!(Limits::DEFAULT.max_json_bytes, 64 * 1024 * 1024);
+    let empty = sample_canonical().len() as u64;
+    let with_eight = {
+        let hashes: Vec<_> = (1..=8_u64).map(sha_up).collect();
+        let mut manifest = build_manifest(&record_file(Vec::new()));
+        manifest.bytecode_hashes = HashSet::from_unsorted(hashes, 8).unwrap();
+        manifest
+            .to_canonical_bytes_with_limits(Limits::DEFAULT)
+            .unwrap()
+            .len() as u64
+    };
+    let per_hash = with_eight.saturating_sub(empty).div_ceil(8);
+    let worst = empty + 2 * DEFAULT_MAX_HASHES_PER_LIST * (per_hash + 1);
+    assert!(
+        worst <= DEFAULT_MAX_JSON_BYTES,
+        "two full hash lists need {worst} bytes, cap is {DEFAULT_MAX_JSON_BYTES}"
+    );
+}
+
+#[test]
+fn hash_cap_accepts_max_and_refuses_max_plus_one() {
+    let limits = Limits {
+        max_json_bytes: 64 * 1024 * 1024,
+        max_hashes_per_list: 2,
+        max_json_nesting: 8,
+    };
+    let two = with_bytecode_hashes(&[&hex64(1), &hex64(2)]);
+    UploadManifest::parse_with_limits(&two, limits).unwrap();
+    let three = with_bytecode_hashes(&[&hex64(1), &hex64(2), &hex64(3)]);
+    let err = UploadManifest::parse_with_limits(&three, limits).unwrap_err();
+    assert!(matches!(err, Error::TooManyHashes { max: 2, got: 3 }));
+    assert_eq!(err.to_string(), "hash count exceeds limit of 2 (got 3)");
+    HashSet::from_sorted_unique(vec![sha_up(1), sha_up(2)], 2).unwrap();
+    assert!(matches!(
+        HashSet::from_sorted_unique(vec![sha_up(1), sha_up(2), sha_up(3)], 2),
+        Err(Error::TooManyHashes { max: 2, got: 3 })
+    ));
+}
+
+#[test]
+fn builder_insert_cap_accepts_max_and_refuses_max_plus_one() {
+    let limits = Limits {
+        max_json_bytes: 64 * 1024 * 1024,
+        max_hashes_per_list: 2,
+        max_json_nesting: 8,
+    };
+    let mut two = Vec::new();
+    for i in 0..2_u64 {
+        let mut rec = blank_record(&format!("{i:02x}"));
+        rec.bytecode_hashes.vs = Some(sha_rec(i + 1));
+        two.push(rec);
+    }
+    ManifestBuilder::new(&record_file(two))
+        .build_id(sample_build())
+        .limits(limits)
+        .clock(&hour_clock(2026, 10, 25, 14, 0, 0))
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut three = Vec::new();
+    for i in 0..3_u64 {
+        let mut rec = blank_record(&format!("{i:02x}"));
+        rec.bytecode_hashes.vs = Some(sha_rec(i + 1));
+        three.push(rec);
+    }
+    let err = ManifestBuilder::new(&record_file(three))
+        .build_id(sample_build())
+        .limits(limits)
+        .clock(&hour_clock(2026, 10, 25, 14, 0, 0))
+        .unwrap()
+        .build()
+        .unwrap_err();
+    assert!(matches!(err, Error::TooManyHashes { max: 2, got: 3 }));
+}
+
+#[test]
+fn parse_rejects_unsorted_and_duplicate_hashes() {
+    let unsorted = with_bytecode_hashes(&[&hex64(2), &hex64(1)]);
+    assert!(matches!(
+        UploadManifest::parse(&unsorted),
+        Err(Error::UnsortedOrDuplicateHashes)
+    ));
+    let dup = with_bytecode_hashes(&[&hex64(1), &hex64(1)]);
+    assert!(matches!(
+        UploadManifest::parse(&dup),
+        Err(Error::UnsortedOrDuplicateHashes)
+    ));
+    let sorted = HashSet::from_unsorted(vec![sha_up(2), sha_up(1), sha_up(1)], 10).unwrap();
+    assert_eq!(
+        sorted
+            .as_slice()
+            .iter()
+            .map(Sha256Hex::to_hex)
+            .collect::<Vec<_>>(),
+        vec![hex64(1), hex64(2)]
+    );
+}
+
+#[test]
+fn encode_enforces_json_size_cap() {
+    let manifest = build_manifest(&record_file(Vec::new()));
+    let bytes = manifest.to_canonical_bytes().unwrap();
+    let tiny = Limits {
+        max_json_bytes: u64::try_from(bytes.len()).unwrap().saturating_sub(1),
+        max_hashes_per_list: 8,
+        max_json_nesting: 8,
+    };
+    let err = manifest.to_canonical_bytes_with_limits(tiny).unwrap_err();
+    assert!(matches!(err, Error::ManifestTooLarge { .. }));
+}
+
+#[test]
+fn from_canonical_bytes_rejects_non_canonical() {
+    let canonical = sample_canonical();
+    UploadPreview::from_canonical_bytes(canonical.clone()).unwrap();
+    let pretty = serde_json::to_string_pretty(
+        &serde_json::from_slice::<serde_json::Value>(&canonical).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        UploadPreview::from_canonical_bytes(pretty.into_bytes()),
+        Err(Error::NonCanonicalJson)
+    ));
+    let mut value: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+    value["bytecode_hashes"] = serde_json::json!([hex64(2), hex64(1)]);
+    assert!(UploadPreview::from_canonical_bytes(compact(&value)).is_err());
+}
+
+#[test]
+fn nested_duplicate_keys_are_rejected() {
+    let exe = hex64(0xee);
+    let build = format!(
+        r#"{{"schema_version":1,"build_id":{{"game_id":"synthetic","game_id":"other","version":"1.0.0","exe_hash":"{exe}"}},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{{"kind":"unchallenged","reason":"no_server_challenge"}}}}"#
+    );
+    assert!(matches!(
+        UploadManifest::parse(build.as_bytes()),
+        Err(Error::DuplicateKey)
+    ));
+    let ownership = format!(
+        r#"{{"schema_version":1,"build_id":{{"game_id":"synthetic","version":"1.0.0","exe_hash":"{exe}"}},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{{"kind":"unchallenged","kind":"unchallenged","reason":"no_server_challenge"}}}}"#
+    );
+    assert!(matches!(
+        UploadManifest::parse(ownership.as_bytes()),
+        Err(Error::DuplicateKey)
+    ));
+}
+
+#[test]
+fn ownership_fields_are_strict() {
+    let mut unknown = sample_json();
+    unknown["ownership"] = serde_json::json!({
+        "kind": "unchallenged",
+        "reason": "no_server_challenge",
+        "extra": true
+    });
+    assert!(matches!(
+        UploadManifest::parse(&compact(&unknown)),
+        Err(Error::UnknownField)
+    ));
+
+    let mut challenged = sample_json();
+    challenged["ownership"] = serde_json::json!({
+        "kind": "unchallenged",
+        "reason": "no_server_challenge",
+        "challenge": hex64(1)
+    });
+    assert!(matches!(
+        UploadManifest::parse(&compact(&challenged)),
+        Err(Error::UnknownField)
+    ));
+
+    let mut bad_reason = sample_json();
+    bad_reason["ownership"] = serde_json::json!({
+        "kind": "unchallenged",
+        "reason": "because"
+    });
+    let err = UploadManifest::parse(&compact(&bad_reason)).unwrap_err();
+    assert!(matches!(err, Error::UnknownOwnershipReason));
+    assert_eq!(err.to_string(), "unknown ownership reason");
+
+    let mut extra_reason = sample_json();
+    extra_reason["ownership"] = serde_json::json!({
+        "kind": "exe_binding_v1",
+        "challenge": hex64(10),
+        "response": hex64(11),
+        "reason": "no_server_challenge"
+    });
+    assert!(matches!(
+        UploadManifest::parse(&compact(&extra_reason)),
+        Err(Error::UnknownField)
+    ));
+
+    let mut bad_kind = sample_json();
+    bad_kind["ownership"] = serde_json::json!({
+        "kind": "not_a_kind",
+        "reason": "no_server_challenge"
+    });
+    assert!(matches!(
+        UploadManifest::parse(&compact(&bad_kind)),
+        Err(Error::UnknownOwnershipKind)
+    ));
+}
+
+#[test]
+fn schema_version_must_be_one() {
+    for raw in [
+        r#"{"schema_version":0,"build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
+        r#"{"schema_version":2,"build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
+        r#"{"schema_version":"1","build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
+        r#"{"schema_version":1.0,"build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
+        r#"{"schema_version":-1,"build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
+    ] {
+        let err = UploadManifest::parse(raw.as_bytes()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::UnsupportedSchemaVersion { .. } | Error::InvalidInteger
+            ),
+            "unexpected {err:?} for {raw}"
+        );
+    }
+    let mut ok = sample_json();
+    ok["schema_version"] = serde_json::json!(1);
+    UploadManifest::parse(&compact(&ok)).unwrap();
+}
+
+#[test]
+fn utc_hour_range_leap_round_trip_and_pre_epoch() {
+    assert!(UtcHour::from_ymd_h(1970, 1, 1, 0).is_ok());
+    assert!(UtcHour::from_ymd_h(9999, 12, 31, 23).is_ok());
+    assert!(matches!(
+        UtcHour::from_ymd_h(1969, 12, 31, 23),
+        Err(Error::TimestampOutOfRange)
+    ));
+    assert!(matches!(
+        UtcHour::from_ymd_h(10_000, 1, 1, 0),
+        Err(Error::TimestampOutOfRange)
+    ));
+    let hour = UtcHour::from_ymd_h(2026, 10, 25, 14).unwrap();
+    let parsed = UtcHour::parse(hour.as_str()).unwrap();
+    assert_eq!(parsed.as_str(), hour.as_str());
+    assert_eq!(parsed.as_str(), "2026-10-25T14:00:00Z");
+    assert!(UtcHour::parse("2000-02-29T00:00:00Z").is_ok());
+    assert!(UtcHour::parse("2024-02-29T00:00:00Z").is_ok());
+    assert!(UtcHour::parse("2026-10-25T14:00:00z").is_err());
+    assert!(UtcHour::parse("2100-02-29T00:00:00Z").is_err());
+    assert!(UtcHour::parse("1900-02-28T00:00:00Z").is_err());
+    assert!(UtcHour::parse("1969-12-31T23:00:00Z").is_err());
+    let pre = UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap();
+    assert!(matches!(
+        UtcHour::from_system_time(pre),
+        Err(Error::TimestampOutOfRange)
+    ));
+}
+
+#[test]
+fn client_version_rejects_four_parts() {
+    assert!(ClientVersion::parse("1.2.3").is_ok());
+    assert!(matches!(
+        ClientVersion::parse("1.2.3.4"),
+        Err(Error::InvalidClientVersion)
+    ));
+}
+
+#[test]
+fn identifiers_reject_colon_and_overlong() {
+    assert!(GameId::parse("synthetic").is_ok());
+    assert!(matches!(
+        GameId::parse("game:id"),
+        Err(Error::InvalidBuildId)
+    ));
+    assert!(matches!(
+        GameVersion::parse("1:0"),
+        Err(Error::InvalidBuildId)
+    ));
+    let long = "a".repeat(129);
+    assert!(matches!(GameId::parse(&long), Err(Error::InvalidBuildId)));
+    assert!(GameId::parse(&"a".repeat(128)).is_ok());
+}
+
+#[test]
+fn stream_out_and_later_stage_hashes_reach_the_manifest() {
+    let mut rec = blank_record("01");
+    rec.root_signature = Some(sha_rec(10));
+    rec.input_layout = Some(sha_rec(11));
+    rec.stream_out = Some(sha_rec(12));
+    rec.bytecode_hashes.vs = Some(sha_rec(21));
+    rec.bytecode_hashes.ps = Some(sha_rec(22));
+    rec.bytecode_hashes.hs = Some(sha_rec(23));
+    rec.bytecode_hashes.ds = Some(sha_rec(24));
+    rec.bytecode_hashes.gs = Some(sha_rec(25));
+    rec.bytecode_hashes.as_stage = Some(sha_rec(26));
+    rec.bytecode_hashes.ms = Some(sha_rec(27));
+    rec.bytecode_hashes.cs = Some(sha_rec(28));
+    let manifest = build_manifest(&record_file(vec![rec]));
+    let desc: Vec<_> = manifest
+        .description_hashes
+        .as_slice()
+        .iter()
+        .map(Sha256Hex::to_hex)
+        .collect();
+    let code: Vec<_> = manifest
+        .bytecode_hashes
+        .as_slice()
+        .iter()
+        .map(Sha256Hex::to_hex)
+        .collect();
+    assert_eq!(desc, vec![hex64(10), hex64(11), hex64(12)]);
+    assert_eq!(
+        code,
+        vec![
+            hex64(21),
+            hex64(22),
+            hex64(23),
+            hex64(24),
+            hex64(25),
+            hex64(26),
+            hex64(27),
+            hex64(28)
+        ]
+    );
+}
+
+#[test]
+fn builder_overrides_win_over_record_build_fields() {
+    let file = record_file_with_build(Vec::new(), "from-records", "1.0.0", 0xee);
+    let manifest = ManifestBuilder::new(&file)
+        .game_id(GameId::parse("from-flag").unwrap())
+        .version(GameVersion::parse("9.9.9").unwrap())
+        .exe_hash(ExeHash::parse(&hex64(0xaa)).unwrap())
+        .clock(&hour_clock(2026, 10, 25, 14, 0, 0))
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(manifest.build_id.game_id.as_str(), "from-flag");
+    assert_eq!(manifest.build_id.version.as_str(), "9.9.9");
+    assert_eq!(manifest.build_id.exe_hash.to_hex(), hex64(0xaa));
+}
+
+#[test]
+fn schema_and_rust_agree_on_generated_and_hostile_manifests() {
+    let mut rec = blank_record("01");
+    rec.stream_out = Some(sha_rec(4));
+    rec.bytecode_hashes.ps = Some(sha_rec(5));
+    let generated = build_manifest(&record_file(vec![rec]));
+    let generated_bytes = generated.to_canonical_bytes().unwrap();
+    let generated_value: serde_json::Value = serde_json::from_slice(&generated_bytes).unwrap();
+    assert!(
+        schema_accepts(&generated_value),
+        "generated manifest must satisfy the checked-in schema"
+    );
+    UploadManifest::parse(&generated_bytes).unwrap();
+
+    struct Case {
+        name: &'static str,
+        patch: fn(&mut serde_json::Value),
+    }
+    let cases = [
+        Case {
+            name: "colon in game_id",
+            patch: |v| v["build_id"]["game_id"] = serde_json::json!("game:id"),
+        },
+        Case {
+            name: "overlong game_id",
+            patch: |v| v["build_id"]["game_id"] = serde_json::json!("a".repeat(129)),
+        },
+        Case {
+            name: "uppercase hex",
+            patch: |v| {
+                v["bytecode_hashes"] = serde_json::json!([
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                ]);
+            },
+        },
+        Case {
+            name: "duplicate hashes",
+            patch: |v| v["bytecode_hashes"] = serde_json::json!([hex64(1), hex64(1)]),
+        },
+        Case {
+            name: "unknown ownership field",
+            patch: |v| {
+                v["ownership"] = serde_json::json!({
+                    "kind": "unchallenged",
+                    "reason": "no_server_challenge",
+                    "extra": 1
+                });
+            },
+        },
+        Case {
+            name: "unchallenged carrying challenge",
+            patch: |v| {
+                v["ownership"] = serde_json::json!({
+                    "kind": "unchallenged",
+                    "reason": "no_server_challenge",
+                    "challenge": hex64(1)
+                });
+            },
+        },
+        Case {
+            name: "bad ownership reason",
+            patch: |v| {
+                v["ownership"] = serde_json::json!({
+                    "kind": "unchallenged",
+                    "reason": "because"
+                });
+            },
+        },
+        Case {
+            name: "exe_binding extra reason",
+            patch: |v| {
+                v["ownership"] = serde_json::json!({
+                    "kind": "exe_binding_v1",
+                    "challenge": hex64(1),
+                    "response": hex64(2),
+                    "reason": "no_server_challenge"
+                });
+            },
+        },
+        Case {
+            name: "four-part client_version",
+            patch: |v| v["client_version"] = serde_json::json!("1.2.3.4"),
+        },
+        Case {
+            name: "schema_version 2",
+            patch: |v| v["schema_version"] = serde_json::json!(2),
+        },
+    ];
+    for case in cases {
+        let mut value = sample_json();
+        (case.patch)(&mut value);
+        let rust_err = UploadManifest::parse(&compact(&value)).unwrap_err();
+        assert!(
+            !schema_accepts(&value),
+            "schema accepted {} which Rust rejected as {rust_err:?}",
+            case.name
+        );
+    }
+}
+
+fn schema_accepts(value: &serde_json::Value) -> bool {
+    let schema = document();
+    validate_schema_node(&schema, value)
+}
+
+fn validate_schema_node(schema: &serde_json::Value, value: &serde_json::Value) -> bool {
+    if let Some(const_v) = schema.get("const") {
+        if value != const_v {
+            return false;
+        }
+    }
+    match schema.get("type").and_then(|t| t.as_str()) {
+        Some("object") => {
+            let Some(obj) = value.as_object() else {
+                return false;
+            };
+            if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
+                for key in required {
+                    let Some(name) = key.as_str() else {
+                        return false;
+                    };
+                    if !obj.contains_key(name) {
+                        return false;
+                    }
+                }
+            }
+            let props = schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .cloned()
+                .unwrap_or_default();
+            if schema.get("additionalProperties") == Some(&serde_json::json!(false)) {
+                for key in obj.keys() {
+                    if !props.contains_key(key) {
+                        return false;
+                    }
+                }
+            }
+            for (key, child) in obj {
+                if let Some(child_schema) = props.get(key) {
+                    if !validate_schema_node(child_schema, child) {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        Some("array") => {
+            let Some(items) = value.as_array() else {
+                return false;
+            };
+            if let Some(max) = schema.get("maxItems").and_then(serde_json::Value::as_u64) {
+                if u64::try_from(items.len()).unwrap_or(u64::MAX) > max {
+                    return false;
+                }
+            }
+            if schema.get("uniqueItems") == Some(&serde_json::json!(true)) {
+                for (i, item) in items.iter().enumerate() {
+                    if items[..i].contains(item) {
+                        return false;
+                    }
+                }
+            }
+            if let Some(item_schema) = schema.get("items") {
+                items
+                    .iter()
+                    .all(|item| validate_schema_node(item_schema, item))
+            } else {
+                true
+            }
+        }
+        Some("string") => {
+            let Some(text) = value.as_str() else {
+                return false;
+            };
+            if let Some(min) = schema.get("minLength").and_then(serde_json::Value::as_u64) {
+                if u64::try_from(text.len()).unwrap_or(u64::MAX) < min {
+                    return false;
+                }
+            }
+            if let Some(max) = schema.get("maxLength").and_then(serde_json::Value::as_u64) {
+                if u64::try_from(text.len()).unwrap_or(u64::MAX) > max {
+                    return false;
+                }
+            }
+            if let Some(pattern) = schema.get("pattern").and_then(serde_json::Value::as_str) {
+                string_matches_schema_pattern(pattern, text)
+            } else {
+                true
+            }
+        }
+        Some("integer") => value.as_i64().is_some() || value.as_u64().is_some(),
+        _ => {
+            if let Some(one_of) = schema.get("oneOf").and_then(|v| v.as_array()) {
+                one_of
+                    .iter()
+                    .filter(|alt| validate_schema_node(alt, value))
+                    .count()
+                    == 1
+            } else {
+                true
+            }
+        }
+    }
+}
+
+fn string_matches_schema_pattern(pattern: &str, text: &str) -> bool {
+    match pattern {
+        crate::schema::SHA256_HEX_PATTERN => {
+            text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        }
+        crate::schema::UTC_HOUR_PATTERN => {
+            let b = text.as_bytes();
+            b.len() == 20
+                && b[4] == b'-'
+                && b[7] == b'-'
+                && b[10] == b'T'
+                && b[13] == b':'
+                && &b[14..16] == b"00"
+                && b[16] == b':'
+                && &b[17..19] == b"00"
+                && b[19] == b'Z'
+                && b[0..4].iter().all(u8::is_ascii_digit)
+                && b[5..7].iter().all(u8::is_ascii_digit)
+                && b[8..10].iter().all(u8::is_ascii_digit)
+                && b[11..13].iter().all(u8::is_ascii_digit)
+        }
+        crate::schema::CLIENT_VERSION_PATTERN => {
+            let mut parts = text.split('.');
+            let triple = [parts.next(), parts.next(), parts.next()];
+            parts.next().is_none()
+                && triple.iter().all(|part| {
+                    part.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+                })
+        }
+        crate::schema::IDENT_PATTERN => {
+            (1..=128).contains(&text.len())
+                && text.bytes().all(|b| {
+                    (0x21..=0x2e).contains(&b)
+                        || (0x30..=0x39).contains(&b)
+                        || (0x3b..=0x5b).contains(&b)
+                        || (0x5d..=0x7e).contains(&b)
+                })
+        }
+        _ => false,
+    }
 }

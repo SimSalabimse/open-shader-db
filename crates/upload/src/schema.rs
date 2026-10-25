@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-//! JSON Schema document derived from the Rust types in this crate.
+//! Hand-maintained JSON Schema for the upload-manifest wire format.
+//!
+//! `document()` is written by hand and kept aligned with the Rust
+//! validators by tests. It is not generated from the serde types.
 
 use crate::manifest::SCHEMA_VERSION;
 use crate::Limits;
@@ -34,7 +37,7 @@ pub const CLIENT_VERSION_PATTERN: &str = "^[0-9]+\\.[0-9]+\\.[0-9]+$";
 /// Game id / version identifier pattern (ASCII graphic minus `/`, `\\`, `:`).
 pub const IDENT_PATTERN: &str = "^[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$";
 
-/// JSON Schema (draft-07) generated from the Rust types and limits.
+/// Hand-maintained JSON Schema (draft-07). `maxItems` follows [`Limits::DEFAULT`].
 #[must_use]
 pub fn document() -> serde_json::Value {
     let max_hashes = Limits::DEFAULT.max_hashes_per_list;

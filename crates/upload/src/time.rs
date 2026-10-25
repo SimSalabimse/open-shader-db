@@ -100,7 +100,7 @@ impl UtcHour {
             || bytes[16] != b':'
             || bytes[17] != b'0'
             || bytes[18] != b'0'
-            || bytes[19] != b'Z'
+            || (bytes[19] != b'Z' && bytes[19] != b'z')
         {
             return Err(Error::InvalidTimestamp);
         }

@@ -40,7 +40,7 @@
         "pattern": "^[0-9a-f]{64}$",
         "type": "string"
       },
-      "maxItems": 50000,
+      "maxItems": 400000,
       "type": "array",
       "uniqueItems": true
     },
@@ -61,7 +61,7 @@
         "pattern": "^[0-9a-f]{64}$",
         "type": "string"
       },
-      "maxItems": 50000,
+      "maxItems": 400000,
       "type": "array",
       "uniqueItems": true
     },

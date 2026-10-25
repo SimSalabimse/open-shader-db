@@ -77,7 +77,7 @@ bytes. The preview and `--out` file are those bytes.
 | `build_id.exe_hash` | string | 64-character lowercase hex SHA-256. |
 | `client_version` | string | `major.minor.patch` of ASCII digits. |
 | `collected_hour` | string | `YYYY-MM-DDTHH:00:00Z` only. The constructor floors a clock instant to the UTC hour and discards the original instant. |
-| `description_hashes` | array | Sorted unique 64-character lowercase hex. Cap 50 000. |
+| `description_hashes` | array | Sorted unique 64-character lowercase hex. Cap 400 000. Unsorted or duplicate entries are rejected. |
 | `bytecode_hashes` | array | Same rules as `description_hashes`. |
 | `ownership` | object | `unchallenged` or `exe_binding_v1` (see below). |
 
@@ -112,10 +112,12 @@ the manifest: Steam's depot build id is a different type from
 ## Preview
 
 `UploadPreview` is rendered from the canonical bytes, not from a
-second struct. The text lists every JSON field that will be sent
-(with array counts), states that those exact bytes will be sent,
-states that nothing is sent by this command, and then prints the
-full JSON. `--out` writes the same bytes.
+second struct. The text lists every JSON field that would be sent
+(with array counts), states that those exact bytes would be sent by
+a later upload step, states that nothing is sent by this command,
+and then prints the full JSON. `--out` writes the same bytes.
+`from_canonical_bytes` rejects input that is not already canonical
+(pretty-printed, unsorted keys, unsorted or duplicate hashes).
 
 ## Proof of ownership
 
@@ -195,8 +197,8 @@ boundary. Typed errors never echo rejected field values.
 
 | Limit | Default | Purpose |
 | --- | ---: | --- |
-| JSON bytes | 4 MiB | Reject huge payloads before or after encode |
-| Hashes per list | 50 000 | Matches the record-file record cap |
+| JSON bytes | 64 MiB | Same as the record-file byte cap; two full hash lists fit |
+| Hashes per list | 400 000 | `records.max_records` (50 000) × 8 bytecode stages |
 | JSON nesting | 8 | Reject deep documents |
 
 Larger caps are library-only.

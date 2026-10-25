@@ -13,6 +13,14 @@ pub enum Error {
     #[error("hash count exceeds limit of {max} (got {got})")]
     TooManyHashes { max: u64, got: u64 },
 
+    /// A hash array was not strictly sorted unique (schema `uniqueItems`).
+    #[error("hash list is not sorted unique")]
+    UnsortedOrDuplicateHashes,
+
+    /// Bytes parsed as a manifest but were not the canonical encoding.
+    #[error("upload manifest JSON is not in canonical form")]
+    NonCanonicalJson,
+
     /// `schema_version` was not the supported value.
     #[error("unsupported upload manifest schema_version {found} (expected {expected})")]
     UnsupportedSchemaVersion { found: u64, expected: u32 },
@@ -80,6 +88,10 @@ pub enum Error {
     /// `ownership.kind` was not a documented variant.
     #[error("unknown ownership proof kind")]
     UnknownOwnershipKind,
+
+    /// `ownership.reason` was not a documented reason for that kind.
+    #[error("unknown ownership reason")]
+    UnknownOwnershipReason,
 
     /// Canonical JSON encoding failed.
     #[error("failed to encode upload manifest JSON")]
