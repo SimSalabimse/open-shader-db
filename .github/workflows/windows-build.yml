@@ -10,6 +10,8 @@ on:
       - crates/**
       - Cargo.toml
       - Cargo.lock
+      - .github/workflows/windows-build.yml
+      - docs/TESTING_WINDOWS.md
   pull_request:
     paths:
       - crates/**
