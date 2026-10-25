@@ -10,6 +10,7 @@ Thank you for your interest in contributing to open-shader-db! This document pro
 - [Contributing documentation](#contributing-documentation)
 - [Contributing shader data](#contributing-shader-data)
 - [Reporting bugs](#reporting-bugs)
+- [Takedown requests](#takedown-requests)
 - [Suggesting features](#suggesting-features)
 - [Development setup](#development-setup)
 - [Pull request process](#pull-request-process)
@@ -144,6 +145,10 @@ The client crashes when scanning Epic Games Library.
 **Logs:**
 [Attach client.log]
 ```
+
+## Takedown requests
+
+If you represent a rights holder and want a published record removed, open a [takedown request](https://github.com/SimSalabimse/open-shader-db/issues/new?template=takedown_request.yml). Identify the game and build and the record or hash. Do not attach shader bytecode or game files. The project will remove the record from future releases promptly and review the request in good faith.
 
 ## Suggesting features
 

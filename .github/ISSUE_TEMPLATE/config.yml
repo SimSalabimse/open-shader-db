@@ -3,3 +3,6 @@ contact_links:
   - name: Private security reporting
     url: https://github.com/SimSalabimse/open-shader-db/security/advisories/new
     about: Report a security vulnerability privately instead of opening a public issue.
+  - name: Takedown request form
+    url: https://github.com/SimSalabimse/open-shader-db/issues/new?template=takedown_request.yml
+    about: Rights holders can request removal of a published record (no bytecode or game files).

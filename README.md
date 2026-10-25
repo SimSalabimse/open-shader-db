@@ -75,6 +75,20 @@ product):
 
 See [ROADMAP.md](ROADMAP.md) for planned milestones and [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) for current feature status.
 
+## Hobby project and legal notice
+
+This is a hobby project. Nothing in this repository is legal advice.
+
+Contributions are opt-in and at the contributor's own risk. The project never redistributes shader bytecode.
+
+open-shader-db is not affiliated with Microsoft, Valve, Epic, GOG, or any game publisher. Names of those companies, stores, and products are used only to describe compatibility.
+
+See [docs/LEGAL_RISK_NOTES.md](docs/LEGAL_RISK_NOTES.md) for research notes (not legal advice; several points remain **UNVERIFIED**).
+
+### Takedown requests
+
+Rights holders who want a published record removed can open a [takedown request](https://github.com/SimSalabimse/open-shader-db/issues/new?template=takedown_request.yml). Do not attach bytecode or game files. The project will remove the record from future releases promptly and review the request in good faith.
+
 ## Important disclaimer
 
 **This project is UNOFFICIAL and NOT AFFILIATED with [SCSKiller](https://github.com/BlueHeisenberg/SCSKiller), its developers, or any game publishers.**
@@ -91,6 +105,7 @@ See [LICENSE-PROPOSAL.md](LICENSE-PROPOSAL.md) for rationale.
 ## Learn more
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) – Technical design and data model
+- [docs/LEGAL_RISK_NOTES.md](docs/LEGAL_RISK_NOTES.md) – Legal-risk research notes (not legal advice)
 - [ROADMAP.md](ROADMAP.md) – Development milestones and planned features
 - [CONTRIBUTING.md](CONTRIBUTING.md) – How to contribute
 - [SECURITY.md](SECURITY.md) – Security policy and reporting
