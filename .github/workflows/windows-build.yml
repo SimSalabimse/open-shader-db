@@ -1,0 +1,68 @@
+# Unsigned Windows CLI artifact for local testers. No secrets, no release, no signing.
+name: Windows CLI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/windows-build.yml
+      - docs/TESTING_WINDOWS.md
+  pull_request:
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/windows-build.yml
+      - docs/TESTING_WINDOWS.md
+
+permissions:
+  contents: read
+
+jobs:
+  windows-cli:
+    name: Build osdb-cli (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup toolchain install stable --profile minimal
+      - name: Build osdb-cli
+        run: cargo build --release --locked -p osdb-cli
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $exe = "target/release/osdb-cli.exe"
+          if (-not (Test-Path $exe)) { throw "osdb-cli.exe missing" }
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "--version failed" }
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) { throw "--help failed" }
+          # Cheap offline command: missing Steam root is a typed empty result (no fixture needed).
+          & $exe discover --steam-root "$env:RUNNER_TEMP\osdb-no-steam" --json
+          if ($LASTEXITCODE -ne 0) { throw "discover smoke failed" }
+      - name: Write checksum and stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          Copy-Item target/release/osdb-cli.exe artifact/osdb-cli.exe
+          Copy-Item docs/TESTING_WINDOWS.md artifact/TESTING_WINDOWS.md
+          $hash = (Get-FileHash artifact/osdb-cli.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path artifact/SHA256SUMS.txt -Encoding ascii -Value ("{0}  osdb-cli.exe`n" -f $hash)
+          Get-Content artifact/SHA256SUMS.txt
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: osdb-cli-windows-x86_64
+          path: |
+            artifact/osdb-cli.exe
+            artifact/SHA256SUMS.txt
+            artifact/TESTING_WINDOWS.md
+          retention-days: 30
+          if-no-files-found: error

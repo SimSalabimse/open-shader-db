@@ -87,7 +87,7 @@ product):
 The ingest Worker (`worker/`) and staging config are **built and
 tested, not deployed**. See [docs/WORKER_DESIGN.md](docs/WORKER_DESIGN.md).
 
-See [ROADMAP.md](ROADMAP.md) for planned milestones and [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) for current feature status.
+See [ROADMAP.md](ROADMAP.md) for planned milestones, [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) for current feature status, and [docs/TESTING_WINDOWS.md](docs/TESTING_WINDOWS.md) for a one-game Windows CLI check.
 
 ## Hobby project and legal notice
 
