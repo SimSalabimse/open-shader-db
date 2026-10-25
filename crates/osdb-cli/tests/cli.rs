@@ -47,6 +47,7 @@ fn help_lists_inspect_discover_coverage_records_shaders_rebuild() {
     assert!(stdout.contains("records"));
     assert!(stdout.contains("shaders"));
     assert!(stdout.contains("rebuild"));
+    assert!(stdout.contains("upload"));
 }
 
 #[test]
@@ -671,4 +672,282 @@ fn rebuild_max_output_bytes_is_enforced() {
         "stderr={stderr}"
     );
     assert!(!dest.path.exists());
+}
+
+fn extract_records_with_build() -> TempFile {
+    let sodb = create_sodb();
+    let records = TempFile {
+        path: temp_path(".json"),
+    };
+    let extracted = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&records.path)
+        .arg("--game-id")
+        .arg("synthetic")
+        .arg("--version")
+        .arg("1.0.0")
+        .arg("--exe-hash")
+        .arg("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+        .output()
+        .unwrap();
+    assert!(
+        extracted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&extracted.stderr)
+    );
+    records
+}
+
+#[test]
+fn upload_prepare_help_lists_out_and_yes_i_reviewed() {
+    let out = bin()
+        .args(["upload", "prepare", "--help"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("--records"));
+    assert!(stdout.contains("--build-id"));
+    assert!(stdout.contains("--out"));
+    assert!(stdout.contains("--yes-i-reviewed"));
+    assert!(stdout.contains("--force"));
+    assert!(stdout.contains("Nothing is sent") || stdout.contains("nothing is sent"));
+}
+
+#[test]
+fn upload_prepare_prints_preview_and_writes_same_bytes() {
+    let records = extract_records_with_build();
+    let dest = TempFile {
+        path: temp_path("-manifest.json"),
+    };
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("synthetic")
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--yes-i-reviewed")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains(osdb_upload::THESE_EXACT_BYTES_LINE));
+    assert!(stdout.contains(osdb_upload::NOTHING_SENT_LINE));
+    assert!(stdout.contains(osdb_upload::UNCHALLENGED_LINE));
+    assert!(stdout.contains(":00:00Z"));
+    assert!(!stdout.contains("14:37:19"));
+    let file = std::fs::read(&dest.path).unwrap();
+    let start = stdout.find("Canonical JSON:").unwrap();
+    let json = stdout[start + "Canonical JSON:".len()..].trim();
+    assert_eq!(json.as_bytes(), file.as_slice());
+    assert!(!stdout.contains(records.path.to_string_lossy().as_ref()));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains(records.path.to_string_lossy().as_ref()));
+    let parsed = osdb_upload::UploadManifest::parse(&file).unwrap();
+    assert_eq!(parsed.schema_version, osdb_upload::SCHEMA_VERSION);
+}
+
+#[test]
+fn upload_prepare_refuses_out_without_review_flag() {
+    let records = extract_records_with_build();
+    let dest = TempFile {
+        path: temp_path("-manifest.json"),
+    };
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("synthetic")
+        .arg("--out")
+        .arg(&dest.path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("--yes-i-reviewed"));
+    assert!(!dest.path.exists());
+}
+
+#[test]
+fn upload_prepare_refuses_existing_out_without_force() {
+    let records = extract_records_with_build();
+    let dest = TempFile {
+        path: temp_path("-manifest.json"),
+    };
+    std::fs::write(&dest.path, b"keep-me").unwrap();
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("synthetic")
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--yes-i-reviewed")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read(&dest.path).unwrap(), b"keep-me");
+}
+
+#[test]
+fn upload_prepare_force_overwrites_regular_file() {
+    let records = extract_records_with_build();
+    let dest = TempFile {
+        path: temp_path("-manifest.json"),
+    };
+    std::fs::write(&dest.path, b"old").unwrap();
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("synthetic")
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--yes-i-reviewed")
+        .arg("--force")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(&dest.path).unwrap();
+    assert!(text.contains("schema_version"));
+    assert_ne!(text.as_bytes(), b"old");
+}
+
+#[test]
+fn upload_prepare_refuses_out_equal_to_records() {
+    let records = extract_records_with_build();
+    let original = std::fs::read(&records.path).unwrap();
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("synthetic")
+        .arg("--out")
+        .arg(&records.path)
+        .arg("--yes-i-reviewed")
+        .arg("--force")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("same file"));
+    assert_eq!(std::fs::read(&records.path).unwrap(), original);
+}
+
+#[test]
+fn upload_prepare_canary_path_stays_out_of_stdio() {
+    let sodb = create_sodb();
+    let dir = temp_path("-user-alice-fixture");
+    std::fs::create_dir_all(&dir).unwrap();
+    let records = dir.join("records.json");
+    let extracted = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&records)
+        .arg("--game-id")
+        .arg("synthetic")
+        .arg("--version")
+        .arg("1.0.0")
+        .arg("--exe-hash")
+        .arg("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+        .output()
+        .unwrap();
+    assert!(extracted.status.success());
+    let dest = dir.join("manifest.json");
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records)
+        .arg("--build-id")
+        .arg("synthetic")
+        .arg("--out")
+        .arg(&dest)
+        .arg("--yes-i-reviewed")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(!stdout.contains("user-alice-fixture"));
+    assert!(!stderr.contains("user-alice-fixture"));
+    assert!(!stdout.contains(records.to_string_lossy().as_ref()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn upload_prepare_malformed_records_error_omits_path() {
+    let bad = TempFile {
+        path: temp_path("-bad.json"),
+    };
+    std::fs::write(&bad.path, b"\xff\xfe not-json").unwrap();
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&bad.path)
+        .arg("--build-id")
+        .arg("synthetic")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(!stderr.contains(bad.path.to_string_lossy().as_ref()));
+}
+
+#[cfg(unix)]
+#[test]
+fn upload_prepare_refuses_symlink_out() {
+    let records = extract_records_with_build();
+    let target = TempFile {
+        path: temp_path(".json"),
+    };
+    std::fs::write(&target.path, b"keep").unwrap();
+    let link = temp_path(".json");
+    std::os::unix::fs::symlink(&target.path, &link).unwrap();
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("synthetic")
+        .arg("--out")
+        .arg(&link)
+        .arg("--yes-i-reviewed")
+        .arg("--force")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&link);
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read(&target.path).unwrap(), b"keep");
 }

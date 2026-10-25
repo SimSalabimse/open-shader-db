@@ -365,20 +365,28 @@ The following aspects require further research or testing:
 
 ### UploadManifest
 
-The anonymized data sent by contributors.
+The anonymized data a contributor can preview (and later send). Schema
+version 1 is implemented by `osdb-upload` and documented in
+[docs/UPLOAD_MANIFEST.md](docs/UPLOAD_MANIFEST.md). The machine-readable
+schema is [schemas/upload_manifest.v1.json](schemas/upload_manifest.v1.json).
 
 ```typescript
 interface UploadManifest {
-  version: "1.0.0"        // Schema version
-  buildId: BuildId
-  descriptions: DescriptionHash[]
-  shaderRefs: ShaderReference[]
-  timestampHour: string   // ISO 8601 rounded to hour
-  clientVersion: string   // open-shader-db client version
-  proofOfOwnership: string // Challenge response proving exe access
-  // NO: user ID, IP, game path, machine ID, full timestamp
+  schema_version: 1
+  build_id: BuildId          // game_id, version, exe_hash
+  client_version: string     // major.minor.patch
+  collected_hour: string     // YYYY-MM-DDTHH:00:00Z only
+  description_hashes: string[] // sorted unique SHA-256 hex
+  bytecode_hashes: string[]    // sorted unique SHA-256 hex
+  ownership: OwnershipProof    // unchallenged | exe_binding_v1
+  // NO: user ID, IP, game path, hostname, hardware id, full timestamp, app_key
 }
 ```
+
+`osdb-cli upload prepare` writes this JSON locally and shows a preview
+of the same bytes. There is no network send in this crate. Ownership is
+`unchallenged` / `no_server_challenge` until a server nonce exists
+(issues #12 and #16). That field proves nothing (UNVERIFIED).
 
 ### AgreementThreshold
 

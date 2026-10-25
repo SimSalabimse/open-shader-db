@@ -16,6 +16,7 @@ osdb-rebuild = { path = "../rebuild" }
 osdb-records = { path = "../records" }
 osdb-shaders = { path = "../shaders" }
 osdb-steam = { path = "../steam" }
+osdb-upload = { path = "../upload" }
 same-file.workspace = true
 serde_json.workspace = true
 sodb = { path = "../sodb" }

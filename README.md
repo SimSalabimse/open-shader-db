@@ -79,6 +79,10 @@ product):
 - `rebuild --records <file> (--dir|--sodb)... --out <file.sodb>` —
   rebuild a local SODB (contains bytecode; local use only;
   `--max-output-bytes` defaults to 8 GiB, hard maximum 8 GiB)
+- `upload prepare --records <file> --build-id <id>` — build an
+  anonymized upload manifest and print a preview of the exact
+  bytes that would later be sent (nothing is sent; `--out` writes
+  those bytes after `--yes-i-reviewed`)
 
 See [ROADMAP.md](ROADMAP.md) for planned milestones and [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) for current feature status.
 
