@@ -33,8 +33,10 @@ pub use parser::{
     probe,
 };
 pub use rootsig::{
-    empty_root_signature_v1_0, empty_root_signature_v1_1, one_cbv_root_signature_v1_0,
-    one_table_root_signature_v1_1, parse_root_signature, CanonicalRootSignature,
+    empty_root_signature_v1_0, empty_root_signature_v1_0_heap_flag, empty_root_signature_v1_1,
+    one_cbv_root_signature_v1_0, one_cbv_root_signature_v1_1, one_cbv_v1_0_payload_before_params,
+    one_constants_root_signature_v1_0, one_sampler_border4_v1_0, one_table_root_signature_v1_1,
+    parse_root_signature, table_three_ranges_v1_0, table_two_ranges_v1_1, CanonicalRootSignature,
 };
 pub use schema::{SODB_APPLICATION_ID, SODB_USER_VERSION};
 pub use types::{

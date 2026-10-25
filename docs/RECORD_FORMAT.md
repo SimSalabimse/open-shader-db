@@ -28,9 +28,11 @@ Each record holds:
 
 DXIL / bytecode bytes are **never** stored. The extractor hashes each blob
 incrementally and discards it. Root signatures are structurally parsed as
-D3D12 version 1.0 or 1.1 and **re-serialized canonically**, so only
-structured root-signature fields are carried. A DXBC container used as a
-root signature must contain only an RTS0 part whose payload is that same
+the D3D12 serialized root-signature blob that
+`D3D12SerializeRootSignature` / DXC emit (identical to the DXBC RTS0
+part payload) and **re-serialized in DXC `SimpleSerializer` order**, so
+only structured fields are carried. A DXBC container used as a root
+signature must contain only an RTS0 part whose payload is that same
 structure; any other part (DXIL, SHEX, SHDR, ILDB, …) rejects the extract.
 
 Signing is **not** part of this format.
@@ -53,7 +55,7 @@ deeper than 8 is rejected.
     "exe_hash": "0000000000000000000000000000000000000000000000000000000000000000"
   },
   "root_signatures": {
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "010000000000000000000000000000000000000000000000"
+    "eaf7ecdeba4ab59a9e3f0dbd5e1aef2e4f6f143cabf1df4217159ed1045a7206": "010000000000000018000000000000001800000000000000"
   },
   "input_layouts": {},
   "stream_outputs": {},
@@ -65,7 +67,7 @@ deeper than 8 is rejected.
         "vs": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "unresolved_stages": [],
-      "root_signature": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "root_signature": "eaf7ecdeba4ab59a9e3f0dbd5e1aef2e4f6f143cabf1df4217159ed1045a7206",
       "input_layout": null,
       "depth_stencil": null,
       "blend": null,
@@ -91,7 +93,7 @@ deeper than 8 is rejected.
 | `build.game_id` | string or null | Optional. 1–128 ASCII graphic characters. No `/`, `\`, `:`, or whitespace. |
 | `build.version` | string or null | Same character rules as `game_id`. |
 | `build.exe_hash` | string or null | Optional. 64-character lowercase hex SHA-256. |
-| `root_signatures` | object | Map from SHA-256 (64 lowercase hex) to lowercase hex of the **canonical** serialized root signature. Each key must equal the SHA-256 of the decoded value. The loader re-parses every entry and rejects bytes that are not that exact structure. Missing table is treated as empty. Unreferenced entries are rejected. |
+| `root_signatures` | object | Map from SHA-256 (64 lowercase hex) to lowercase hex of the **canonical** serialized root signature. Each key must equal the SHA-256 of the decoded value. The loader re-parses every entry and rejects bytes that are not that exact structure (`serialize()` of the parse must equal the stored bytes). Missing table is treated as empty. Unreferenced entries are rejected. |
 | `input_layouts` | object | Map from SHA-256 of compact JSON of the element array to that array. Key must match the content hash. |
 | `stream_outputs` | object | Map from SHA-256 of compact JSON of the stream-out object to that object. Key must match the content hash. |
 | `records` | array | Sorted by `app_key` (hex string order). Unique, non-empty keys. Cap 50 000. |
@@ -117,7 +119,7 @@ Only **one** field family is stored as raw bytes (lowercase hex):
 
 | Table field | Source | Why it cannot carry bytecode |
 | --- | --- | --- |
-| `root_signatures` values | `root_signatures.value` | The blob is parsed as a D3D12 root signature 1.0 or 1.1 (header, parameters, descriptor ranges, static samplers; enums and flags validated; every offset bounds-checked; every byte accounted for). The extract emits the **canonical re-serialization** of the parsed fields, never the input bytes. If the blob starts with `DXBC`, the container must contain only an RTS0 part (plus the standard checksum header); the RTS0 payload is parsed the same way. Any other part (DXIL, SHEX, SHDR, ILDB, STAT, …), a malformed container, a gap/trailing byte, or a non-canonical leftover fails the extract with a typed error that names no content. Size cap: 1 MiB by default. |
+| `root_signatures` values | `root_signatures.value` | Parsed as the serialized D3D12 root signature 1.0 (`Version = 1`) or 1.1 (`Version = 2`) that DXC / `D3D12SerializeRootSignature` write (same bytes as a DXBC RTS0 part payload). Layout: 24-byte little-endian header (`Version`, `NumParameters`, `RootParametersOffset`, `NumStaticSamplers`, `StaticSamplersOffset`, `Flags`); then `NumParameters` × 12-byte `{ParameterType, ShaderVisibility, PayloadOffset}` records at `RootParametersOffset`; then type-specific payloads at each absolute `PayloadOffset` (descriptor table = 8-byte `{NumDescriptorRanges, DescriptorRangesOffset}` plus 20-byte 1.0 or 24-byte 1.1 ranges; 32-bit constants = 12 bytes; CBV/SRV/UAV = 8 bytes in 1.0 or 12 in 1.1); then 52-byte static samplers at `StaticSamplersOffset`. Every offset and count is bounds-checked; spans must not overlap; every byte of the blob must be exactly the header + parameter array + payloads + ranges + samplers (no gaps, no trailing bytes). Parameter type, shader visibility, range type, filter, address mode, comparison func, and border color (including `OpaqueWhiteUint = 4`) are allow-listed. Root-signature flags must be a subset of DXC `ValidFlags` `0x80000fff` (bits 0–11 plus `0x80000000`; official `CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED` / `SAMPLER_HEAP_DIRECTLY_INDEXED` are `0x400` / `0x800`). Version 1.1 range flags ⊆ `0x1000f`; root-descriptor flags ⊆ `0xe`. Sampler floats must be finite (`NaN` / `Inf` rejected; `-0` canonicalised to `+0`); `MipLODBias` ∈ `[-16, 15.99]`; `MinLOD` / `MaxLOD` ∈ `[0, f32::MAX]`. Caps: ≤ 64 parameters, ≤ 1024 ranges per table, ≤ 4096 ranges total, ≤ 2048 static samplers, ≤ 1 MiB. The extract emits the **canonical DXC-order re-serialization**, never the input bytes. The loader re-parses every table value and rejects it unless `serialize() == stored`. If the blob starts with `DXBC`, the container must contain only an RTS0 part (plus the standard checksum header); the RTS0 payload is parsed the same way. Any other part (DXIL, SHEX, SHDR, ILDB, STAT, …), a malformed container, a gap/trailing byte, or a leftover fails with a typed error that names no content. **Free-form capacity:** the only fields that accept arbitrary in-range numbers are register indices / spaces, range counts and table offsets, and the three sampler floats (already range-checked). Worst case that is 107 008 bytes per signature (~104.5 KiB) inside a structured blob of at most 206 344 bytes (~201.5 KiB: 24 + 64×12 + 4×(8+1024×24) + 60×12 + 2048×52). That is orders of magnitude too small and too structured to carry shader bytecode. |
 
 Every other descriptor is structured JSON of INTEGER / REAL / TEXT columns
 from the published SQL schema. None of those columns is a bytecode BLOB:

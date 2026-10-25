@@ -5,11 +5,14 @@ Local-only pipeline-state records for open-shader-db (Simsalabim).
 The crate reads a SODB file the user already has and writes JSON
 `PipelineStateRecord`s **without DXIL bytecode**. Each shader blob is
 hashed (SHA-256, lowercase hex) and discarded. Root signatures are
-parsed as D3D12 version 1.0/1.1 and re-serialized canonically (so only
-structured fields are carried) and stored once in a file-level table
-keyed by SHA-256. Matching compares bytecode
-hashes to a `HashSet` of local hashes. There is no upload, download,
-hosting, or signing.
+parsed as the serialized D3D12 1.0/1.1 blob that DXC /
+`D3D12SerializeRootSignature` emit (24-byte header, 12-byte parameter
+records with payload offsets, type-specific payloads, 52-byte static
+samplers) and re-serialized in DXC order so only structured fields are
+carried. The remaining in-range numeric fields are at most ~104 KiB per
+signature — too small and too structured to hide bytecode. Matching
+compares bytecode hashes to a `HashSet` of local hashes. There is no
+upload, download, hosting, or signing.
 
 The implementation is written from this repository's architecture notes
 and Microsoft's published SODB SQL schema. It does not reuse code from

@@ -41,8 +41,9 @@ const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const FAKE_VS: &[u8] = b"FAKE_VS_BLOB_BYTES";
 const FAKE_PS: &[u8] = b"FAKE_PS_BLOB_BYTES";
+/// Canonical empty D3D12 root signature 1.0 (DXC unused-offset emit).
 const FAKE_ROOT: &[u8] = &[
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 struct TempFile {
@@ -1204,6 +1205,90 @@ fn rts0_v99_is_rejected_and_marker_absent() {
     payload.extend_from_slice(MARKER);
     let blob = dxbc_with_parts(&[(b"RTS0", &payload)]);
     extract_rejects_root_sig(&blob);
+}
+
+fn extract_and_load_root_sig(bytes: &[u8]) {
+    let sodb = sodb_with_root_sig(bytes);
+    let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+    assert_eq!(
+        file.root_signatures.values().next().unwrap().as_str(),
+        bytes_to_hex(bytes)
+    );
+    let json = encode_record_file(&file).unwrap();
+    let loaded_path = write_temp(".json", &json);
+    let loaded = load(loaded_path.path()).unwrap();
+    assert_eq!(loaded, file);
+}
+
+#[test]
+fn spec_faithful_root_signatures_extract_and_load() {
+    let samples = [
+        ("empty_v1_0", sodb::empty_root_signature_v1_0()),
+        ("empty_v1_1", sodb::empty_root_signature_v1_1()),
+        ("cbv_v1_0", sodb::one_cbv_root_signature_v1_0()),
+        ("constants_v1_0", sodb::one_constants_root_signature_v1_0()),
+        ("cbv_v1_1", sodb::one_cbv_root_signature_v1_1()),
+        ("table_v1_0", sodb::table_three_ranges_v1_0()),
+        ("table_v1_1", sodb::one_table_root_signature_v1_1()),
+        ("table_two_v1_1", sodb::table_two_ranges_v1_1()),
+        ("sampler_border4", sodb::one_sampler_border4_v1_0()),
+        (
+            "flag_0x80000000",
+            sodb::empty_root_signature_v1_0_heap_flag(),
+        ),
+    ];
+    for (name, bytes) in samples {
+        extract_and_load_root_sig(&bytes);
+        let rts0 = dxbc_with_parts(&[(b"RTS0", &bytes)]);
+        let sodb = sodb_with_root_sig(&rts0);
+        let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+        assert_eq!(
+            file.root_signatures.values().next().unwrap().as_str(),
+            bytes_to_hex(&bytes),
+            "{name} RTS0"
+        );
+        let json = encode_record_file(&file).unwrap();
+        let loaded_path = write_temp(".json", &json);
+        assert_eq!(load(loaded_path.path()).unwrap(), file, "{name} RTS0 load");
+    }
+}
+
+#[test]
+fn extract_rewrites_non_canonical_payload_order() {
+    let sodb = sodb_with_root_sig(&sodb::one_cbv_v1_0_payload_before_params());
+    let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+    assert_eq!(
+        file.root_signatures.values().next().unwrap().as_str(),
+        bytes_to_hex(sodb::one_cbv_root_signature_v1_0())
+    );
+}
+
+#[test]
+fn loader_rejects_non_canonical_payload_order() {
+    let bytes = sodb::one_cbv_v1_0_payload_before_params();
+    let hex = bytes_to_hex(&bytes);
+    let hash = sha256_hex(&bytes);
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"root_signatures":{{"{hash}":"{hex}"}},"records":[{{"app_key":"01","version":0,"bytecode_hashes":{{}},"root_signature":"{hash}"}}]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::RootSignatureMalformed), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_zero_offset_empty_as_non_canonical() {
+    let bytes = [
+        1_u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let hex = bytes_to_hex(bytes);
+    let hash = sha256_hex(&bytes);
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"root_signatures":{{"{hash}":"{hex}"}},"records":[{{"app_key":"01","version":0,"bytecode_hashes":{{}},"root_signature":"{hash}"}}]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::RootSignatureMalformed), "{err:?}");
 }
 
 #[test]

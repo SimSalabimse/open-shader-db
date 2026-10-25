@@ -25,9 +25,9 @@ use crate::{
 const FAKE_VS: &[u8] = b"FAKE_VS_BLOB";
 const FAKE_PS: &[u8] = b"FAKE_PS_BLOB";
 const FAKE_VS2: &[u8] = b"FAKE_VS_BLOB_2";
-/// Canonical empty D3D12 root signature 1.0 (not a DXBC container).
+/// Canonical empty D3D12 root signature 1.0 (DXC unused-offset emit).
 const RAW_ROOT_SIG: &[u8] = &[
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 /// Full Microsoft spec `pipeline_states` CREATE (1472 bytes). The old
@@ -1893,6 +1893,35 @@ fn sql_without_rowid_tokenizer_ignores_whitespace_and_comments() {
     assert!(!crate::parser::sql_has_without_rowid(
         "CREATE TABLE t (a INT PRIMARY KEY) -- WITHOUT ROWID\n"
     ));
+}
+
+#[test]
+fn without_rowid_tokenizer_fallback_reads_sqlite_master_sql() {
+    for suffix in [
+        "WITHOUT  ROWID",
+        "WITHOUT\nROWID",
+        "WITHOUT /*gap*/ ROWID",
+        "WITHOUT --c\nROWID",
+    ] {
+        let fixture = without_rowid_shader_table(suffix);
+        let conn = Connection::open(fixture.path()).unwrap();
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shader_bytecode'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            crate::parser::sql_has_without_rowid(&sql),
+            "tokenizer must accept sqlite_master SQL {sql:?}"
+        );
+        let extracted = extract_pipeline_states(fixture.path()).unwrap();
+        assert_eq!(
+            extracted[0].bytecode.vs.unwrap().to_hex(),
+            sha256_hex(FAKE_VS)
+        );
+    }
 }
 
 #[test]

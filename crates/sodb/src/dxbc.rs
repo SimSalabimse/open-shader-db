@@ -189,4 +189,31 @@ mod tests {
         let out = sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES).unwrap();
         assert_eq!(out, rs);
     }
+
+    #[test]
+    fn spec_samples_sanitize_raw_and_rts0() {
+        let samples = [
+            crate::empty_root_signature_v1_0(),
+            crate::empty_root_signature_v1_1(),
+            crate::one_cbv_root_signature_v1_0(),
+            crate::one_constants_root_signature_v1_0(),
+            crate::one_cbv_root_signature_v1_1(),
+            crate::table_three_ranges_v1_0(),
+            crate::one_table_root_signature_v1_1(),
+            crate::table_two_ranges_v1_1(),
+            crate::one_sampler_border4_v1_0(),
+            crate::empty_root_signature_v1_0_heap_flag(),
+        ];
+        for rs in samples {
+            assert_eq!(
+                sanitize_root_signature(&rs, MAX_ROOT_SIGNATURE_BYTES).unwrap(),
+                rs
+            );
+            let blob = dxbc_with_parts(&[(b"RTS0", &rs)]);
+            assert_eq!(
+                sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES).unwrap(),
+                rs
+            );
+        }
+    }
 }
