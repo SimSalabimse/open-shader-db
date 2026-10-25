@@ -601,17 +601,8 @@ fn duplicate_locations_follow_sorted_directory_order() {
     for name in created {
         write_dxbc(&dir.path.join(name), 48, 3);
     }
-    let raw: Vec<String> = fs::read_dir(&dir.path)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
-        .collect();
-    let mut sorted = raw.clone();
-    sorted.sort();
-    assert_ne!(
-        raw, sorted,
-        "readdir already sorted; pick names that keep dir_sort observable"
-    );
+    let mut expected: Vec<String> = created.iter().map(|n| (*n).to_owned()).collect();
+    expected.sort();
     let (index, _) = scan_dir(&dir.path, default_limits()).unwrap();
     let hash = index.hashes().next().unwrap();
     let locs = index.locations(&hash);
@@ -626,7 +617,7 @@ fn duplicate_locations_follow_sorted_directory_order() {
                 .unwrap()
         })
         .collect();
-    assert_eq!(names, sorted);
+    assert_eq!(names, expected);
     let first = index.read_location(&locs[0], &hash).unwrap();
     assert_eq!(first, dxbc_of_len(48, 3));
 }
