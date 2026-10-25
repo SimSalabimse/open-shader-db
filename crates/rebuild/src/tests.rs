@@ -5,6 +5,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
 use std::sync::Mutex;
 
 use osdb_records::{extract, extract_with_sodb_limits, BuildIdentity};
@@ -15,6 +16,7 @@ use sodb::{empty_root_signature_v1_0, SODB_APPLICATION_ID, SODB_USER_VERSION};
 use crate::{rebuild_sodb, Error, RebuildOptions, LOCAL_USE_NOTICE};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "linux")]
 static RSS_MEASURE_LOCK: Mutex<()> = Mutex::new(());
 
 struct TempPath {

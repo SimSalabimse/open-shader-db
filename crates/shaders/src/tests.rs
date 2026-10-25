@@ -5,6 +5,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
 use std::sync::Mutex;
 
 use osdb_records::{extract, match_local_hashes, BuildIdentity, Sha256};
@@ -14,6 +15,7 @@ use sodb::{hash_shader_container, SODB_APPLICATION_ID, SODB_USER_VERSION};
 use crate::{match_records, scan, scan_dir, scan_sodb, Error, Limits, ScanCap, ScanInput};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "linux")]
 static RSS_MEASURE_LOCK: Mutex<()> = Mutex::new(());
 
 struct TempDir {
