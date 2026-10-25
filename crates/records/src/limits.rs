@@ -11,10 +11,12 @@ pub struct Limits {
     pub max_records: u64,
     /// Reject the file if `{` / `[` nesting exceeds this depth.
     pub max_json_nesting: u32,
+    /// Maximum decoded root-signature bytes in the descriptor table.
+    pub max_root_signature_bytes: usize,
 }
 
 impl Limits {
-    /// 64 MiB file, 50 000 records, nesting depth 8.
+    /// 64 MiB file, 50 000 records, nesting depth 8, 1 MiB root signatures.
     ///
     /// The record cap matches the SODB per-table row cap used by `sodb`.
     /// Larger limits are library-only (`load_with_limits`).
@@ -22,6 +24,7 @@ impl Limits {
         max_file_bytes: 64 * 1024 * 1024,
         max_records: 50_000,
         max_json_nesting: 8,
+        max_root_signature_bytes: 1024 * 1024,
     };
 }
 

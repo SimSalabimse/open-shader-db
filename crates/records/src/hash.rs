@@ -126,6 +126,16 @@ pub(crate) fn hex_nibble(byte: u8) -> Result<u8, Error> {
     }
 }
 
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> Sha256 {
+    use sha2::{Digest, Sha256 as DigestImpl};
+    Sha256::from_bytes(DigestImpl::digest(bytes).into())
+}
+
+pub(crate) fn sha256_json<T: Serialize>(value: &T) -> Result<Sha256, Error> {
+    let bytes = serde_json::to_vec(value).map_err(|_| Error::InvalidJson)?;
+    Ok(sha256_bytes(&bytes))
+}
+
 pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {

@@ -8,16 +8,19 @@ use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rusqlite::limits::Limit;
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, DatabaseName, OpenFlags};
+use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 
+use crate::dxbc::sanitize_root_signature;
 use crate::extract::{
-    DescriptorBlob, ExtractedBlend, ExtractedDepthStencil, ExtractedDepthStencilOp,
-    ExtractedInputElement, ExtractedPipelineState, ExtractedRasterizer, ExtractedRenderTargetBlend,
-    ExtractedRenderTargetFormats, ExtractedSoDeclaration, ExtractedStageHashes, ExtractedStreamOut,
+    validate_semantic_name, DescriptorBlob, ExtractedBlend, ExtractedDepthStencil,
+    ExtractedDepthStencilOp, ExtractedInputElement, ExtractedPipelineState, ExtractedRasterizer,
+    ExtractedRenderTargetBlend, ExtractedRenderTargetFormats, ExtractedSoDeclaration,
+    ExtractedSodb, ExtractedStage, ExtractedStageHashes, ExtractedStreamOut,
     ExtractedViewInstancing,
 };
 use crate::hash::CanonicalHasher;
@@ -86,9 +89,7 @@ pub fn open_with_limits(path: impl AsRef<Path>, limits: Limits) -> Result<SodbSu
 /// Uses the same read-only open, size/row limits, cycle detection, and key
 /// intern as [`open`]. DXIL bytes are hashed incrementally and discarded.
 #[must_use = "extracted pipeline states should be used"]
-pub fn extract_pipeline_states(
-    path: impl AsRef<Path>,
-) -> Result<Vec<ExtractedPipelineState>, Error> {
+pub fn extract_pipeline_states(path: impl AsRef<Path>) -> Result<ExtractedSodb, Error> {
     extract_pipeline_states_with_limits(path, Limits::DEFAULT)
 }
 
@@ -97,7 +98,7 @@ pub fn extract_pipeline_states(
 pub fn extract_pipeline_states_with_limits(
     path: impl AsRef<Path>,
     limits: Limits,
-) -> Result<Vec<ExtractedPipelineState>, Error> {
+) -> Result<ExtractedSodb, Error> {
     let opened = open_db(path.as_ref(), limits)?;
     extract_from_opened(opened, limits)
 }
@@ -226,10 +227,7 @@ fn summary_from_opened(opened: OpenedSodb, limits: Limits) -> Result<SodbSummary
     })
 }
 
-fn extract_from_opened(
-    opened: OpenedSodb,
-    limits: Limits,
-) -> Result<Vec<ExtractedPipelineState>, Error> {
+fn extract_from_opened(opened: OpenedSodb, limits: Limits) -> Result<ExtractedSodb, Error> {
     let OpenedSodb {
         conn,
         catalog,
@@ -238,9 +236,12 @@ fn extract_from_opened(
         mut budget,
     } = opened;
     if !catalog.present.contains(&TableId::PipelineStates) {
-        return Ok(Vec::new());
+        return Ok(ExtractedSodb {
+            records: Vec::new(),
+        });
     }
-    read_pipeline_extract(&conn, &catalog, &mut budget, &bytecode_by_key, limits)
+    let records = read_pipeline_extract(&conn, &catalog, &mut budget, &bytecode_by_key, limits)?;
+    Ok(ExtractedSodb { records })
 }
 
 struct FileHeader {
@@ -1166,9 +1167,20 @@ fn read_opt_f64(
     let (ty, len) = read_ty_len(row, col, table)?;
     match ty.as_str() {
         "null" => Ok(None),
-        "real" | "integer" => row
-            .get(col.val_idx)
-            .map_err(|source| Error::from_sqlite(table, source)),
+        "real" | "integer" => {
+            let value: Option<f64> = row
+                .get(col.val_idx)
+                .map_err(|source| Error::from_sqlite(table, source))?;
+            if let Some(v) = value {
+                if !v.is_finite() {
+                    return Err(Error::NonFiniteFloat {
+                        table,
+                        column: col.name.clone(),
+                    });
+                }
+            }
+            Ok(value)
+        }
         "text" => {
             enforce_len(table, &col.name, &ty, len, limits)?;
             Err(Error::WrongColumnType {
@@ -1636,15 +1648,30 @@ fn read_shader_bytecode(
     let mut bc_typeof_idx = None;
     let mut bc_len_idx = None;
     let mut bc_rowid_idx = None;
+    let mut bc_val_idx = None;
+    let use_rowid = if bytecode_name.is_some() {
+        bytecode_row_plan(conn, table)?
+    } else {
+        BytecodeRowPlan::UseRowid
+    };
     if let Some(name) = bytecode_name.as_deref() {
-        // Length + typeof only; the blob is hashed via incremental I/O.
+        // Length + typeof only; the blob is hashed via incremental I/O
+        // when the table has a SQLite rowid.
         let q = quote_ident(name);
         bc_typeof_idx = Some(select.parts.len());
         select.parts.push(format!("typeof({q})"));
         bc_len_idx = Some(select.parts.len());
         select.parts.push(format!("octet_length({q})"));
-        bc_rowid_idx = Some(select.parts.len());
-        select.parts.push(String::from("rowid"));
+        match use_rowid {
+            BytecodeRowPlan::UseRowid => {
+                bc_rowid_idx = Some(select.parts.len());
+                select.parts.push(quote_ident("_rowid_"));
+            }
+            BytecodeRowPlan::FallbackSelect => {
+                bc_val_idx = Some(select.parts.len());
+                select.parts.push(quote_ident(name));
+            }
+        }
     }
     let mut stmt = conn
         .prepare(&select.sql(table))
@@ -1665,9 +1692,7 @@ fn read_shader_bytecode(
         let Some(name) = bytecode_name.as_deref() else {
             continue;
         };
-        let (Some(ty_idx), Some(len_idx), Some(rowid_idx)) =
-            (bc_typeof_idx, bc_len_idx, bc_rowid_idx)
-        else {
+        let (Some(ty_idx), Some(len_idx)) = (bc_typeof_idx, bc_len_idx) else {
             continue;
         };
         let ty = row
@@ -1688,13 +1713,84 @@ fn read_shader_bytecode(
             }
         }
         enforce_len(table, name, &ty, len, limits)?;
-        let rowid = row
-            .get::<_, i64>(rowid_idx)
-            .map_err(|source| Error::from_sqlite(table, source))?;
-        let bytecode_hash = hash_bytecode_blob(conn, name, rowid, table)?;
+        let bytecode_hash = match use_rowid {
+            BytecodeRowPlan::UseRowid => {
+                let Some(rowid_idx) = bc_rowid_idx else {
+                    continue;
+                };
+                let rowid = row
+                    .get::<_, i64>(rowid_idx)
+                    .map_err(|source| Error::from_sqlite(table, source))?;
+                hash_bytecode_blob(conn, name, rowid, table)?
+            }
+            BytecodeRowPlan::FallbackSelect => {
+                let Some(val_idx) = bc_val_idx else {
+                    continue;
+                };
+                let bytes: Vec<u8> = row
+                    .get(val_idx)
+                    .map_err(|source| Error::from_sqlite(table, source))?;
+                crate::hash::sha256(&bytes)
+            }
+        };
         out.insert(key, bytecode_hash);
     }
     Ok(out)
+}
+
+enum BytecodeRowPlan {
+    UseRowid,
+    FallbackSelect,
+}
+
+fn bytecode_row_plan(conn: &Connection, table: TableId) -> Result<BytecodeRowPlan, Error> {
+    if table_declares_reserved_rowid(conn, table)? {
+        return Err(Error::ReservedRowidColumn);
+    }
+    if table_is_without_rowid(conn, table)? {
+        Ok(BytecodeRowPlan::FallbackSelect)
+    } else {
+        Ok(BytecodeRowPlan::UseRowid)
+    }
+}
+
+fn table_declares_reserved_rowid(conn: &Connection, table: TableId) -> Result<bool, Error> {
+    let sql = format!("PRAGMA table_info({})", table.sql_name());
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|source| Error::from_sqlite(table, source))?
+    {
+        let name: String = row
+            .get(1)
+            .map_err(|source| Error::from_sqlite(table, source))?;
+        if name.eq_ignore_ascii_case("rowid")
+            || name.eq_ignore_ascii_case("oid")
+            || name.eq_ignore_ascii_case("_rowid_")
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn table_is_without_rowid(conn: &Connection, table: TableId) -> Result<bool, Error> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1 COLLATE NOCASE",
+            [table.sql_name()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    Ok(sql
+        .map(|s| s.to_ascii_uppercase().contains("WITHOUT ROWID"))
+        .unwrap_or(false))
 }
 
 /// SHA-256 of a `shader_bytecode.Bytecode` blob without retaining the bytes.
@@ -1921,7 +2017,12 @@ fn require_f64(table: TableId, column: &str, value: Option<f64>) -> Result<f64, 
 
 fn require_text(table: TableId, column: &str, value: Option<AppText>) -> Result<String, Error> {
     match value {
-        Some(text) => Ok(text.as_str().to_string()),
+        Some(text) => {
+            if column.eq_ignore_ascii_case("SemanticName") {
+                validate_semantic_name(text.as_str())?;
+            }
+            Ok(text.as_str().to_string())
+        }
         None => Err(Error::InvalidValue {
             table,
             column: column.to_string(),
@@ -1930,11 +2031,20 @@ fn require_text(table: TableId, column: &str, value: Option<AppText>) -> Result<
     }
 }
 
-fn stage_hash(
-    bytecode_by_key: &BTreeMap<AppKey, Sha256Hash>,
-    key: Option<AppKey>,
-) -> Option<Sha256Hash> {
-    key.and_then(|k| bytecode_by_key.get(&k).copied())
+enum StageRef {
+    Absent,
+    Resolved(Sha256Hash),
+    Unresolved,
+}
+
+fn stage_ref(bytecode_by_key: &BTreeMap<AppKey, Sha256Hash>, key: Option<AppKey>) -> StageRef {
+    match key {
+        None => StageRef::Absent,
+        Some(k) => match bytecode_by_key.get(&k) {
+            Some(hash) => StageRef::Resolved(*hash),
+            None => StageRef::Unresolved,
+        },
+    }
 }
 
 fn read_pipeline_extract(
@@ -1955,6 +2065,9 @@ fn read_pipeline_extract(
     let root_sigs = load_root_signatures(conn, catalog, limits)?;
     let input_elements = load_input_elements(conn, catalog, limits)?;
     let layout_assocs = load_layout_assocs(conn, catalog, limits)?;
+    let input_layouts = assemble_input_layouts(&input_elements, &layout_assocs);
+    drop(input_elements);
+    drop(layout_assocs);
     let ds_ops = load_depth_stencil_ops(conn, catalog, limits)?;
     let depth_stencils = load_depth_stencils(conn, catalog, limits, &ds_ops)?;
     let rt_blends = load_rt_blends(conn, catalog, limits)?;
@@ -2012,41 +2125,36 @@ fn read_pipeline_extract(
         let mut amplification = None;
         let mut ms = None;
         let mut cs = None;
-        for (col_name, dest) in [
-            ("ByteCode_VS", &mut vs),
-            ("ByteCode_PS", &mut ps),
-            ("ByteCode_HS", &mut hs),
-            ("ByteCode_DS", &mut ds),
-            ("ByteCode_GS", &mut gs),
-            ("ByteCode_AS", &mut amplification),
-            ("ByteCode_MS", &mut ms),
-            ("ByteCode_CS", &mut cs),
+        let mut unresolved_stages = Vec::new();
+        for (col_name, stage, dest) in [
+            ("ByteCode_VS", ExtractedStage::Vs, &mut vs),
+            ("ByteCode_PS", ExtractedStage::Ps, &mut ps),
+            ("ByteCode_HS", ExtractedStage::Hs, &mut hs),
+            ("ByteCode_DS", ExtractedStage::Ds, &mut ds),
+            ("ByteCode_GS", ExtractedStage::Gs, &mut gs),
+            ("ByteCode_AS", ExtractedStage::As, &mut amplification),
+            ("ByteCode_MS", ExtractedStage::Ms, &mut ms),
+            ("ByteCode_CS", ExtractedStage::Cs, &mut cs),
         ] {
             if let Some(col) = select.find(col_name) {
-                *dest = stage_hash(
+                match stage_ref(
                     bytecode_by_key,
                     read_opt_blob(row, col, table, limits)?.map(AppKey::new),
-                );
+                ) {
+                    StageRef::Absent => {}
+                    StageRef::Resolved(hash) => *dest = Some(hash),
+                    StageRef::Unresolved => unresolved_stages.push(stage),
+                }
             }
         }
-        let root_signature = lookup_blob(
+        let root_signature = lookup_arc(
             &root_sigs,
             &opt_key(row, &select, table, limits, "RootSignature")?,
         );
-        let input_layout = opt_key(row, &select, table, limits, "InputLayout")?.and_then(|k| {
-            layout_assocs.get(&k).map(|ids| {
-                let mut elems: Vec<ExtractedInputElement> = ids
-                    .iter()
-                    .filter_map(|id| input_elements.get(id).cloned())
-                    .collect();
-                elems.sort_by(|a, b| {
-                    a.semantic_name
-                        .cmp(&b.semantic_name)
-                        .then(a.semantic_index.cmp(&b.semantic_index))
-                });
-                elems
-            })
-        });
+        let input_layout = lookup_arc(
+            &input_layouts,
+            &opt_key(row, &select, table, limits, "InputLayout")?,
+        );
         let depth_stencil = lookup_clone(
             &depth_stencils,
             &opt_key(row, &select, table, limits, "DepthStencilDesc")?,
@@ -2064,7 +2172,7 @@ fn read_pipeline_extract(
             &views,
             &opt_key(row, &select, table, limits, "ViewInstancingDesc")?,
         );
-        let stream_out = lookup_clone(
+        let stream_out = lookup_arc(
             &stream_outs,
             &opt_key(row, &select, table, limits, "StreamOutDesc")?,
         );
@@ -2081,6 +2189,7 @@ fn read_pipeline_extract(
                 ms,
                 cs,
             },
+            unresolved_stages,
             root_signature,
             input_layout,
             depth_stencil,
@@ -2129,10 +2238,7 @@ fn opt_i64(
     }
 }
 
-fn lookup_blob(
-    map: &HashMap<AppKey, DescriptorBlob>,
-    key: &Option<AppKey>,
-) -> Option<DescriptorBlob> {
+fn lookup_arc<T>(map: &HashMap<AppKey, Arc<T>>, key: &Option<AppKey>) -> Option<Arc<T>> {
     key.as_ref().and_then(|k| map.get(k).cloned())
 }
 
@@ -2144,7 +2250,7 @@ fn load_root_signatures(
     conn: &Connection,
     catalog: &Catalog,
     limits: Limits,
-) -> Result<HashMap<AppKey, DescriptorBlob>, Error> {
+) -> Result<HashMap<AppKey, Arc<DescriptorBlob>>, Error> {
     let table = TableId::RootSignatures;
     if !catalog.present.contains(&table) {
         return Ok(HashMap::new());
@@ -2162,12 +2268,39 @@ fn load_root_signatures(
                 None => None,
             };
             if let Some(bytes) = value {
-                out.insert(key, DescriptorBlob::new(bytes));
+                let sanitized = sanitize_root_signature(&bytes, limits.max_root_signature_bytes)?;
+                out.insert(key, Arc::new(DescriptorBlob::new(sanitized)));
             }
             Ok(())
         },
     )?;
     Ok(out)
+}
+
+fn assemble_input_layouts(
+    input_elements: &HashMap<AppKey, ExtractedInputElement>,
+    layout_assocs: &HashMap<AppKey, Vec<AppKey>>,
+) -> HashMap<AppKey, Arc<Vec<ExtractedInputElement>>> {
+    let mut out = HashMap::new();
+    for (layout_key, ids) in layout_assocs {
+        let mut seen = HashSet::new();
+        let mut elems = Vec::new();
+        for id in ids {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(elem) = input_elements.get(id) {
+                elems.push(elem.clone());
+            }
+        }
+        elems.sort_by(|a, b| {
+            a.semantic_name
+                .cmp(&b.semantic_name)
+                .then(a.semantic_index.cmp(&b.semantic_index))
+        });
+        out.insert(layout_key.clone(), Arc::new(elems));
+    }
+    out
 }
 
 fn load_input_elements(
@@ -2864,7 +2997,7 @@ fn load_stream_outs(
     catalog: &Catalog,
     limits: Limits,
     decls: &HashMap<AppKey, ExtractedSoDeclaration>,
-) -> Result<HashMap<AppKey, ExtractedStreamOut>, Error> {
+) -> Result<HashMap<AppKey, Arc<ExtractedStreamOut>>, Error> {
     let table = TableId::StreamOutDescs;
     if !catalog.present.contains(&table) {
         return Ok(HashMap::new());
@@ -2900,10 +3033,12 @@ fn load_stream_outs(
             "RasterizedStream",
         ],
         |key, row, select| {
+            let mut seen = HashSet::new();
             let mut declarations: Vec<ExtractedSoDeclaration> = pairs
                 .get(&key)
                 .into_iter()
                 .flatten()
+                .filter(|id| seen.insert((*id).clone()))
                 .filter_map(|id| decls.get(id).cloned())
                 .collect();
             declarations.sort_by(|a, b| {
@@ -2914,7 +3049,7 @@ fn load_stream_outs(
             });
             out.insert(
                 key,
-                ExtractedStreamOut {
+                Arc::new(ExtractedStreamOut {
                     buffer_stride: [
                         require_i64(
                             table,
@@ -2948,7 +3083,7 @@ fn load_stream_outs(
                         opt_i64(row, select, table, limits, "RasterizedStream")?,
                     )?,
                     declarations,
-                },
+                }),
             );
             Ok(())
         },
@@ -3039,9 +3174,11 @@ fn assoc_pairs(
             None => None,
         };
         if let (Some(owner), Some(child)) = (owner, child) {
-            out.entry(AppKey::new(owner))
-                .or_default()
-                .push(AppKey::new(child));
+            let list = out.entry(AppKey::new(owner)).or_default();
+            let child = AppKey::new(child);
+            if !list.contains(&child) {
+                list.push(child);
+            }
         }
     }
     Ok(out)

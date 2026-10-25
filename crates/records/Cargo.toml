@@ -6,13 +6,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Local pipeline-state records (hashes only, no DXIL) for open-shader-db"
+description = "Local pipeline-state records: bytecode as SHA-256 only; root signatures cannot carry DXIL"
 readme = "README.md"
 publish = false
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sodb = { path = "../sodb" }
 thiserror.workspace = true
 

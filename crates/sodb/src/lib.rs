@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+mod dxbc;
 mod error;
 mod extract;
 mod hash;
@@ -20,8 +21,8 @@ pub use error::Error;
 pub use extract::{
     DescriptorBlob, ExtractedBlend, ExtractedDepthStencil, ExtractedDepthStencilOp,
     ExtractedInputElement, ExtractedPipelineState, ExtractedRasterizer, ExtractedRenderTargetBlend,
-    ExtractedRenderTargetFormats, ExtractedSoDeclaration, ExtractedStageHashes, ExtractedStreamOut,
-    ExtractedViewInstancing,
+    ExtractedRenderTargetFormats, ExtractedSoDeclaration, ExtractedSodb, ExtractedStage,
+    ExtractedStageHashes, ExtractedStreamOut, ExtractedViewInstancing,
 };
 pub use limits::Limits;
 pub use parser::{

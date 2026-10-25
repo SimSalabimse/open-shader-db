@@ -13,6 +13,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use osdb_steam::{discover, discover_default, Discovery};
 
+mod output;
+
 const DEFAULT_MAX_UNMATCHED: usize = 100;
 
 #[derive(Parser)]
@@ -103,6 +105,8 @@ impl fmt::Debug for Cli {
                     game_id,
                     version,
                     exe_hash,
+                    force,
+                    hash_app_keys,
                 } => f
                     .debug_struct("RecordsExtract")
                     .field("sodb", &"<redacted>")
@@ -110,6 +114,8 @@ impl fmt::Debug for Cli {
                     .field("game_id", game_id)
                     .field("version", version)
                     .field("exe_hash", exe_hash)
+                    .field("force", force)
+                    .field("hash_app_keys", hash_app_keys)
                     .finish(),
             },
         }
@@ -135,6 +141,16 @@ enum RecordsCommand {
         /// Optional user-supplied exe SHA-256 (64 lowercase hex characters).
         #[arg(long)]
         exe_hash: Option<String>,
+        /// Overwrite `--out` if it already exists as a regular file.
+        #[arg(long)]
+        force: bool,
+        /// Replace each `app_key` with the SHA-256 of the game-provided key.
+        ///
+        /// The tool does not alter keys unless this flag is set. Hashing
+        /// hides path-shaped keys at the cost of making the original key
+        /// unrecoverable.
+        #[arg(long)]
+        hash_app_keys: bool,
     },
 }
 
@@ -180,16 +196,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     game_id,
                     version,
                     exe_hash,
+                    force,
+                    hash_app_keys,
                 },
         } => {
             let build = parse_build(game_id.as_deref(), version.as_deref(), exe_hash.as_deref())?;
-            let file = osdb_records::extract(&sodb, build)?;
-            let bytes = osdb_records::encode_record_file(&file)?;
+            let file = osdb_records::extract_with_options(
+                &sodb,
+                build,
+                sodb::Limits::DEFAULT,
+                hash_app_keys,
+            )?;
             match out {
-                Some(path) => std::fs::write(&path, bytes)?,
+                Some(path) => output::write_atomic(&path, &sodb, force, |dest| {
+                    osdb_records::encode_record_file_to_writer(&file, dest).map_err(Into::into)
+                })?,
                 None => {
                     let mut stdout = std::io::stdout().lock();
-                    stdout.write_all(&bytes)?;
+                    osdb_records::encode_record_file_to_writer(&file, &mut stdout)?;
                 }
             }
         }
@@ -347,6 +371,8 @@ mod tests {
                     game_id: Some(String::from("synthetic")),
                     version: Some(String::from("1")),
                     exe_hash: None,
+                    force: false,
+                    hash_app_keys: false,
                 },
             },
         };

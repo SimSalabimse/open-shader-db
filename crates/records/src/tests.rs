@@ -16,15 +16,16 @@ use sha2::{Digest, Sha256 as Sha256Digest};
 use crate::build::{BuildIdentity, ExeHash, GameId, GameVersion};
 #[cfg(target_os = "linux")]
 use crate::extract::extract_with_sodb_limits;
-use crate::extract::{encode_record_file, extract};
+use crate::extract::{encode_record_file, extract, extract_with_options};
 #[cfg(unix)]
 use crate::file::open_regular_nonblocking;
 use crate::file::{
-    load, load_with_limits, read_capped, reset_read_reached, take_read_reached, RedactedPath,
-    FORMAT_VERSION,
+    load, load_with_limits, read_capped, reset_read_reached, take_read_reached, RecordFile,
+    RedactedPath, FORMAT_VERSION,
 };
 use crate::hash::Sha256;
 use crate::matching::{match_local_hashes, CoverageKind};
+use crate::types::{HexBytes, ShaderStage};
 use crate::{Error, Limits};
 
 use sodb::{SODB_APPLICATION_ID, SODB_USER_VERSION};
@@ -38,7 +39,7 @@ const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const FAKE_VS: &[u8] = b"FAKE_VS_BLOB_BYTES";
 const FAKE_PS: &[u8] = b"FAKE_PS_BLOB_BYTES";
-const FAKE_ROOT: &[u8] = b"FAKE_ROOT_SIG_BYTES";
+const FAKE_ROOT: &[u8] = &[1, 0, 0, 0, b'F', b'A', b'K', b'E'];
 
 struct TempFile {
     path: PathBuf,
@@ -219,10 +220,13 @@ fn extract_round_trip_and_no_bytecode() {
         rec.bytecode_hashes.ps.unwrap().to_hex(),
         sha256_hex(FAKE_PS)
     );
-    assert_eq!(
-        rec.root_signature.as_ref().unwrap().as_str(),
-        bytes_to_hex(FAKE_ROOT)
-    );
+    let rs = rec.root_signature.expect("root signature hash");
+    let stored = file
+        .root_signatures
+        .get(&rs)
+        .expect("interned root signature");
+    assert_eq!(stored.as_str(), bytes_to_hex(FAKE_ROOT));
+    assert_eq!(rs.to_hex(), sha256_hex(FAKE_ROOT));
     assert_eq!(rec.rasterizer.as_ref().unwrap().fill_mode, 3);
     assert_eq!(rec.flags, Some(7));
 
@@ -301,18 +305,22 @@ fn matching_covered_partial_and_missing() {
     local.insert(vs);
     local.insert(extra);
     let report = match_local_hashes(&file, &local);
-    assert_eq!(report.fully_covered.len(), 1);
-    assert_eq!(report.fully_covered[0].app_key.as_str(), "6e6f6e65");
+    assert_eq!(report.fully_covered.len(), 0);
     assert_eq!(report.partially_covered.len(), 2);
-    assert_eq!(report.missing_shaders.len(), 1);
+    assert_eq!(report.missing_shaders.len(), 2);
+    assert!(report
+        .missing_shaders
+        .iter()
+        .any(|m| m.app_key.as_str() == "6e6f6e65"));
     assert_eq!(report.missing_shaders[0].kind, CoverageKind::MissingShaders);
 
     let mut both = HashSet::new();
     both.insert(vs);
     both.insert(ps);
     let all = match_local_hashes(&file, &both);
-    assert_eq!(all.missing_shaders.len(), 0);
-    assert_eq!(all.fully_covered.len(), 4);
+    assert_eq!(all.missing_shaders.len(), 1);
+    assert_eq!(all.missing_shaders[0].app_key.as_str(), "6e6f6e65");
+    assert_eq!(all.fully_covered.len(), 3);
 }
 
 #[test]
@@ -641,6 +649,504 @@ fn extract_rss_does_not_scale_with_blob_size() {
         assert!(
             delta < 8 * 1024 * 1024,
             "RSS grew by {delta} bytes; streaming hash missing (total blobs {TOTAL})"
+        );
+    }
+}
+
+fn dxbc_with_parts(parts: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+    let header_len = 32;
+    let offsets_len = parts.len() * 4;
+    let mut body = Vec::new();
+    let mut offsets = Vec::new();
+    let mut cursor = header_len + offsets_len;
+    for (fcc, data) in parts {
+        offsets.push(cursor as u32);
+        body.extend_from_slice(*fcc);
+        body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        body.extend_from_slice(data);
+        cursor += 8 + data.len();
+    }
+    let file_size = (header_len + offsets_len + body.len()) as u32;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"DXBC");
+    out.extend_from_slice(&[0_u8; 16]);
+    out.extend_from_slice(&1_u32.to_le_bytes());
+    out.extend_from_slice(&file_size.to_le_bytes());
+    out.extend_from_slice(&(parts.len() as u32).to_le_bytes());
+    for off in offsets {
+        out.extend_from_slice(&off.to_le_bytes());
+    }
+    out.extend(body);
+    out
+}
+
+fn sodb_with_root_sig(value: &[u8]) -> TempFile {
+    create_sodb(|conn| {
+        create_core_tables(conn)?;
+        conn.execute(
+            "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
+            rusqlite::params![b"rs-1", value],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, RootSignature, Flags) VALUES (?1, ?2, 0)",
+            rusqlite::params![b"pso-1", b"rs-1"],
+        )?;
+        Ok(())
+    })
+}
+
+#[test]
+fn dxil_carrying_root_signature_is_rejected_and_marker_is_absent() {
+    const MARKER: &[u8] = b"DXIL_MARKER_SHOULD_NOT_LEAK_9f3a";
+    let blob = dxbc_with_parts(&[(b"RTS0", FAKE_ROOT), (b"DXIL", MARKER)]);
+    let sodb = sodb_with_root_sig(&blob);
+    let err = extract(sodb.path(), BuildIdentity::empty()).unwrap_err();
+    let text = err.to_string();
+    assert!(
+        matches!(err, Error::Sodb(sodb::Error::DxbcForbiddenPart)),
+        "{err:?}"
+    );
+    assert!(!text.contains("DXIL_MARKER"));
+    assert!(!text.contains("9f3a"));
+    let debug = format!("{err:?}");
+    assert!(!debug.contains("DXIL_MARKER"));
+}
+
+#[test]
+fn rts0_only_container_emits_payload_not_container() {
+    let blob = dxbc_with_parts(&[(b"RTS0", FAKE_ROOT)]);
+    let sodb = sodb_with_root_sig(&blob);
+    let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+    assert_eq!(file.root_signatures.len(), 1);
+    let stored = file.root_signatures.values().next().unwrap();
+    assert_eq!(stored.as_str(), bytes_to_hex(FAKE_ROOT));
+    let json = String::from_utf8(encode_record_file(&file).unwrap()).unwrap();
+    assert!(!json.contains(&bytes_to_hex(b"DXBC")));
+    assert!(!json.to_ascii_lowercase().contains("44584243"));
+}
+
+#[test]
+fn malformed_dxbc_root_signature_is_rejected() {
+    let mut blob = dxbc_with_parts(&[(b"RTS0", FAKE_ROOT)]);
+    blob.truncate(20);
+    let sodb = sodb_with_root_sig(&blob);
+    let err = extract(sodb.path(), BuildIdentity::empty()).unwrap_err();
+    assert!(
+        matches!(err, Error::Sodb(sodb::Error::DxbcMalformed)),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn raw_root_signature_is_accepted() {
+    let sodb = sodb_with_root_sig(FAKE_ROOT);
+    let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+    assert_eq!(
+        file.root_signatures.values().next().unwrap().as_str(),
+        bytes_to_hex(FAKE_ROOT)
+    );
+}
+
+#[test]
+fn record_file_debug_redacts_descriptor_bytes() {
+    let sodb = sodb_with_root_sig(FAKE_ROOT);
+    let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+    let debug = format!("{file:?}");
+    assert!(!debug.contains(&bytes_to_hex(FAKE_ROOT)));
+    assert!(!debug.contains("FAKE"));
+}
+
+#[test]
+fn unresolved_stage_is_not_fully_covered() {
+    let sodb = create_sodb(|conn| {
+        create_core_tables(conn)?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"vs", FAKE_VS],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, ByteCode_VS, ByteCode_PS) VALUES (?1, ?2, ?3)",
+            rusqlite::params![b"hang", b"vs", b"missing"],
+        )?;
+        Ok(())
+    });
+    let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+    assert_eq!(file.records[0].unresolved_stages, vec![ShaderStage::Ps]);
+    assert!(file.records[0].bytecode_hashes.ps.is_none());
+    let mut local = HashSet::new();
+    local.insert(Sha256::parse_hex(&sha256_hex(FAKE_VS)).unwrap());
+    let report = match_local_hashes(&file, &local);
+    assert_eq!(report.fully_covered.len(), 0);
+    assert_eq!(report.partially_covered.len(), 1);
+}
+
+#[test]
+fn empty_record_is_not_fully_covered() {
+    let rec = record_shell(r#"{"app_key":"01","version":0,"bytecode_hashes":{}}"#);
+    let file = write_temp(".json", rec);
+    let loaded = load(file.path()).unwrap();
+    let report = match_local_hashes(&loaded, &HashSet::new());
+    assert_eq!(report.fully_covered.len(), 0);
+    assert_eq!(report.missing_shaders.len(), 1);
+}
+
+#[test]
+fn non_finite_float_is_rejected_at_extract() {
+    let sodb = create_sodb(|conn| {
+        create_core_tables(conn)?;
+        conn.execute(
+            "INSERT INTO rasterizer_descs VALUES (?1, 3, 1, 0, ?2, 0.0, 0.0, 1, 0, 0, 0)",
+            rusqlite::params![b"rast-1", f64::INFINITY],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, RasterizerDesc, Flags) VALUES (?1, ?2, 0)",
+            rusqlite::params![b"pso-1", b"rast-1"],
+        )?;
+        Ok(())
+    });
+    let err = extract(sodb.path(), BuildIdentity::empty()).unwrap_err();
+    assert!(
+        matches!(err, Error::Sodb(sodb::Error::NonFiniteFloat { .. })),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn extract_output_always_loads() {
+    let sodb = sodb_with_root_sig(FAKE_ROOT);
+    let file = extract(sodb.path(), sample_build()).unwrap();
+    let json = encode_record_file(&file).unwrap();
+    let loaded_path = write_temp(".json", &json);
+    let loaded = load(loaded_path.path()).unwrap();
+    assert_eq!(loaded, file);
+}
+
+#[test]
+fn semantic_name_rejects_path_shaped_value() {
+    let sodb = create_sodb(|conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE input_element_descs (
+                Key BLOB PRIMARY KEY,
+                SemanticName TEXT,
+                SemanticIndex INTEGER,
+                Format INTEGER,
+                InputSlot INTEGER,
+                AlignedByteOffset INTEGER,
+                InputSlotClass INTEGER,
+                InstanceDataStepRate INTEGER
+            );
+            CREATE TABLE input_layout_to_input_element_associations (
+                InputLayoutKey BLOB,
+                InputElementKey BLOB
+            );
+            CREATE TABLE pipeline_states (
+                Key BLOB NOT NULL PRIMARY KEY,
+                InputLayout BLOB,
+                Flags INTEGER
+            );
+            ",
+        )?;
+        conn.execute(
+            "INSERT INTO input_element_descs VALUES (?1, ?2, 0, 0, 0, 0, 0, 0)",
+            rusqlite::params![b"el-1", "/home/os-user/secret"],
+        )?;
+        conn.execute(
+            "INSERT INTO input_layout_to_input_element_associations VALUES (?1, ?2)",
+            rusqlite::params![b"lay-1", b"el-1"],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, InputLayout, Flags) VALUES (?1, ?2, 0)",
+            rusqlite::params![b"pso-1", b"lay-1"],
+        )?;
+        Ok(())
+    });
+    let err = extract(sodb.path(), BuildIdentity::empty()).unwrap_err();
+    let text = err.to_string();
+    assert!(
+        matches!(err, Error::Sodb(sodb::Error::InvalidSemanticName)),
+        "{err:?}"
+    );
+    assert!(!text.contains("os-user"));
+    assert!(!text.contains("/home"));
+}
+
+#[test]
+fn hash_app_keys_replaces_key_with_sha256() {
+    let sodb = sodb_with_root_sig(FAKE_ROOT);
+    let file = extract_with_options(
+        sodb.path(),
+        BuildIdentity::empty(),
+        sodb::Limits::DEFAULT,
+        true,
+    )
+    .unwrap();
+    let expected = sha256_hex(b"pso-1");
+    assert_eq!(file.records[0].app_key.as_str(), expected);
+    assert_ne!(file.records[0].app_key.as_str(), "70736f2d31");
+}
+
+#[test]
+fn loader_rejects_duplicate_build_key() {
+    let json = empty_record_json().replacen(
+        r#""game_id":"synthetic""#,
+        r#""game_id":"synthetic","game_id":"other""#,
+        1,
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::DuplicateKey), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_duplicate_record_key() {
+    let inner = r#"{"app_key":"01","app_key":"02","version":0,"bytecode_hashes":{}}"#;
+    let file = write_temp(".json", record_shell(inner));
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::DuplicateKey), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_duplicate_bytecode_hash_key() {
+    let inner = format!(
+        r#"{{"app_key":"01","version":0,"bytecode_hashes":{{"vs":"{HASH_A}","vs":"{HASH_C}"}}}}"#
+    );
+    let file = write_temp(".json", record_shell(&inner));
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::DuplicateKey), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_odd_length_hex() {
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"root_signatures":{{"{HASH_A}":"000"}},"records":[]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::OddHexLength { got: 3 }), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_empty_and_unsorted_app_keys() {
+    let empty = record_shell(r#"{"app_key":"","version":0,"bytecode_hashes":{}}"#);
+    let file = write_temp(".json", empty);
+    let err = load(file.path()).unwrap_err();
+    assert!(
+        matches!(err, Error::EmptyAppKey | Error::MalformedHex),
+        "{err:?}"
+    );
+
+    let unsorted = r#"{"format_version":1,"build":{},"records":[{"app_key":"02","version":0,"bytecode_hashes":{}},{"app_key":"01","version":0,"bytecode_hashes":{}}]}"#;
+    let file = write_temp(".json", unsorted);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::AppKeysNotSorted), "{err:?}");
+}
+
+#[test]
+fn output_cap_fails_without_partial_vec_growth() {
+    let mut file = RecordFile {
+        format_version: FORMAT_VERSION,
+        build: BuildIdentity::empty(),
+        root_signatures: Default::default(),
+        input_layouts: Default::default(),
+        stream_outputs: Default::default(),
+        records: Vec::new(),
+    };
+    let huge = vec![0_u8; 33 * 1024 * 1024];
+    let hash = crate::hash::sha256_bytes(&huge);
+    file.root_signatures
+        .insert(hash, HexBytes::from_bytes(&huge));
+    let err = encode_record_file(&file).unwrap_err();
+    assert!(
+        matches!(err, Error::OutputTooLarge { max: 67_108_864 }),
+        "{err:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn shared_root_signature_fanout_stays_under_rss_and_output_caps() {
+    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    const STATES: usize = 200;
+    const BLOB_LEN: usize = 8 * 1024 * 1024;
+    let fixture = create_sodb(|conn| {
+        create_core_tables(conn)?;
+        let mut blob = vec![1_u8, 0, 0, 0];
+        blob.resize(BLOB_LEN, 0);
+        conn.execute(
+            "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
+            rusqlite::params![b"rs-shared", &blob],
+        )?;
+        let tx = conn.transaction()?;
+        {
+            let mut ins = tx.prepare(
+                "INSERT INTO pipeline_states (Key, RootSignature, Flags) VALUES (?1, ?2, 0)",
+            )?;
+            for i in 0..STATES {
+                let key = (i as u32).to_le_bytes();
+                ins.execute(rusqlite::params![&key, b"rs-shared"])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    });
+    let limits = sodb::Limits {
+        max_blob_bytes: BLOB_LEN,
+        max_root_signature_bytes: BLOB_LEN,
+        max_file_bytes: 256 * 1024 * 1024,
+        ..sodb::Limits::DEFAULT
+    };
+    let before = rss_bytes();
+    let file = extract_with_sodb_limits(fixture.path(), BuildIdentity::empty(), limits).unwrap();
+    let json = encode_record_file(&file).unwrap();
+    let after = rss_bytes();
+    assert_eq!(file.records.len(), STATES);
+    assert_eq!(file.root_signatures.len(), 1);
+    assert!(
+        json.len() < 20 * 1024 * 1024,
+        "interned output should stay small, got {}",
+        json.len()
+    );
+    if let (Some(before), Some(after)) = (before, after) {
+        let peak = after.max(before);
+        eprintln!(
+            "200x8MiB shared root-signature extract peak RSS: {} bytes ({:.1} MiB); output {} bytes",
+            peak,
+            peak as f64 / (1024.0 * 1024.0),
+            json.len()
+        );
+        let delta = after.saturating_sub(before);
+        assert!(
+            peak < 64 * 1024 * 1024 || delta < 64 * 1024 * 1024,
+            "peak RSS {peak} delta {delta} exceeded 64 MiB"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn shared_input_layout_fanout_stays_small() {
+    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    const STATES: usize = 200;
+    const ELEMS: usize = 4000;
+    let fixture = create_sodb(|conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE input_element_descs (
+                Key BLOB PRIMARY KEY,
+                SemanticName TEXT,
+                SemanticIndex INTEGER,
+                Format INTEGER,
+                InputSlot INTEGER,
+                AlignedByteOffset INTEGER,
+                InputSlotClass INTEGER,
+                InstanceDataStepRate INTEGER
+            );
+            CREATE TABLE input_layout_to_input_element_associations (
+                InputLayoutKey BLOB,
+                InputElementKey BLOB
+            );
+            CREATE TABLE pipeline_states (
+                Key BLOB NOT NULL PRIMARY KEY,
+                InputLayout BLOB,
+                Flags INTEGER
+            );
+            ",
+        )?;
+        let tx = conn.transaction()?;
+        {
+            let mut ins = tx.prepare(
+                "INSERT INTO input_element_descs VALUES (?1, 'POSITION', ?2, 0, 0, 0, 0, 0)",
+            )?;
+            let mut assoc = tx.prepare(
+                "INSERT INTO input_layout_to_input_element_associations VALUES (?1, ?2)",
+            )?;
+            for i in 0..ELEMS {
+                let key = (i as u32).to_le_bytes();
+                ins.execute(rusqlite::params![&key, i as i64])?;
+                assoc.execute(rusqlite::params![b"lay-1", &key])?;
+            }
+            let mut pso = tx.prepare(
+                "INSERT INTO pipeline_states (Key, InputLayout, Flags) VALUES (?1, ?2, 0)",
+            )?;
+            for i in 0..STATES {
+                let key = ((ELEMS as u32) + i as u32).to_le_bytes();
+                pso.execute(rusqlite::params![&key, b"lay-1"])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    });
+    let before = rss_bytes();
+    let file = extract(fixture.path(), BuildIdentity::empty()).unwrap();
+    let json = encode_record_file(&file).unwrap();
+    let after = rss_bytes();
+    assert_eq!(file.records.len(), STATES);
+    assert_eq!(file.input_layouts.len(), 1);
+    if let (Some(before), Some(after)) = (before, after) {
+        let delta = after.saturating_sub(before);
+        eprintln!(
+            "200x4000 shared input-layout extract RSS delta: {} bytes ({:.1} MiB); output {} bytes",
+            delta,
+            delta as f64 / (1024.0 * 1024.0),
+            json.len()
+        );
+        assert!(
+            delta < 64 * 1024 * 1024,
+            "RSS grew by {delta} bytes for interned input layouts"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn extract_rss_200_mib_bytecode() {
+    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    const ROWS: usize = 25;
+    const BLOB_LEN: usize = 8 * 1024 * 1024;
+    let fixture = create_sodb(|conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE shader_bytecode (Key BLOB NOT NULL PRIMARY KEY, Bytecode BLOB);
+            CREATE TABLE pipeline_states (Key BLOB NOT NULL PRIMARY KEY, ByteCode_VS BLOB);
+            ",
+        )?;
+        let tx = conn.transaction()?;
+        {
+            let mut ins_bc =
+                tx.prepare("INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)")?;
+            let mut ins_pso =
+                tx.prepare("INSERT INTO pipeline_states (Key, ByteCode_VS) VALUES (?1, ?2)")?;
+            let mut blob = vec![0_u8; BLOB_LEN];
+            for i in 0..ROWS {
+                let key = (i as u32).to_le_bytes();
+                blob[0] = i as u8;
+                ins_bc.execute(rusqlite::params![&key, &blob])?;
+                ins_pso.execute(rusqlite::params![&key, &key])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    });
+    let limits = sodb::Limits {
+        max_blob_bytes: BLOB_LEN,
+        max_file_bytes: 256 * 1024 * 1024,
+        ..sodb::Limits::DEFAULT
+    };
+    let before = rss_bytes();
+    let file = extract_with_sodb_limits(fixture.path(), BuildIdentity::empty(), limits).unwrap();
+    let after = rss_bytes();
+    assert_eq!(file.records.len(), ROWS);
+    if let (Some(before), Some(after)) = (before, after) {
+        let peak = after.max(before);
+        eprintln!(
+            "25x8MiB bytecode extract peak RSS: {} bytes ({:.1} MiB)",
+            peak,
+            peak as f64 / (1024.0 * 1024.0)
+        );
+        assert!(
+            after.saturating_sub(before) < 64 * 1024 * 1024,
+            "200 MiB blob extract RSS grew too much"
         );
     }
 }

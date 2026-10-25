@@ -11,11 +11,13 @@ use crate::RecordFile;
 /// How a record's stage hashes compare to a local hash set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoverageKind {
-    /// Every referenced stage hash is present locally (or the record has none).
+    /// At least one resolved stage hash is present locally, every resolved
+    /// stage hash is present, and the record has no unresolved stages.
     FullyCovered,
-    /// At least one stage hash is present and at least one is absent.
+    /// At least one resolved stage hash is present and at least one resolved
+    /// hash is absent or a stage is unresolved.
     PartiallyCovered,
-    /// The record references hashes and none of them are present locally.
+    /// No resolved stage hash is present locally (including empty records).
     MissingShaders,
 }
 
@@ -70,7 +72,14 @@ fn classify_record(record: &PipelineStateRecord, local: &HashSet<Sha256>) -> Rec
             missing_stages.push(stage);
         }
     }
-    let kind = if missing_stages.is_empty() {
+    let unresolved = !record.unresolved_stages.is_empty();
+    let kind = if unresolved {
+        if present_stages.is_empty() {
+            CoverageKind::MissingShaders
+        } else {
+            CoverageKind::PartiallyCovered
+        }
+    } else if missing_stages.is_empty() && !present_stages.is_empty() {
         CoverageKind::FullyCovered
     } else if present_stages.is_empty() {
         CoverageKind::MissingShaders

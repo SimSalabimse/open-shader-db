@@ -72,4 +72,28 @@ pub enum Error {
     /// Opening or extracting the local SODB failed.
     #[error(transparent)]
     Sodb(#[from] sodb::Error),
+
+    /// Serialized output exceeded the 64 MiB record-file cap.
+    #[error("record file output exceeds limit of {max} bytes")]
+    OutputTooLarge { max: u64 },
+
+    /// A record referenced a descriptor hash that is not in the file tables.
+    #[error("record references a missing descriptor")]
+    UnresolvedDescriptor,
+
+    /// A descriptor table key was not the SHA-256 of its content.
+    #[error("descriptor table key does not match content hash")]
+    DescriptorHashMismatch,
+
+    /// `app_key` was empty.
+    #[error("app_key is empty")]
+    EmptyAppKey,
+
+    /// `records` were not sorted by `app_key`.
+    #[error("records are not sorted by app_key")]
+    AppKeysNotSorted,
+
+    /// A root-signature hex blob exceeded the 1 MiB cap.
+    #[error("root signature exceeds limit of {max} bytes (got {got})")]
+    RootSignatureTooLarge { max: u64, got: u64 },
 }

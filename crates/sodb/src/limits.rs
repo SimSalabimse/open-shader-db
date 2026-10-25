@@ -9,6 +9,8 @@ pub struct Limits {
     pub max_file_bytes: u64,
     /// Maximum size of any BLOB value copied into Rust (bytecode, descriptors).
     pub max_blob_bytes: usize,
+    /// Maximum emitted root-signature bytes (raw blob or RTS0 payload).
+    pub max_root_signature_bytes: usize,
     /// Maximum size of an application-defined key BLOB.
     pub max_key_bytes: usize,
     /// Maximum size of a TEXT value (exe name, app name, engine name).
@@ -20,11 +22,12 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// 256 MiB file, 8 MiB blobs, 4 KiB keys/text, 50_000 rows per table,
-    /// 500_000 rows total.
+    /// 256 MiB file, 8 MiB blobs, 1 MiB root signatures, 4 KiB keys/text,
+    /// 50_000 rows per table, 500_000 rows total.
     pub const DEFAULT: Self = Self {
         max_file_bytes: 256 * 1024 * 1024,
         max_blob_bytes: 8 * 1024 * 1024,
+        max_root_signature_bytes: crate::dxbc::MAX_ROOT_SIGNATURE_BYTES,
         max_key_bytes: 4 * 1024,
         max_text_bytes: 4 * 1024,
         max_rows_per_table: 50_000,

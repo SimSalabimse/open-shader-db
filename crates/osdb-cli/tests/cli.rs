@@ -7,6 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
+use std::time::Duration;
 
 use rusqlite::Connection;
 use sodb::{SODB_APPLICATION_ID, SODB_USER_VERSION};
@@ -229,4 +231,183 @@ fn coverage_load_error_is_nonzero() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(stderr.lines().count(), 1);
     assert!(!stderr.contains(missing.to_string_lossy().as_ref()));
+}
+
+#[test]
+fn records_extract_refuses_out_equal_to_sodb() {
+    let sodb = create_sodb();
+    let original = std::fs::read(&sodb.path).unwrap();
+    let out = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&sodb.path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("same file"));
+    assert_eq!(std::fs::read(&sodb.path).unwrap(), original);
+}
+
+#[test]
+fn records_extract_refuses_existing_out_without_force() {
+    let sodb = create_sodb();
+    let dest = TempFile {
+        path: temp_path(".json"),
+    };
+    std::fs::write(&dest.path, b"keep-me").unwrap();
+    let out = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&dest.path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read(&dest.path).unwrap(), b"keep-me");
+}
+
+#[test]
+fn records_extract_force_overwrites_regular_file() {
+    let sodb = create_sodb();
+    let dest = TempFile {
+        path: temp_path(".json"),
+    };
+    std::fs::write(&dest.path, b"old").unwrap();
+    let out = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--force")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(&dest.path).unwrap();
+    assert!(text.contains("format_version"));
+    assert_ne!(text.as_bytes(), b"old");
+}
+
+#[test]
+fn records_extract_hash_app_keys() {
+    let sodb = create_sodb();
+    let dest = TempFile {
+        path: temp_path(".json"),
+    };
+    let out = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--hash-app-keys")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(&dest.path).unwrap();
+    assert!(!text.contains("\"app_key\": \"01\""));
+}
+
+#[test]
+fn help_lists_force_and_hash_app_keys() {
+    let out = bin()
+        .args(["records", "extract", "--help"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("--force"));
+    assert!(stdout.contains("--hash-app-keys"));
+}
+
+#[cfg(unix)]
+#[test]
+fn records_extract_refuses_hardlink_to_sodb() {
+    let sodb = create_sodb();
+    let original = std::fs::read(&sodb.path).unwrap();
+    let dest = temp_path(".sodb");
+    std::fs::hard_link(&sodb.path, &dest).unwrap();
+    let out = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&dest)
+        .arg("--force")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&dest);
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read(&sodb.path).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn records_extract_refuses_symlink_out() {
+    let sodb = create_sodb();
+    let target = TempFile {
+        path: temp_path(".json"),
+    };
+    std::fs::write(&target.path, b"keep").unwrap();
+    let link = temp_path(".json");
+    std::os::unix::fs::symlink(&target.path, &link).unwrap();
+    let out = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&link)
+        .arg("--force")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&link);
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read(&target.path).unwrap(), b"keep");
+}
+
+#[cfg(unix)]
+#[test]
+fn records_extract_refuses_fifo_out_without_hanging() {
+    let sodb = create_sodb();
+    let fifo = temp_path(".json");
+    let status = Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(status.success());
+    let sodb_path = sodb.path.clone();
+    let fifo_for_thread = fifo.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let result = bin()
+            .arg("records")
+            .arg("extract")
+            .arg("--sodb")
+            .arg(&sodb_path)
+            .arg("--out")
+            .arg(&fifo_for_thread)
+            .output();
+        let _ = tx.send(result);
+    });
+    let received = rx.recv_timeout(Duration::from_secs(3));
+    let _ = std::fs::remove_file(&fifo);
+    let result = received.expect("FIFO --out hung");
+    let out = result.unwrap();
+    assert!(!out.status.success());
+    handle.join().unwrap();
 }

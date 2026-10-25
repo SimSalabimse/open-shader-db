@@ -3,7 +3,7 @@
 //! Record file types and hardened file loading.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
@@ -13,9 +13,10 @@ use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::Serialize;
 
 use crate::build::{BuildIdentity, ExeHash, GameId, GameVersion};
+use crate::hash::{parse_hex_bytes, sha256_bytes, sha256_json, Sha256};
 use crate::types::{
     AppKeyHex, BlendDesc, DepthStencilDesc, HexBytes, InputElementDesc, PipelineStateRecord,
-    RasterizerDesc, RenderTargetFormats, SampleDesc, StageHashes, StreamOutDesc,
+    RasterizerDesc, RenderTargetFormats, SampleDesc, ShaderStage, StageHashes, StreamOutDesc,
     ViewInstancingDesc,
 };
 use crate::{Error, Limits};
@@ -34,11 +35,37 @@ thread_local! {
 }
 
 /// Validated record file. `format_version` is always `1`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 pub struct RecordFile {
     pub format_version: u32,
     pub build: BuildIdentity,
+    pub root_signatures: BTreeMap<Sha256, HexBytes>,
+    pub input_layouts: BTreeMap<Sha256, Vec<InputElementDesc>>,
+    pub stream_outputs: BTreeMap<Sha256, StreamOutDesc>,
     pub records: Vec<PipelineStateRecord>,
+}
+
+impl fmt::Debug for RecordFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecordFile")
+            .field("format_version", &self.format_version)
+            .field("build", &self.build)
+            .field(
+                "root_signatures",
+                &redacted_hex_table(&self.root_signatures),
+            )
+            .field("input_layouts", &self.input_layouts.len())
+            .field("stream_outputs", &self.stream_outputs.len())
+            .field("records", &self.records)
+            .finish()
+    }
+}
+
+fn redacted_hex_table(table: &BTreeMap<Sha256, HexBytes>) -> BTreeMap<String, usize> {
+    table
+        .iter()
+        .map(|(k, v)| (k.to_hex(), v.as_str().len()))
+        .collect()
 }
 
 impl RecordFile {
@@ -211,6 +238,9 @@ fn json_nesting_depth(bytes: &[u8]) -> u32 {
 struct RawFile {
     format_version: u64,
     build: BuildIdentity,
+    root_signatures: BTreeMap<Sha256, HexBytes>,
+    input_layouts: BTreeMap<Sha256, Vec<InputElementDesc>>,
+    stream_outputs: BTreeMap<Sha256, StreamOutDesc>,
     records: Vec<PipelineStateRecord>,
 }
 
@@ -222,12 +252,67 @@ impl RawFile {
                 expected: FORMAT_VERSION,
             });
         }
+        validate_app_keys(&self.records)?;
+        validate_refs(
+            &self.records,
+            &self.root_signatures,
+            &self.input_layouts,
+            &self.stream_outputs,
+        )?;
         Ok(RecordFile {
             format_version: FORMAT_VERSION,
             build: self.build,
+            root_signatures: self.root_signatures,
+            input_layouts: self.input_layouts,
+            stream_outputs: self.stream_outputs,
             records: self.records,
         })
     }
+}
+
+fn validate_app_keys(records: &[PipelineStateRecord]) -> Result<(), Error> {
+    let mut prev: Option<&AppKeyHex> = None;
+    for record in records {
+        if record.app_key.as_str().is_empty() {
+            return Err(Error::EmptyAppKey);
+        }
+        if let Some(last) = prev {
+            if record.app_key.as_str() == last.as_str() {
+                return Err(Error::DuplicateKey);
+            }
+            if record.app_key.as_str() < last.as_str() {
+                return Err(Error::AppKeysNotSorted);
+            }
+        }
+        prev = Some(&record.app_key);
+    }
+    Ok(())
+}
+
+fn validate_refs(
+    records: &[PipelineStateRecord],
+    root_signatures: &BTreeMap<Sha256, HexBytes>,
+    input_layouts: &BTreeMap<Sha256, Vec<InputElementDesc>>,
+    stream_outputs: &BTreeMap<Sha256, StreamOutDesc>,
+) -> Result<(), Error> {
+    for record in records {
+        if let Some(hash) = record.root_signature {
+            if !root_signatures.contains_key(&hash) {
+                return Err(Error::UnresolvedDescriptor);
+            }
+        }
+        if let Some(hash) = record.input_layout {
+            if !input_layouts.contains_key(&hash) {
+                return Err(Error::UnresolvedDescriptor);
+            }
+        }
+        if let Some(hash) = record.stream_out {
+            if !stream_outputs.contains_key(&hash) {
+                return Err(Error::UnresolvedDescriptor);
+            }
+        }
+    }
+    Ok(())
 }
 
 impl<'de> serde::Deserialize<'de> for RawFile {
@@ -249,6 +334,9 @@ impl<'de> Visitor<'de> for RawFileVisitor {
         let mut seen = BTreeSet::new();
         let mut format_version = None;
         let mut build = None;
+        let mut root_signatures = None;
+        let mut input_layouts = None;
+        let mut stream_outputs = None;
         let mut records = None;
         while let Some(key) = map.next_key::<String>()? {
             if !seen.insert(key.clone()) {
@@ -260,6 +348,15 @@ impl<'de> Visitor<'de> for RawFileVisitor {
                     let raw: RawBuild = map.next_value()?;
                     build = Some(raw.into_build().map_err(store_typed)?);
                 }
+                "root_signatures" => {
+                    root_signatures = Some(map.next_value::<RawHexTable>()?.0);
+                }
+                "input_layouts" => {
+                    input_layouts = Some(map.next_value::<RawLayoutTable>()?.0);
+                }
+                "stream_outputs" => {
+                    stream_outputs = Some(map.next_value::<RawStreamTable>()?.0);
+                }
                 "records" => records = Some(map.next_value::<RawRecords>()?.0),
                 _ => return Err(store_typed(Error::UnknownField)),
             }
@@ -267,6 +364,9 @@ impl<'de> Visitor<'de> for RawFileVisitor {
         Ok(RawFile {
             format_version: format_version.ok_or_else(|| store_typed(Error::InvalidJson))?,
             build: build.ok_or_else(|| store_typed(Error::InvalidJson))?,
+            root_signatures: root_signatures.unwrap_or_default(),
+            input_layouts: input_layouts.unwrap_or_default(),
+            stream_outputs: stream_outputs.unwrap_or_default(),
             records: records.ok_or_else(|| store_typed(Error::InvalidJson))?,
         })
     }
@@ -377,14 +477,15 @@ struct RawRecord {
     app_key: String,
     version: u32,
     bytecode_hashes: StageHashes,
+    unresolved_stages: Vec<ShaderStage>,
     root_signature: Option<String>,
-    input_layout: Option<Vec<InputElementDesc>>,
+    input_layout: Option<String>,
     depth_stencil: Option<DepthStencilDesc>,
     blend: Option<BlendDesc>,
     rasterizer: Option<RasterizerDesc>,
     render_target_formats: Option<RenderTargetFormats>,
     view_instancing: Option<ViewInstancingDesc>,
-    stream_out: Option<StreamOutDesc>,
+    stream_out: Option<String>,
     sample_desc: Option<SampleDesc>,
     sample_mask: Option<i64>,
     ib_strip_cut_value: Option<i64>,
@@ -396,21 +497,31 @@ struct RawRecord {
 
 impl RawRecord {
     fn into_record(self) -> Result<PipelineStateRecord, Error> {
+        if self.app_key.is_empty() {
+            return Err(Error::EmptyAppKey);
+        }
         Ok(PipelineStateRecord {
             app_key: AppKeyHex::parse_hex(&self.app_key)?,
             version: self.version,
             bytecode_hashes: self.bytecode_hashes,
+            unresolved_stages: self.unresolved_stages,
             root_signature: match self.root_signature {
-                Some(text) => Some(HexBytes::parse_hex(&text)?),
+                Some(text) => Some(Sha256::parse_hex(&text)?),
                 None => None,
             },
-            input_layout: self.input_layout,
+            input_layout: match self.input_layout {
+                Some(text) => Some(Sha256::parse_hex(&text)?),
+                None => None,
+            },
             depth_stencil: self.depth_stencil,
             blend: self.blend,
             rasterizer: self.rasterizer,
             render_target_formats: self.render_target_formats,
             view_instancing: self.view_instancing,
-            stream_out: self.stream_out,
+            stream_out: match self.stream_out {
+                Some(text) => Some(Sha256::parse_hex(&text)?),
+                None => None,
+            },
             sample_desc: self.sample_desc,
             sample_mask: self.sample_mask,
             ib_strip_cut_value: self.ib_strip_cut_value,
@@ -442,6 +553,7 @@ impl<'de> Visitor<'de> for RawRecordVisitor {
         let mut app_key = None;
         let mut version = None;
         let mut bytecode_hashes = None;
+        let mut unresolved_stages = None;
         let mut root_signature = None;
         let mut input_layout = None;
         let mut depth_stencil = None;
@@ -467,6 +579,7 @@ impl<'de> Visitor<'de> for RawRecordVisitor {
                 "bytecode_hashes" => {
                     bytecode_hashes = Some(map.next_value::<RawStages>()?.0);
                 }
+                "unresolved_stages" => unresolved_stages = Some(map.next_value()?),
                 "root_signature" => root_signature = map.next_value()?,
                 "input_layout" => input_layout = map.next_value()?,
                 "depth_stencil" => depth_stencil = map.next_value()?,
@@ -489,6 +602,7 @@ impl<'de> Visitor<'de> for RawRecordVisitor {
             app_key: app_key.ok_or_else(|| store_typed(Error::InvalidJson))?,
             version: version.ok_or_else(|| store_typed(Error::InvalidJson))?,
             bytecode_hashes: bytecode_hashes.ok_or_else(|| store_typed(Error::InvalidJson))?,
+            unresolved_stages: unresolved_stages.unwrap_or_default(),
             root_signature,
             input_layout,
             depth_stencil,
@@ -547,6 +661,121 @@ impl<'de> Visitor<'de> for RawStagesVisitor {
             }
         }
         Ok(RawStages(hashes))
+    }
+}
+
+struct RawHexTable(BTreeMap<Sha256, HexBytes>);
+
+impl<'de> serde::Deserialize<'de> for RawHexTable {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(RawHexTableVisitor)
+    }
+}
+
+struct RawHexTableVisitor;
+
+impl<'de> Visitor<'de> for RawHexTableVisitor {
+    type Value = RawHexTable;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a map of SHA-256 keys to root-signature hex")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut seen = BTreeSet::new();
+        let mut out = BTreeMap::new();
+        let max = LOAD_LIMITS.get().max_root_signature_bytes;
+        while let Some(key) = map.next_key::<String>()? {
+            if !seen.insert(key.clone()) {
+                return Err(store_typed(Error::DuplicateKey));
+            }
+            let hash = Sha256::parse_hex(&key).map_err(store_typed)?;
+            let hex: String = map.next_value()?;
+            let bytes = parse_hex_bytes(&hex).map_err(store_typed)?;
+            if bytes.len() > max {
+                return Err(store_typed(Error::RootSignatureTooLarge {
+                    max: max as u64,
+                    got: bytes.len() as u64,
+                }));
+            }
+            if sha256_bytes(&bytes) != hash {
+                return Err(store_typed(Error::DescriptorHashMismatch));
+            }
+            out.insert(hash, HexBytes::from_bytes(&bytes));
+        }
+        Ok(RawHexTable(out))
+    }
+}
+
+struct RawLayoutTable(BTreeMap<Sha256, Vec<InputElementDesc>>);
+
+impl<'de> serde::Deserialize<'de> for RawLayoutTable {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(RawLayoutTableVisitor)
+    }
+}
+
+struct RawLayoutTableVisitor;
+
+impl<'de> Visitor<'de> for RawLayoutTableVisitor {
+    type Value = RawLayoutTable;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a map of SHA-256 keys to input layouts")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut seen = BTreeSet::new();
+        let mut out = BTreeMap::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !seen.insert(key.clone()) {
+                return Err(store_typed(Error::DuplicateKey));
+            }
+            let hash = Sha256::parse_hex(&key).map_err(store_typed)?;
+            let value: Vec<InputElementDesc> = map.next_value()?;
+            let computed = sha256_json(&value).map_err(store_typed)?;
+            if computed != hash {
+                return Err(store_typed(Error::DescriptorHashMismatch));
+            }
+            out.insert(hash, value);
+        }
+        Ok(RawLayoutTable(out))
+    }
+}
+
+struct RawStreamTable(BTreeMap<Sha256, StreamOutDesc>);
+
+impl<'de> serde::Deserialize<'de> for RawStreamTable {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(RawStreamTableVisitor)
+    }
+}
+
+struct RawStreamTableVisitor;
+
+impl<'de> Visitor<'de> for RawStreamTableVisitor {
+    type Value = RawStreamTable;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a map of SHA-256 keys to stream-out descriptors")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut seen = BTreeSet::new();
+        let mut out = BTreeMap::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !seen.insert(key.clone()) {
+                return Err(store_typed(Error::DuplicateKey));
+            }
+            let hash = Sha256::parse_hex(&key).map_err(store_typed)?;
+            let value: StreamOutDesc = map.next_value()?;
+            let computed = sha256_json(&value).map_err(store_typed)?;
+            if computed != hash {
+                return Err(store_typed(Error::DescriptorHashMismatch));
+            }
+            out.insert(hash, value);
+        }
+        Ok(RawStreamTable(out))
     }
 }
 

@@ -16,23 +16,28 @@ Test fixtures in this repository are synthetic and CC0.
 [ARCHITECTURE.md](../ARCHITECTURE.md) sketches a logical
 `PipelineStateRecord` that also carries a per-record `buildId`. Format
 version 1 stores **one** optional [`BuildIdentity`](../ARCHITECTURE.md#buildid)
-on the file (`build`) and a `records` array of pipeline states.
+on the file (`build`), top-level descriptor tables, and a `records` array
+of pipeline states.
 
 Each record holds:
 
 - per-stage SHA-256 of `shader_bytecode.Bytecode` (lowercase hex)
-- state descriptors taken from the published SODB SQL schema
+- SHA-256 references into the file-level descriptor tables
 - the application key and `groups.Version`
+- `unresolved_stages` when a `ByteCode_*` key does not resolve
 
 DXIL / bytecode bytes are **never** stored. The extractor hashes each blob
-incrementally and discards it.
+incrementally and discards it. A DXBC container used as a root signature is
+parsed bounds-checked; only an RTS0 part is emitted, and any other part
+(DXIL, SHEX, SHDR, ILDB, …) rejects the extract.
 
 Signing is **not** part of this format.
 
 ## JSON schema (`format_version` 1)
 
 Unknown top-level fields, unknown `build` fields, and unknown record
-fields are rejected. Duplicate keys in those objects are rejected.
+fields are rejected. Duplicate keys in those objects (including
+`bytecode_hashes` and the descriptor tables) are rejected.
 Trailing **tokens** after the JSON value are rejected. Trailing ASCII
 whitespace is allowed. A UTF-8 BOM (`EF BB BF`) is rejected. Nesting
 deeper than 8 is rejected.
@@ -45,14 +50,20 @@ deeper than 8 is rejected.
     "version": "1.0.0",
     "exe_hash": "0000000000000000000000000000000000000000000000000000000000000000"
   },
+  "root_signatures": {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "01000000"
+  },
+  "input_layouts": {},
+  "stream_outputs": {},
   "records": [
     {
       "app_key": "01",
       "version": 0,
       "bytecode_hashes": {
-        "vs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "vs": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
-      "root_signature": "00",
+      "unresolved_stages": [],
+      "root_signature": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "input_layout": null,
       "depth_stencil": null,
       "blend": null,
@@ -78,18 +89,60 @@ deeper than 8 is rejected.
 | `build.game_id` | string or null | Optional. 1–128 ASCII graphic characters. No `/`, `\`, `:`, or whitespace. |
 | `build.version` | string or null | Same character rules as `game_id`. |
 | `build.exe_hash` | string or null | Optional. 64-character lowercase hex SHA-256. |
-| `records` | array | Sorted by `app_key` (byte order of the decoded key). Cap 50 000. |
-| `records[].app_key` | string | Even-length lowercase hex of the SODB application key. |
+| `root_signatures` | object | Map from SHA-256 (64 lowercase hex) to lowercase hex of sanitized root-signature bytes. Each key must equal the SHA-256 of the decoded value. Missing table is treated as empty. |
+| `input_layouts` | object | Map from SHA-256 of compact JSON of the element array to that array. Key must match the content hash. |
+| `stream_outputs` | object | Map from SHA-256 of compact JSON of the stream-out object to that object. Key must match the content hash. |
+| `records` | array | Sorted by `app_key` (hex string order). Unique, non-empty keys. Cap 50 000. |
+| `records[].app_key` | string | Even-length lowercase hex of the SODB application key, or SHA-256 of that key when `--hash-app-keys` is used. |
 | `records[].version` | integer | `groups.Version` for that PSO key, or `0` if none. |
 | `records[].bytecode_hashes` | object | Keys from `vs`, `ps`, `hs`, `ds`, `gs`, `as`, `ms`, `cs` only. Values are 64-character lowercase hex. Stages are written in that order. |
-| `records[].root_signature` | string or null | Lowercase hex of `root_signatures.value` (not DXIL). |
-| descriptor objects | object or null | Integer / real / text columns from the matching SODB table. |
+| `records[].unresolved_stages` | array | Stage names whose `ByteCode_*` key was non-NULL but missing from `shader_bytecode`. Omitted when empty. |
+| `records[].root_signature` | string or null | SHA-256 of an entry in `root_signatures`. Must resolve. |
+| `records[].input_layout` | string or null | SHA-256 of an entry in `input_layouts`. Must resolve. |
+| `records[].stream_out` | string or null | SHA-256 of an entry in `stream_outputs`. Must resolve. |
+| other descriptor objects | object or null | Integer / real / text columns stored inline (small). |
 | integer fields | integer or null | JSON floats rejected. |
+| real fields | finite number | NaN / Inf are rejected at extract so the loader never sees them. |
 
 Output is deterministic: the same SODB bytes produce byte-identical JSON.
+Extract streams JSON through a counting writer and rejects output larger
+than 64 MiB (the same cap the loader enforces).
 
-The file never contains game install paths, machine identifiers, or
-timestamps.
+## Which fields are copied as raw bytes
+
+Only **one** field family is stored as raw bytes (lowercase hex):
+
+| Table field | Source | Why it cannot carry bytecode |
+| --- | --- | --- |
+| `root_signatures` values | `root_signatures.value` | If the blob starts with `DXBC`, the container is parsed with bounds and part-count limits. The extract emits **only** the RTS0 payload. Any other part (DXIL, SHEX, SHDR, ILDB, STAT, …) or a malformed container fails the extract with a typed error that names no content. A non-DXBC blob is treated as a raw serialized root signature: size-capped (1 MiB by default) and checked for a little-endian version field in `1..=3`. |
+
+Every other descriptor is structured JSON of INTEGER / REAL / TEXT columns
+from the published SQL schema. None of those columns is a bytecode BLOB:
+
+- `input_layouts` — `input_element_descs` integers plus `SemanticName`
+  (validated as `[A-Za-z_][A-Za-z0-9_]*`, max 128)
+- `stream_outputs` — `stream_out_descs` integers plus `so_declarations`
+  (same `SemanticName` rule)
+- inline `depth_stencil`, `blend`, `rasterizer`, `render_target_formats`,
+  `view_instancing` — integers and finite floats only
+
+`bytecode_hashes` stores SHA-256 of `shader_bytecode.Bytecode`, never the
+bytes. `RecordFile`'s `Debug` implementation redacts descriptor hex
+(prints key + length only).
+
+## Privacy
+
+The tool does **not** rewrite game-provided application keys by default.
+`app_key` is lowercase hex of the SODB `Key` blob. A game that stored a
+path-shaped key will see that key's hex in the file. `--hash-app-keys`
+replaces each key with the SHA-256 of the raw key bytes (64 hex chars).
+That hides the original bytes and makes them unrecoverable; matching or
+debugging by the original key is then impossible.
+
+`SemanticName` is validated as an identifier and rejected (without
+echoing the value) when it is not. Filesystem paths, home directories,
+and machine identifiers are not collected as their own fields. The file
+contains no install paths, no machine identifiers, and no timestamps.
 
 ## Verified versus unverified
 
@@ -99,7 +152,8 @@ timestamps.
 - `pipeline_states` foreign keys `ByteCode_VS` … `ByteCode_CS` and
   integer columns `SampleDesc_Count`, `SampleDesc_Quality`, `SampleMask`,
   `IBStripCutValue`, `PrimitiveTopology`, `DSVFormat`, `NodeMask`, `Flags`
-- `root_signatures.value` is a BLOB (emitted as hex)
+- `root_signatures.value` is a BLOB (sanitized, then stored once in the
+  file-level table)
 - Column names and INTEGER/REAL/TEXT types for `depth_stencil_descs`,
   `depth_stencil_op_descs`, `blend_descs`, `render_target_blend_descs`,
   `rasterizer_descs`, `render_target_formats`, `view_instancing_descs`,
@@ -122,9 +176,10 @@ Record files are untrusted:
 
 | Limit | Default | Purpose |
 | --- | ---: | --- |
-| File size | 64 MiB | Reject huge payloads before JSON parse; the read is also capped |
+| File size | 64 MiB | Reject huge payloads before JSON parse; extract uses the same cap |
 | Record count | 50 000 | Enforced in the JSON array visitor as soon as the cap is crossed |
 | JSON nesting | 8 | Reject deeply nested documents |
+| Root-signature bytes | 1 MiB | Enforced when decoding `root_signatures` table values |
 
 The loader opens only regular files. On Unix the file is opened
 `O_NONBLOCK` and the opened handle is checked with `is_file`. Symbolic
@@ -132,14 +187,29 @@ links, directories, and FIFOs are rejected. Typed errors never include
 filesystem paths. Larger record or file caps are configurable in the
 library only (`load_with_limits`); the CLI uses the defaults.
 
+Table keys must equal the SHA-256 of the content. Every
+`root_signature` / `input_layout` / `stream_out` reference on a record
+must resolve. `app_key` values must be non-empty, unique, and sorted.
+
 ## Matching
 
 `osdb_records::match_local_hashes` is a pure function. Given a loaded
 `RecordFile` and a `HashSet<Sha256>` of local bytecode hashes it reports
 each record as:
 
-- **fully covered** — every referenced stage hash is in the set (or the
-  record has no stage hashes)
-- **partially covered** — at least one stage hash is present and at least
-  one is absent
-- **missing shaders** — the record references hashes and none are present
+- **fully covered** — the record has at least one resolved stage hash,
+  every resolved stage hash is in the set, and `unresolved_stages` is
+  empty
+- **partially covered** — at least one resolved stage hash is present and
+  at least one resolved hash is absent or a stage is unresolved
+- **missing shaders** — no resolved stage hash is present locally
+  (including empty records)
+
+Matching ignores which stage a hash came from. The local set is untyped:
+a hash present locally covers a record stage if and only if that stage's
+stored hash equals it, regardless of whether the local copy was a VS, PS,
+or any other stage.
+
+A NULL `ByteCode_*` column is an absent stage. A non-NULL key that is
+missing from `shader_bytecode` is listed in `unresolved_stages` and
+prevents `FullyCovered`.

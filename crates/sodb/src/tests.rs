@@ -25,6 +25,8 @@ use crate::{
 const FAKE_VS: &[u8] = b"FAKE_VS_BLOB";
 const FAKE_PS: &[u8] = b"FAKE_PS_BLOB";
 const FAKE_VS2: &[u8] = b"FAKE_VS_BLOB_2";
+/// Version-1 raw D3D12 root signature (not a DXBC container).
+const RAW_ROOT_SIG: &[u8] = &[1, 0, 0, 0, b'R', b'S', 1];
 
 /// Full Microsoft spec `pipeline_states` CREATE (1472 bytes). The old
 /// 1 KiB `SQLITE_LIMIT_LENGTH` floor rejects this; the 1 MiB floor must not.
@@ -220,7 +222,7 @@ fn insert_valid_rows(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     conn.execute(
         "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
-        rusqlite::params![b"rs-1", b"FAKE_ROOT_SIG"],
+        rusqlite::params![b"rs-1", RAW_ROOT_SIG],
     )?;
     conn.execute(
         "INSERT INTO rasterizer_descs (
@@ -318,7 +320,7 @@ fn valid_file_reads_keys_and_hashes_only() {
     assert_eq!(extracted[0].bytecode.ps.unwrap().to_hex(), ps_hash);
     assert_eq!(
         extracted[0].root_signature.as_ref().unwrap().to_hex(),
-        hex_digits(b"FAKE_ROOT_SIG")
+        hex_digits(RAW_ROOT_SIG)
     );
     assert_eq!(extracted[0].rasterizer.as_ref().unwrap().fill_mode, 3);
     assert_eq!(extracted[0].sample_count, Some(1));
@@ -1697,4 +1699,108 @@ fn thirty_large_root_signatures_stay_under_memory_cap() {
             "RSS grew by {delta} bytes (limit {ROOT_SIG_BLOB_MEMORY_LIMIT})"
         );
     }
+}
+
+#[test]
+fn reserved_rowid_column_is_rejected() {
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE shader_bytecode (
+                Key BLOB NOT NULL PRIMARY KEY,
+                rowid INTEGER,
+                Bytecode BLOB
+            );
+            CREATE TABLE pipeline_states (Key BLOB NOT NULL PRIMARY KEY, ByteCode_VS BLOB);
+            ",
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, rowid, Bytecode) VALUES (?1, 1, ?2)",
+            rusqlite::params![b"a", FAKE_VS],
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, rowid, Bytecode) VALUES (?1, 1, ?2)",
+            rusqlite::params![b"b", FAKE_PS],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, ByteCode_VS) VALUES (?1, ?2)",
+            rusqlite::params![b"pso", b"a"],
+        )?;
+        Ok(())
+    });
+    let err = open(fixture.path()).unwrap_err();
+    assert!(matches!(err, Error::ReservedRowidColumn), "{err:?}");
+    let err = extract_pipeline_states(fixture.path()).unwrap_err();
+    assert!(matches!(err, Error::ReservedRowidColumn), "{err:?}");
+}
+
+#[test]
+fn two_bytecode_blobs_have_distinct_hashes() {
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE shader_bytecode (Key BLOB NOT NULL PRIMARY KEY, Bytecode BLOB);
+            ",
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"a", FAKE_VS],
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"b", FAKE_PS],
+        )?;
+        Ok(())
+    });
+    let summary = open(fixture.path()).unwrap();
+    assert_eq!(summary.shader_bytecode.len(), 2);
+    assert_ne!(
+        summary.shader_bytecode[0].bytecode_hash,
+        summary.shader_bytecode[1].bytecode_hash
+    );
+    let hashes: Vec<String> = summary
+        .shader_bytecode
+        .iter()
+        .map(|b| b.bytecode_hash.to_hex())
+        .collect();
+    assert!(hashes.contains(&sha256_hex(FAKE_VS)));
+    assert!(hashes.contains(&sha256_hex(FAKE_PS)));
+}
+
+#[test]
+fn without_rowid_inspect_and_extract_hash_blobs() {
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE shader_bytecode (
+                Key BLOB NOT NULL PRIMARY KEY,
+                Bytecode BLOB
+            ) WITHOUT ROWID;
+            CREATE TABLE pipeline_states (
+                Key BLOB NOT NULL PRIMARY KEY,
+                ByteCode_VS BLOB
+            );
+            ",
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"vs", FAKE_VS],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, ByteCode_VS) VALUES (?1, ?2)",
+            rusqlite::params![b"pso", b"vs"],
+        )?;
+        Ok(())
+    });
+    let summary = open(fixture.path()).unwrap();
+    assert_eq!(summary.shader_bytecode.len(), 1);
+    assert_eq!(
+        summary.shader_bytecode[0].bytecode_hash.to_hex(),
+        sha256_hex(FAKE_VS)
+    );
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    assert_eq!(
+        extracted[0].bytecode.vs.unwrap().to_hex(),
+        sha256_hex(FAKE_VS)
+    );
 }

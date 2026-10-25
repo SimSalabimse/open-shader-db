@@ -19,7 +19,10 @@ mod types;
 
 pub use build::{BuildIdentity, ExeHash, GameId, GameVersion};
 pub use error::Error;
-pub use extract::{encode_record_file, extract, extract_with_sodb_limits};
+pub use extract::{
+    encode_record_file, encode_record_file_to_writer, extract, extract_with_options,
+    extract_with_sodb_limits,
+};
 pub use file::{load, load_with_limits, RecordFile, RedactedPath, FORMAT_VERSION};
 pub use hash::Sha256;
 pub use limits::Limits;

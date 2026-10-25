@@ -2,8 +2,52 @@
 
 //! Pipeline-state extraction types. Bytecode bytes are never stored here.
 
+use std::sync::Arc;
+
 use crate::hash::hex_encode;
 use crate::{AppKey, ObjectVersion, Sha256Hash};
+
+/// Graphics or compute stage referenced from `pipeline_states`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ExtractedStage {
+    Vs,
+    Ps,
+    Hs,
+    Ds,
+    Gs,
+    As,
+    Ms,
+    Cs,
+}
+
+impl ExtractedStage {
+    /// Spec-order stages (`vs` … `cs`).
+    pub const ALL: [Self; 8] = [
+        Self::Vs,
+        Self::Ps,
+        Self::Hs,
+        Self::Ds,
+        Self::Gs,
+        Self::As,
+        Self::Ms,
+        Self::Cs,
+    ];
+
+    /// On-disk JSON name used by record files.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Vs => "vs",
+            Self::Ps => "ps",
+            Self::Hs => "hs",
+            Self::Ds => "ds",
+            Self::Gs => "gs",
+            Self::As => "as",
+            Self::Ms => "ms",
+            Self::Cs => "cs",
+        }
+    }
+}
 
 /// SHA-256 of each graphics/compute stage that referenced `shader_bytecode`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +62,7 @@ pub struct ExtractedStageHashes {
     pub cs: Option<Sha256Hash>,
 }
 
-/// Hex-ready descriptor BLOB (root signature `value`, never DXIL).
+/// Hex-ready descriptor BLOB (sanitized root signature, never DXIL).
 #[derive(Clone, PartialEq, Eq)]
 pub struct DescriptorBlob(Vec<u8>);
 
@@ -159,20 +203,23 @@ pub struct ExtractedStreamOut {
 
 /// One `pipeline_states` row with descriptor values and per-stage hashes.
 ///
-/// DXIL / `shader_bytecode.Bytecode` bytes are never stored on this type.
+/// Large descriptors are interned (`Arc`) so a shared root signature or
+/// input layout is stored once. DXIL / `shader_bytecode.Bytecode` bytes are
+/// never stored on this type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtractedPipelineState {
     pub key: AppKey,
     pub version: ObjectVersion,
     pub bytecode: ExtractedStageHashes,
-    pub root_signature: Option<DescriptorBlob>,
-    pub input_layout: Option<Vec<ExtractedInputElement>>,
+    pub unresolved_stages: Vec<ExtractedStage>,
+    pub root_signature: Option<Arc<DescriptorBlob>>,
+    pub input_layout: Option<Arc<Vec<ExtractedInputElement>>>,
     pub depth_stencil: Option<ExtractedDepthStencil>,
     pub blend: Option<ExtractedBlend>,
     pub rasterizer: Option<ExtractedRasterizer>,
     pub render_target_formats: Option<ExtractedRenderTargetFormats>,
     pub view_instancing: Option<ExtractedViewInstancing>,
-    pub stream_out: Option<ExtractedStreamOut>,
+    pub stream_out: Option<Arc<ExtractedStreamOut>>,
     pub sample_count: Option<i64>,
     pub sample_quality: Option<i64>,
     pub sample_mask: Option<i64>,
@@ -181,4 +228,37 @@ pub struct ExtractedPipelineState {
     pub dsv_format: Option<i64>,
     pub node_mask: Option<i64>,
     pub flags: Option<i64>,
+}
+
+/// Interned extract of every `pipeline_states` row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtractedSodb {
+    pub records: Vec<ExtractedPipelineState>,
+}
+
+impl std::ops::Deref for ExtractedSodb {
+    type Target = [ExtractedPipelineState];
+
+    fn deref(&self) -> &Self::Target {
+        &self.records
+    }
+}
+
+/// `SemanticName` must be a C-like identifier (no paths).
+pub(crate) fn validate_semantic_name(name: &str) -> Result<(), crate::Error> {
+    if name.is_empty() || name.len() > 128 {
+        return Err(crate::Error::InvalidSemanticName);
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err(crate::Error::InvalidSemanticName);
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(crate::Error::InvalidSemanticName);
+    }
+    if chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        Ok(())
+    } else {
+        Err(crate::Error::InvalidSemanticName)
+    }
 }

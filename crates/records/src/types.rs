@@ -4,6 +4,7 @@
 
 use std::fmt;
 
+use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 
 use crate::hash::{encode_hex, parse_hex_bytes, Sha256};
@@ -50,6 +51,38 @@ impl ShaderStage {
             Self::Ms => "ms",
             Self::Cs => "cs",
         }
+    }
+
+    fn from_str(name: &str) -> Option<Self> {
+        match name {
+            "vs" => Some(Self::Vs),
+            "ps" => Some(Self::Ps),
+            "hs" => Some(Self::Hs),
+            "ds" => Some(Self::Ds),
+            "gs" => Some(Self::Gs),
+            "as" => Some(Self::As),
+            "ms" => Some(Self::Ms),
+            "cs" => Some(Self::Cs),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ShaderStage {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct StageVisitor;
+        impl Visitor<'_> for StageVisitor {
+            type Value = ShaderStage;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a shader stage name")
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                ShaderStage::from_str(value).ok_or_else(|| E::custom("unknown shader stage"))
+            }
+        }
+        deserializer.deserialize_str(StageVisitor)
     }
 }
 
@@ -157,6 +190,11 @@ impl HexBytes {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Decode the hex payload.
+    pub fn decoded(&self) -> Result<Vec<u8>, Error> {
+        parse_hex_bytes(&self.0)
     }
 }
 
@@ -295,20 +333,22 @@ pub struct SampleDesc {
     pub quality: Option<i64>,
 }
 
-/// One pipeline-state record: descriptors plus per-stage bytecode hashes.
+/// One pipeline-state record: descriptor hashes plus per-stage bytecode hashes.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PipelineStateRecord {
     pub app_key: AppKeyHex,
     pub version: u32,
     pub bytecode_hashes: StageHashes,
-    pub root_signature: Option<HexBytes>,
-    pub input_layout: Option<Vec<InputElementDesc>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_stages: Vec<ShaderStage>,
+    pub root_signature: Option<Sha256>,
+    pub input_layout: Option<Sha256>,
     pub depth_stencil: Option<DepthStencilDesc>,
     pub blend: Option<BlendDesc>,
     pub rasterizer: Option<RasterizerDesc>,
     pub render_target_formats: Option<RenderTargetFormats>,
     pub view_instancing: Option<ViewInstancingDesc>,
-    pub stream_out: Option<StreamOutDesc>,
+    pub stream_out: Option<Sha256>,
     pub sample_desc: Option<SampleDesc>,
     pub sample_mask: Option<i64>,
     pub ib_strip_cut_value: Option<i64>,

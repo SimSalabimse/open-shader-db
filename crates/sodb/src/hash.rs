@@ -24,6 +24,10 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
+pub(crate) fn sha256(bytes: &[u8]) -> Sha256Hash {
+    Sha256Hash::from_bytes(Sha256::digest(bytes).into())
+}
+
 /// Length-prefixed canonical hasher for description hashes.
 pub(crate) struct CanonicalHasher {
     inner: Sha256,
