@@ -163,6 +163,10 @@ If the project grows, we may introduce a bug bounty program in the future.
 
 ---
 
+## Takedown requests
+
+A takedown request (remove a published record) is not a security vulnerability. Use the [takedown request](https://github.com/SimSalabimse/open-shader-db/issues/new?template=takedown_request.yml) issue template. Do not attach bytecode or game files. Do not use private vulnerability reporting for ordinary takedown requests.
+
 ## Questions?
 
 If you have questions about security (non-sensitive), open a GitHub issue with the `security` label.

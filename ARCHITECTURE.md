@@ -40,7 +40,7 @@ Microsoft's State Object Database (SODB) is a SQLite database (`user_version=2`,
 
 **Milestone plan** (names match GitHub exactly):
 - **M0 Index and coverage reports** (ships first): foundations plus index-only verification
-- **M1 Pipeline-state records:** full state records (without bytecode) + client rebuild (needs legal clarity first)
+- **M1 Pipeline-state records:** full state records (without bytecode) + client rebuild (proceed with safeguards; see [Legal and ToS doubts](#legal-and-tos-doubts))
 - **M2 Upload preview and submission:** client preview/submit plus Cloudflare ingest Worker
 - **M3 Consensus and publishing:** threshold, proof-of-ownership checks, review queue
 - **M4 Signed releases:** Minisign, GitHub Releases, client verification
@@ -310,7 +310,7 @@ interface CoverageIndex {
 
 ### M1 Pipeline-state records (without bytecode)
 
-These types support publishing full state records that clients combine with locally extracted shaders. Legal review is required before implementation.
+These types support publishing full state records that clients combine with locally extracted shaders. Implementation proceeds with the safeguards in [docs/LEGAL_RISK_NOTES.md](docs/LEGAL_RISK_NOTES.md).
 
 ```typescript
 // Verified from SODB spec: these are direct fields from pipeline_states table
@@ -633,7 +633,7 @@ interface DataBundle {
 
 ## Legal and ToS doubts
 
-**⚠️ IMPORTANT:** The following legal questions remain unresolved and require expert legal review before implementation.
+Research notes (not legal advice; several points remain **UNVERIFIED**) are in [docs/LEGAL_RISK_NOTES.md](docs/LEGAL_RISK_NOTES.md). On 2026-10-25, Simsalabim decided to proceed with the whole roadmap without asking a legal help group, accepting the residual risks listed there, and keeping the design rules in that note (no bytecode ever, hash keys, opt-in only, no accounts, no stored IPs, no game paths, upload preview, offline extraction only, never hook or attach to game processes, never bundle the preview Agility SDK or any Microsoft redistributable, no Microsoft or storefront trademarks as branding). Work is not blocked on further legal review.
 
 ### 1. Are pipeline state descriptors copyrightable?
 
@@ -648,7 +648,9 @@ interface DataBundle {
 - Configuration files are often considered functional
 - But game assets (even data files) are typically copyrighted
 
-**Recommendation:** Seek legal counsel. Conservative approach: obtain explicit permission or wait for legal clarity.
+**Risk (research notes):** Low (individual records) / Medium (the full per-game collection).
+
+Status: Accepted residual risk (2026-10-25 decision by Simsalabim), see docs/LEGAL_RISK_NOTES.md
 
 ### 2. Does extracting shaders from installed game files violate EULAs?
 
@@ -666,11 +668,13 @@ However:
 - Do users have the right to analyze files they legally own?
 
 **Potential EULA violations:**
-- Steam Subscriber Agreement § 2.C: "You may not... reverse engineer... any software"
-- Epic Games Store EULA § 3: "You may not... reverse engineer... the Software"
-- Most publisher EULAs have similar clauses
+- Steam Subscriber Agreement [§2.G](https://store.steampowered.com/subscriber_agreement/?l=english) "Restrictions on Use of Content and Services" (SSA last updated 10 Sep 2026): "Except as otherwise permitted under this Agreement …, or under applicable law notwithstanding these restrictions, you may not … reverse engineer, derive source code from, modify, disassemble, decompile, create derivative works based on … the Content and Services or any software accessed via Steam without the prior consent, in writing, of Valve." §2.C is "License to Use Valve Developer Tools", not the reverse-engineering ban.
+- Epic Games Store EULA [section 2 "License Conditions" item (e)](https://legal.epicgames.com/store/eula) (EULA last updated 15 Jan 2025): you may not "reverse engineer, derive source code from, modify, adapt, translate, decompile, or disassemble it or make derivative works based on it". Section 3 is "Updates and Patches", not the reverse-engineering ban.
+- Most publisher EULAs have similar clauses. See [docs/LEGAL_RISK_NOTES.md](docs/LEGAL_RISK_NOTES.md) for GOG, EA, Ubisoft, Activision, and Take-Two wording from the same notes.
 
-**Recommendation:** Seek legal counsel. May require explicit publisher permission or reliance on an untested fair use argument.
+**Risk (research notes):** Medium (US) / Low–Medium (EU/EEA).
+
+Status: Accepted residual risk (2026-10-25 decision by Simsalabim), see docs/LEGAL_RISK_NOTES.md
 
 ### 3. Does local extraction conflict with ASD storefront expectations?
 
@@ -686,7 +690,9 @@ However:
 - May conflict with Microsoft's security/anti-cheat expectations
 - May undermine storefront relationships with publishers
 
-**Recommendation:** Seek clarification from Microsoft. May require explicit approval or a different approach.
+**Risk (research notes):** Unknown.
+
+Status: Accepted residual risk (2026-10-25 decision by Simsalabim), see docs/LEGAL_RISK_NOTES.md
 
 ### 4. Does publishing state descriptors constitute "distributing game assets"?
 
@@ -702,7 +708,9 @@ However:
 - They're derived from the user's legally owned copy
 - Similar to publishing game configuration files or settings
 
-**Recommendation:** Seek legal counsel. Consider requesting publisher permission for specific titles.
+**Risk (research notes):** Medium.
+
+Status: Accepted residual risk (2026-10-25 decision by Simsalabim), see docs/LEGAL_RISK_NOTES.md
 
 ### 5. Does this approach comply with anti-cheat systems?
 
@@ -713,19 +721,19 @@ However:
 - Extracting game files and recompiling shaders could be flagged as suspicious
 - Modified SODBs could be seen as tampering with game files
 
-**Recommendation:** Test with anti-cheat vendors and game publishers. May require explicit allowlisting or a different technical approach.
+**Risk (research notes):** Medium–High if hooking game processes / Low if fully offline.
+
+Status: Accepted residual risk (2026-10-25 decision by Simsalabim), see docs/LEGAL_RISK_NOTES.md
 
 ### Suggested path forward
 
-1. **Consult legal counsel** specializing in software/gaming law
-2. **Request Microsoft clarification** on ASD community participation
-3. **Approach willing publishers** for pilot programs with explicit permission
-4. **Consider alternative designs:**
-   - Publisher-blessed distribution only
-   - Storefront integration instead of community distribution
-   - Stay on M0 Index and coverage reports without distributing state records (defer M1 Pipeline-state records)
+The 2026-10-25 decision is to proceed with the whole roadmap under the safeguards in [docs/LEGAL_RISK_NOTES.md](docs/LEGAL_RISK_NOTES.md). Work is not blocked on further legal review.
 
-**Until legal clarity:** Proceed cautiously. M0 Index and coverage reports has lower legal risk than M1 Pipeline-state records.
+1. **Keep the design rules:** no bytecode ever; hash keys; opt-in only; no accounts; no stored IPs; no game paths; upload preview; offline extraction only; never hook or attach to game processes (anti-cheat); never bundle the preview Agility SDK or any Microsoft redistributable; no Microsoft or storefront trademarks as branding
+2. **Do not claim legal certainty.** Several points in the notes remain **UNVERIFIED**
+3. **Honour takedown requests** in good faith (see the takedown issue template)
+
+**After the 2026-10-25 decision:** M1 and later milestones proceed with those safeguards. M0 Index and coverage reports remains the first ship; later milestones are not waiting on a legal help group.
 
 ---
 
