@@ -58,7 +58,7 @@ pub(crate) fn write_atomic(
             if meta.file_type().is_symlink() || !meta.file_type().is_file() {
                 return Err(Box::new(OutputError::NotRegular));
             }
-            if is_same_regular_file(dest, input)? {
+            if same_file::is_same_file(dest, input).map_err(|_| OutputError::Io)? {
                 return Err(Box::new(OutputError::SameAsInput));
             }
             if !force {
@@ -98,36 +98,13 @@ fn paths_are_same(dest: &Path, input: &Path) -> Result<bool, OutputError> {
                 return Ok(false);
             }
             if d.file_type().is_file() && i.file_type().is_file() {
-                return is_same_regular_file(dest, input);
+                return same_file::is_same_file(dest, input).map_err(|_| OutputError::Io);
             }
             Ok(false)
         }
         (Err(err), _) if err.kind() == io::ErrorKind::NotFound => Ok(false),
         (_, Err(err)) if err.kind() == io::ErrorKind::NotFound => Ok(false),
         _ => Err(OutputError::Io),
-    }
-}
-
-fn is_same_regular_file(a: &Path, b: &Path) -> Result<bool, OutputError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let left = fs::metadata(a).map_err(|_| OutputError::Io)?;
-        let right = fs::metadata(b).map_err(|_| OutputError::Io)?;
-        Ok(left.dev() == right.dev() && left.ino() == right.ino())
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        let left = fs::metadata(a).map_err(|_| OutputError::Io)?;
-        let right = fs::metadata(b).map_err(|_| OutputError::Io)?;
-        Ok(left.volume_serial_number() == right.volume_serial_number()
-            && left.file_index() == right.file_index())
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        Ok(fs::canonicalize(a).map_err(|_| OutputError::Io)?
-            == fs::canonicalize(b).map_err(|_| OutputError::Io)?)
     }
 }
 

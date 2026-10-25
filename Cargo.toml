@@ -19,6 +19,8 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 # MIT OR Apache-2.0. Unix-only; used for O_NONBLOCK so FIFO opens do not hang.
 libc = "0.2"
+# MIT / Apache-2.0. Same device+inode (Unix) / file index (Windows) without unsafe in this repo.
+same-file = "1.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
