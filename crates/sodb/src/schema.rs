@@ -671,6 +671,120 @@ pub(crate) fn keyed_spec(table: TableId) -> Option<&'static KeyedSpec> {
     KEYED_SPECS.iter().find(|s| s.table == table)
 }
 
+/// Keyed tables format-1 records can populate. Used by the writer and the
+/// schema-drift test so reader and writer cannot diverge silently.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const WRITER_KEYED_TABLES: &[TableId] = &[
+    TableId::RootSignatures,
+    TableId::DepthStencilOpDescs,
+    TableId::DepthStencilDescs,
+    TableId::RenderTargetFormats,
+    TableId::RenderTargetBlendDescs,
+    TableId::BlendDescs,
+    TableId::RasterizerDescs,
+    TableId::ViewInstancingDescs,
+    TableId::StreamOutDescs,
+    TableId::SoDeclarations,
+    TableId::InputElementDescs,
+];
+
+/// Association tables format-1 records can populate.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const WRITER_ASSOC_TABLES: &[TableId] = &[
+    TableId::InputLayoutToInputElementAssociations,
+    TableId::StreamOutputDescToDeclAssociations,
+];
+
+/// Expected writer table → columns, derived from the parser specs.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn writer_expected_columns() -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut tables = Vec::new();
+    tables.push(("shader_bytecode", vec!["Key", "Type", "Bytecode"]));
+    for spec in KEYED_SPECS {
+        if WRITER_KEYED_TABLES.contains(&spec.table) {
+            tables.push((spec.table.sql_name(), spec.columns.to_vec()));
+        }
+    }
+    for spec in ASSOC_SPECS {
+        if WRITER_ASSOC_TABLES.contains(&spec.table) {
+            tables.push((spec.table.sql_name(), spec.columns.to_vec()));
+        }
+    }
+    tables.push(("groups", vec!["Key", "Version", "PSOKey", "SOKey"]));
+    let mut pso =
+        Vec::with_capacity(1 + PIPELINE_BYTECODE_COLUMNS.len() + PIPELINE_DESC_COLUMNS.len());
+    pso.push("Key");
+    pso.extend_from_slice(PIPELINE_BYTECODE_COLUMNS);
+    pso.extend_from_slice(PIPELINE_DESC_COLUMNS);
+    tables.push(("pipeline_states", pso));
+    tables
+}
+
+/// Expected writer table → (column, declared SQLite type).
+///
+/// Names come from [`writer_expected_columns`] (parser specs). Types match
+/// [`SODB_WRITER_SCHEMA_SQL`]. A drift in either list fails the schema test.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn writer_expected_schema() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    writer_expected_columns()
+        .into_iter()
+        .map(|(table, cols)| {
+            let typed = cols
+                .into_iter()
+                .map(|col| (col, writer_declared_type(table, col)))
+                .collect();
+            (table, typed)
+        })
+        .collect()
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn writer_declared_type(table: &str, col: &str) -> &'static str {
+    match (table, col) {
+        ("shader_bytecode", "Type") | (_, "SemanticName") => "TEXT",
+        ("rasterizer_descs", "DepthBias" | "DepthBiasClamp" | "SlopeScaledDepthBias") => "REAL",
+        (
+            _,
+            "Key"
+            | "Bytecode"
+            | "value"
+            | "FrontFace"
+            | "BackFace"
+            | "RenderTarget0"
+            | "RenderTarget1"
+            | "RenderTarget2"
+            | "RenderTarget3"
+            | "RenderTarget4"
+            | "RenderTarget5"
+            | "RenderTarget6"
+            | "RenderTarget7"
+            | "InputLayoutKey"
+            | "InputElementKey"
+            | "StreamOutDescKey"
+            | "StreamOutDeclKey"
+            | "PSOKey"
+            | "SOKey"
+            | "RootSignature"
+            | "InputLayout"
+            | "ByteCode_VS"
+            | "ByteCode_PS"
+            | "ByteCode_HS"
+            | "ByteCode_DS"
+            | "ByteCode_GS"
+            | "ByteCode_AS"
+            | "ByteCode_MS"
+            | "ByteCode_CS"
+            | "DepthStencilDesc"
+            | "RenderTargetFormats"
+            | "BlendDesc"
+            | "RasterizerDesc"
+            | "ViewInstancingDesc"
+            | "StreamOutDesc",
+        ) => "BLOB",
+        _ => "INTEGER",
+    }
+}
+
 /// Fixed page size used by the SODB writer so output is byte-identical.
 pub const SODB_WRITER_PAGE_SIZE: i64 = 4096;
 

@@ -3,7 +3,7 @@
 //! Deterministic SODB writer. Shader bytes go only to the rebuilt file.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -19,7 +19,7 @@ use sodb::{
     SODB_WRITER_PAGE_SIZE, SODB_WRITER_SCHEMA_SQL,
 };
 
-use crate::{Error, RebuildOptions, RebuildReport};
+use crate::{Error, RebuildOptions, RebuildReport, HARD_MAX_OUTPUT_BYTES};
 
 /// One-line notice: the rebuilt SODB contains bytecode and is local-only.
 pub const LOCAL_USE_NOTICE: &str =
@@ -38,6 +38,15 @@ pub fn rebuild_sodb(
     out: &Path,
     opts: RebuildOptions,
 ) -> Result<RebuildReport, Error> {
+    if opts.max_output_bytes > HARD_MAX_OUTPUT_BYTES {
+        return Err(Error::MaxOutputBytesTooLarge {
+            max: HARD_MAX_OUTPUT_BYTES,
+            got: opts.max_output_bytes,
+        });
+    }
+    if out.to_str().is_none() {
+        return Err(Error::OutputPathNotUtf8);
+    }
     refuse_output_path(out, shaders, &opts)?;
 
     let mut report = RebuildReport::default();
@@ -48,8 +57,9 @@ pub fn rebuild_sodb(
     report.unique_shaders = plan.shaders.len() as u64;
     report.unique_root_signatures = plan.root_sigs.len() as u64;
 
-    let work = temp_sibling(out);
-    let compact = temp_sibling(out);
+    let work = create_exclusive_sibling(out)?;
+    let compact = create_exclusive_sibling(out)?;
+    fs::remove_file(&compact).map_err(|_| Error::Io)?;
     let mut work_guard = TempGuard {
         path: work.clone(),
         persist: false,
@@ -58,10 +68,12 @@ pub fn rebuild_sodb(
         path: compact.clone(),
         persist: false,
     };
+    let session = shaders.read_session()?;
     write_database(
         &work,
         records,
         shaders,
+        &session,
         &plan,
         opts.max_output_bytes,
         &compact,
@@ -73,10 +85,11 @@ pub fn rebuild_sodb(
             got,
         });
     }
-    persist_temp_db(&compact, out, opts.force)?;
+    persist_temp_db(&compact, out)?;
     compact_guard.persist = true;
-    let _ = fs::remove_file(&work);
-    work_guard.persist = true;
+    if retry_io(|| fs::remove_file(&work)).is_ok() {
+        work_guard.persist = true;
+    }
     Ok(report)
 }
 
@@ -90,6 +103,7 @@ enum Skip {
     MissingStage,
     Unresolved,
     RootSignature,
+    NoncanonicalRootSignature,
 }
 
 fn classify_and_plan(
@@ -99,7 +113,7 @@ fn classify_and_plan(
     plan: &mut Plan,
     report: &mut RebuildReport,
 ) -> Result<(), Error> {
-    if let Some(reason) = skip_reason(record, shaders) {
+    if let Some(reason) = skip_reason(record, file, shaders) {
         match reason {
             Skip::Unresolved => {
                 report.skipped_unresolved_stages =
@@ -107,6 +121,10 @@ fn classify_and_plan(
             }
             Skip::RootSignature => {
                 report.skipped_root_signature = report.skipped_root_signature.saturating_add(1);
+            }
+            Skip::NoncanonicalRootSignature => {
+                report.skipped_noncanonical_root_signature =
+                    report.skipped_noncanonical_root_signature.saturating_add(1);
             }
             Skip::MissingStage => {
                 report.skipped_missing_stage = report.skipped_missing_stage.saturating_add(1);
@@ -129,6 +147,7 @@ fn classify_and_plan(
 
 fn skip_reason(
     record: &osdb_records::PipelineStateRecord,
+    file: &RecordFile,
     shaders: &LocalShaderIndex,
 ) -> Option<Skip> {
     if !record.unresolved_stages.is_empty() {
@@ -136,6 +155,17 @@ fn skip_reason(
     }
     if record.root_signature_skip.is_some() {
         return Some(Skip::RootSignature);
+    }
+    if let Some(hash) = record.root_signature {
+        if let Some(hex) = file.root_signatures.get(&hash) {
+            let Ok(raw) = hex.decoded() else {
+                return Some(Skip::NoncanonicalRootSignature);
+            };
+            match parse_root_signature(&raw) {
+                Ok(parsed) if parsed.serialize() == raw => {}
+                _ => return Some(Skip::NoncanonicalRootSignature),
+            }
+        }
     }
     if record.bytecode_hashes.is_empty() {
         return Some(Skip::MissingStage);
@@ -152,6 +182,7 @@ fn write_database(
     path: &Path,
     records: &RecordFile,
     shaders: &LocalShaderIndex,
+    session: &osdb_shaders::ShaderReadSession<'_>,
     plan: &Plan,
     max_output: u64,
     compact: &Path,
@@ -162,7 +193,6 @@ fn write_database(
     conn.pragma_update(None, "journal_mode", "OFF")?;
     conn.pragma_update(None, "synchronous", "OFF")?;
     conn.pragma_update(None, "auto_vacuum", "NONE")?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
     conn.pragma_update(None, "user_version", SODB_USER_VERSION)?;
     conn.pragma_update(None, "application_id", SODB_APPLICATION_ID)?;
     conn.execute_batch(SODB_WRITER_SCHEMA_SQL)?;
@@ -170,7 +200,7 @@ fn write_database(
     let mut written = 0_u64;
     let mut shader_type: BTreeMap<Sha256, &'static str> = BTreeMap::new();
     for record in &records.records {
-        if skip_reason(record, shaders).is_some() {
+        if skip_reason(record, records, shaders).is_some() {
             continue;
         }
         for (stage, hash) in record.bytecode_hashes.iter() {
@@ -179,7 +209,7 @@ fn write_database(
     }
 
     for hash in plan.shaders.keys() {
-        let bytes = shaders.read_verified(hash)?;
+        let bytes = session.read_verified(hash)?;
         charge(&mut written, bytes.len() as u64, max_output)?;
         let ty = shader_type.get(hash).copied();
         conn.execute(
@@ -197,7 +227,7 @@ fn write_database(
         let parsed = parse_root_signature(&raw).map_err(|_| Error::RootSignatureMalformed)?;
         let canonical = parsed.serialize();
         if canonical != raw {
-            return Err(Error::RootSignatureMalformed);
+            continue;
         }
         charge(&mut written, canonical.len() as u64, max_output)?;
         conn.execute(
@@ -220,7 +250,7 @@ fn write_database(
     let mut stream_outs: BTreeMap<DescKey, StreamOutDesc> = BTreeMap::new();
 
     for record in &records.records {
-        if skip_reason(record, shaders).is_some() {
+        if skip_reason(record, records, shaders).is_some() {
             continue;
         }
         if let Some(hash) = record.input_layout {
@@ -500,7 +530,7 @@ fn write_database(
     }
 
     for record in &records.records {
-        if skip_reason(record, shaders).is_some() {
+        if skip_reason(record, records, shaders).is_some() {
             continue;
         }
         let pso_key = decode_hex(record.app_key.as_str())?;
@@ -570,14 +600,15 @@ fn write_database(
     }
 
     conn.pragma_update(None, "synchronous", "FULL")?;
-    conn.execute_batch("VACUUM;")?;
     conn.pragma_update(None, "user_version", SODB_USER_VERSION)?;
     conn.pragma_update(None, "application_id", SODB_APPLICATION_ID)?;
     let _ = conn
         .query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0))
         .optional()?;
+    if take_fault(InjectedFault::VacuumInto) {
+        return Err(Error::Sqlite);
+    }
     // Snapshot into a sibling file so we never rename the live work database.
-    // VACUUM INTO closes that snapshot before this returns.
     conn.execute("VACUUM INTO ?1", [sqlite_path(compact)?])?;
     conn.close().map_err(|(_, _)| Error::Sqlite)?;
     Ok(())
@@ -589,7 +620,7 @@ fn sqlite_path(path: &Path) -> Result<String, Error> {
     } else {
         std::env::current_dir().map_err(|_| Error::Io)?.join(path)
     };
-    let mut text = abs.to_str().ok_or(Error::Io)?.to_owned();
+    let mut text = abs.to_str().ok_or(Error::OutputPathNotUtf8)?.to_owned();
     if cfg!(windows) {
         text = text.replace('\\', "/");
     }
@@ -647,28 +678,55 @@ fn refuse_output_path(
             return Err(Error::InsideScanRoot);
         }
     }
-    if let Ok(meta) = fs::symlink_metadata(out) {
-        if meta.file_type().is_symlink() || !meta.file_type().is_file() {
-            return Err(Error::NotRegular);
-        }
-        if !opts.force {
-            return Err(Error::AlreadyExists);
+    match out.parent() {
+        None => {}
+        Some(parent) if parent.as_os_str().is_empty() => {}
+        Some(parent) => {
+            if parent.to_str().is_none() {
+                return Err(Error::OutputPathNotUtf8);
+            }
+            match fs::symlink_metadata(parent) {
+                Ok(meta) if meta.file_type().is_dir() => {}
+                Ok(_) => return Err(Error::NotRegular),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(Error::OutputParentMissing);
+                }
+                Err(_) => return Err(Error::Io),
+            }
         }
     }
+    match fs::symlink_metadata(out) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+                return Err(Error::NotRegular);
+            }
+            if !opts.force {
+                return Err(Error::AlreadyExists);
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(Error::Io),
+    }
     Ok(())
+}
+
+fn metadata_or_absent(path: &Path) -> Result<Option<fs::Metadata>, Error> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => Ok(Some(meta)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(Error::Io),
+    }
 }
 
 fn paths_are_same(a: &Path, b: &Path) -> Result<bool, Error> {
     if a == b {
         return Ok(true);
     }
-    let da = match fs::symlink_metadata(a) {
-        Ok(meta) => meta,
-        Err(_) => return Ok(false),
+    let Some(da) = metadata_or_absent(a)? else {
+        return Ok(false);
     };
-    let db = match fs::symlink_metadata(b) {
-        Ok(meta) => meta,
-        Err(_) => return Ok(false),
+    let Some(db) = metadata_or_absent(b)? else {
+        return Ok(false);
     };
     if da.file_type().is_symlink() || db.file_type().is_symlink() {
         return Ok(false);
@@ -701,33 +759,57 @@ fn path_is_under(dest: &Path, root: &Path) -> Result<bool, Error> {
     Ok(dest_abs.starts_with(&root))
 }
 
-/// Close-and-publish the temp SQLite file. Windows can refuse to rename a
-/// database that was just closed, so this retries and falls back to copy.
-fn persist_temp_db(tmp: &Path, dest: &Path, force: bool) -> Result<(), Error> {
-    let _ = sync_path(tmp);
-    if force {
-        if let Ok(meta) = fs::symlink_metadata(dest) {
-            if meta.file_type().is_symlink() || !meta.file_type().is_file() {
-                return Err(Error::NotRegular);
-            }
-            retry_io(|| fs::remove_file(dest))?;
-        }
-    }
-    if retry_io(|| fs::rename(tmp, dest)).is_ok() {
-        let _ = sync_path(dest);
+/// Publish the compact snapshot. Rename replaces an existing regular dest.
+/// Copy fallback runs on every platform if the first rename fails.
+fn persist_temp_db(tmp: &Path, dest: &Path) -> Result<(), Error> {
+    sync_published(tmp)?;
+    if !take_fault(InjectedFault::Rename) && retry_io(|| fs::rename(tmp, dest)).is_ok() {
+        sync_published(dest)?;
         return Ok(());
     }
-    let staged = temp_sibling(dest);
+    if take_fault(InjectedFault::Copy) {
+        return Err(Error::Io);
+    }
+    let staged = create_exclusive_sibling(dest)?;
     let mut staged_guard = TempGuard {
         path: staged.clone(),
         persist: false,
     };
     retry_io(|| fs::copy(tmp, &staged).map(|_| ()))?;
-    let _ = sync_path(&staged);
+    sync_published(&staged)?;
     retry_io(|| fs::rename(&staged, dest))?;
     staged_guard.persist = true;
-    let _ = fs::remove_file(tmp);
+    if retry_io(|| fs::remove_file(tmp)).is_err() {
+        return Err(Error::Io);
+    }
     Ok(())
+}
+
+fn sync_published(path: &Path) -> Result<(), Error> {
+    if cfg!(windows) {
+        let _ = sync_path(path);
+        return Ok(());
+    }
+    sync_path(path)?;
+    sync_parent(path)
+}
+
+fn sync_parent(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => return Ok(()),
+        };
+        let dir = File::open(parent).map_err(|_| Error::Io)?;
+        dir.sync_all().map_err(|_| Error::Io)?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 fn sync_path(path: &Path) -> Result<(), Error> {
@@ -753,7 +835,7 @@ fn retry_io<T>(mut op: impl FnMut() -> std::io::Result<T>) -> Result<T, Error> {
     Err(last)
 }
 
-fn temp_sibling(dest: &Path) -> PathBuf {
+fn temp_sibling_name(dest: &Path) -> PathBuf {
     let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let name = dest
         .file_name()
@@ -761,6 +843,84 @@ fn temp_sibling(dest: &Path) -> PathBuf {
         .unwrap_or_else(|| String::from("out"));
     dest.with_file_name(format!(
         ".{name}.osdb-rebuild-{}-{n}.tmp",
+        std::process::id()
+    ))
+}
+
+fn create_exclusive_sibling(dest: &Path) -> Result<PathBuf, Error> {
+    for _ in 0..32 {
+        let path = temp_sibling_name(dest);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => {
+                drop(file);
+                return Ok(path);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(Error::Io),
+        }
+    }
+    Err(Error::TempFileExists)
+}
+
+/// Test-only fault injection. Consumed once per kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InjectedFault {
+    VacuumInto,
+    Rename,
+    Copy,
+    /// Fail both rename and the copy fallback.
+    Persist,
+}
+
+#[cfg(test)]
+thread_local! {
+    static INJECTED_FAULT: std::cell::Cell<Option<InjectedFault>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Arm a one-shot publish fault. Production builds ignore this.
+pub fn inject_fault(fault: Option<InjectedFault>) {
+    let _ = fault;
+    #[cfg(test)]
+    INJECTED_FAULT.with(|slot| slot.set(fault));
+}
+
+fn take_fault(kind: InjectedFault) -> bool {
+    #[cfg(test)]
+    {
+        INJECTED_FAULT.with(|slot| match slot.get() {
+            Some(InjectedFault::Persist)
+                if matches!(kind, InjectedFault::Rename | InjectedFault::Copy) =>
+            {
+                true
+            }
+            Some(got) if got == kind => {
+                slot.set(None);
+                true
+            }
+            _ => false,
+        })
+    }
+    #[cfg(not(test))]
+    {
+        let _ = kind;
+        false
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn current_temp_seq() -> u64 {
+    TEMP_SEQ.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn predicted_sibling(dest: &Path, seq: u64) -> PathBuf {
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("out"));
+    dest.with_file_name(format!(
+        ".{name}.osdb-rebuild-{}-{seq}.tmp",
         std::process::id()
     ))
 }

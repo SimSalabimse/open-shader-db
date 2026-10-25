@@ -25,6 +25,22 @@ pub enum Error {
     #[error("rebuilt SODB exceeds size limit of {max} bytes (got {got})")]
     OutputTooLarge { max: u64, got: u64 },
 
+    /// `--max-output-bytes` is above the documented hard maximum.
+    #[error("max-output-bytes {got} exceeds hard maximum of {max}")]
+    MaxOutputBytesTooLarge { max: u64, got: u64 },
+
+    /// `--out` parent directory does not exist.
+    #[error("output parent directory is missing")]
+    OutputParentMissing,
+
+    /// `--out` cannot be represented as UTF-8 for SQLite.
+    #[error("output path is not valid UTF-8")]
+    OutputPathNotUtf8,
+
+    /// A temp sibling could not be created exclusively.
+    #[error("rebuild temp file already exists")]
+    TempFileExists,
+
     /// A record table hash did not match its payload.
     #[error("record descriptor hash mismatch")]
     DescriptorHashMismatch,

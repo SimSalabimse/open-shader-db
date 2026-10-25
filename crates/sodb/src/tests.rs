@@ -2113,25 +2113,57 @@ fn shader_container_hash_matches_streaming_reader() {
 }
 
 #[test]
-fn writer_schema_lists_parser_columns() {
-    let sql = crate::SODB_WRITER_SCHEMA_SQL.to_ascii_lowercase();
-    for col in [
-        "key",
-        "bytecode",
-        "value",
-        "rootsignature",
-        "bytecode_vs",
-        "bytecode_cs",
-        "sampledesc_count",
-        "semanticname",
-        "inputlayoutkey",
-        "psokey",
-        "version",
-    ] {
-        assert!(sql.contains(col), "writer schema missing {col}");
+fn writer_schema_matches_parser_tables_columns_and_types() {
+    use std::collections::BTreeMap;
+
+    let expected = crate::schema::writer_expected_schema();
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::SODB_WRITER_SCHEMA_SQL).unwrap();
+
+    let mut actual_tables = Vec::new();
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap();
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+    for name in rows {
+        actual_tables.push(name.unwrap());
     }
-    assert!(!sql.to_ascii_uppercase().contains("WITHOUT ROWID"));
-    assert!(!sql.contains("rowid"));
+
+    let mut expected_tables: Vec<String> = expected.iter().map(|(t, _)| (*t).to_string()).collect();
+    expected_tables.sort();
+    let mut actual_sorted = actual_tables.clone();
+    actual_sorted.sort();
+    assert_eq!(
+        actual_sorted, expected_tables,
+        "writer SQL tables drifted from parser-derived writer_expected_schema"
+    );
+
+    for (table, cols) in &expected {
+        let mut expected_map: BTreeMap<String, String> = BTreeMap::new();
+        for (name, ty) in cols {
+            expected_map.insert((*name).to_ascii_lowercase(), (*ty).to_ascii_uppercase());
+        }
+        let mut actual_map: BTreeMap<String, String> = BTreeMap::new();
+        let mut info = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let info_rows = info
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })
+            .unwrap();
+        for row in info_rows {
+            let (name, ty) = row.unwrap();
+            actual_map.insert(name.to_ascii_lowercase(), ty.to_ascii_uppercase());
+        }
+        assert_eq!(
+            actual_map, expected_map,
+            "writer schema drift on table {table}"
+        );
+    }
+
+    let sql = crate::SODB_WRITER_SCHEMA_SQL.to_ascii_lowercase();
+    assert!(!sql.contains("without rowid"));
     assert!(!sql.contains("state_objects"));
     assert!(!sql.contains("app_id"));
 }

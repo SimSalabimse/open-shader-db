@@ -7,7 +7,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use osdb_records::Sha256;
-use sodb::{hash_shader_container, parse_dxbc_header, starts_with_dxbc};
+use sodb::{hash_shader_container, parse_dxbc_header, starts_with_dxbc, SodbBytecodeReader};
 
 use crate::scan::open_regular_nonblocking;
 use crate::types::{ShaderLocation, ShaderSourceKind, SourceId};
@@ -24,6 +24,7 @@ pub struct LocalShaderIndex {
     pub(crate) sources: Vec<SourceSlot>,
     pub(crate) directory_roots: Vec<PathBuf>,
     pub(crate) by_hash: BTreeMap<Sha256, Vec<ShaderLocation>>,
+    pub(crate) entries: u64,
 }
 
 impl std::fmt::Debug for LocalShaderIndex {
@@ -31,6 +32,7 @@ impl std::fmt::Debug for LocalShaderIndex {
         f.debug_struct("LocalShaderIndex")
             .field("sources", &self.sources.len())
             .field("unique_hashes", &self.by_hash.len())
+            .field("entries", &self.entries)
             .finish()
     }
 }
@@ -41,6 +43,7 @@ impl LocalShaderIndex {
             sources: Vec::new(),
             directory_roots: Vec::new(),
             by_hash: BTreeMap::new(),
+            entries: 0,
         }
     }
 
@@ -48,6 +51,12 @@ impl LocalShaderIndex {
     #[must_use]
     pub fn unique_len(&self) -> usize {
         self.by_hash.len()
+    }
+
+    /// Stored location count (running counter; O(1)).
+    #[must_use]
+    pub fn entry_count(&self) -> u64 {
+        self.entries
     }
 
     /// Whether this hash was indexed.
@@ -83,27 +92,19 @@ impl LocalShaderIndex {
         self.directory_roots.iter().map(PathBuf::as_path)
     }
 
-    /// Reopen the first location of `hash`, re-verify hash and DXBC header.
+    /// Open each SODB source once for a sequence of verified reads.
+    pub fn read_session(&self) -> Result<ShaderReadSession<'_>, Error> {
+        ShaderReadSession::open(self)
+    }
+
+    /// Reopen locations of `hash` until one still matches.
     pub fn read_verified(&self, hash: &Sha256) -> Result<Vec<u8>, Error> {
-        let loc = self
-            .locations(hash)
-            .first()
-            .copied()
-            .ok_or(Error::ShaderChanged)?;
-        self.read_location(&loc, hash)
+        self.read_session()?.read_verified(hash)
     }
 
     /// Reopen one stored location and refuse silently-changed bytes.
     pub fn read_location(&self, loc: &ShaderLocation, expected: &Sha256) -> Result<Vec<u8>, Error> {
-        let source = self
-            .sources
-            .iter()
-            .find(|s| s.id == loc.source)
-            .ok_or(Error::ShaderChanged)?;
-        match source.kind {
-            ShaderSourceKind::Sodb => read_sodb_blob(&source.path, loc, expected),
-            ShaderSourceKind::LooseFile => read_loose_file(&source.path, loc, expected),
-        }
+        self.read_session()?.read_location(loc, expected)
     }
 
     pub(crate) fn add_source(&mut self, kind: ShaderSourceKind, path: PathBuf) -> SourceId {
@@ -119,12 +120,11 @@ impl LocalShaderIndex {
         report: &mut ScanReport,
         max_entries: u64,
     ) -> Result<(), Error> {
-        let entries = self.by_hash.values().map(Vec::len).sum::<usize>() as u64;
-        if entries >= max_entries {
+        if self.entries >= max_entries {
             return Err(Error::CapExceeded {
                 cap: crate::ScanCap::IndexEntries,
                 max: max_entries,
-                got: entries.saturating_add(1),
+                got: self.entries.saturating_add(1),
             });
         }
         let slots = self.by_hash.entry(hash).or_default();
@@ -132,46 +132,85 @@ impl LocalShaderIndex {
             report.duplicates = report.duplicates.saturating_add(1);
         }
         slots.push(loc);
+        self.entries = self.entries.saturating_add(1);
         report.shaders_indexed = report.shaders_indexed.saturating_add(1);
         report.unique_hashes = self.by_hash.len() as u64;
         Ok(())
     }
 }
 
-fn read_sodb_blob(path: &Path, loc: &ShaderLocation, expected: &Sha256) -> Result<Vec<u8>, Error> {
-    let expected_hash = expected.as_sodb();
-    match sodb::read_bytecode_blob(
-        path,
-        loc.offset.get() as i64,
-        expected_hash,
-        loc.len.get(),
-        sodb::Limits::DEFAULT,
-    ) {
-        Ok(bytes) => Ok(bytes),
-        Err(_) => {
-            let refs = sodb::list_bytecode_blobs(path)?;
-            let found = refs
-                .iter()
-                .find(|r| r.hash == expected_hash && r.len == loc.len.get())
-                .ok_or(Error::ShaderChanged)?;
-            match found.rowid {
-                Some(rowid) => Ok(sodb::read_bytecode_blob(
-                    path,
-                    rowid,
-                    expected_hash,
-                    loc.len.get(),
-                    sodb::Limits::DEFAULT,
-                )?),
-                None => Ok(sodb::read_bytecode_blob_by_key(
-                    path,
-                    &found.key,
-                    expected_hash,
-                    loc.len.get(),
-                    sodb::Limits::DEFAULT,
-                )?),
+/// Cached SODB connections for one rebuild or verified-read pass.
+pub struct ShaderReadSession<'a> {
+    index: &'a LocalShaderIndex,
+    sodbs: BTreeMap<SourceId, SodbBytecodeReader>,
+}
+
+impl<'a> ShaderReadSession<'a> {
+    fn open(index: &'a LocalShaderIndex) -> Result<Self, Error> {
+        let mut sodbs = BTreeMap::new();
+        for source in &index.sources {
+            if source.kind == ShaderSourceKind::Sodb {
+                sodbs.insert(
+                    source.id,
+                    SodbBytecodeReader::open(&source.path, sodb::Limits::DEFAULT)?,
+                );
             }
         }
+        Ok(Self { index, sodbs })
     }
+
+    /// Try each stored location until one still matches `hash`.
+    pub fn read_verified(&self, hash: &Sha256) -> Result<Vec<u8>, Error> {
+        let locs = self.index.locations(hash);
+        if locs.is_empty() {
+            return Err(Error::ShaderChanged);
+        }
+        let mut last = Error::ShaderChanged;
+        for loc in locs {
+            match self.read_location(loc, hash) {
+                Ok(bytes) => return Ok(bytes),
+                Err(err) => last = err,
+            }
+        }
+        Err(last)
+    }
+
+    /// Reopen one stored location and refuse silently-changed bytes.
+    pub fn read_location(&self, loc: &ShaderLocation, expected: &Sha256) -> Result<Vec<u8>, Error> {
+        let source = self
+            .index
+            .sources
+            .iter()
+            .find(|s| s.id == loc.source)
+            .ok_or(Error::ShaderChanged)?;
+        match source.kind {
+            ShaderSourceKind::Sodb => {
+                let reader = self.sodbs.get(&source.id).ok_or(Error::ShaderChanged)?;
+                read_sodb_blob(reader, loc, expected)
+            }
+            ShaderSourceKind::LooseFile => read_loose_file(&source.path, loc, expected),
+        }
+    }
+}
+
+fn read_sodb_blob(
+    reader: &SodbBytecodeReader,
+    loc: &ShaderLocation,
+    expected: &Sha256,
+) -> Result<Vec<u8>, Error> {
+    let expected_hash = expected.as_sodb();
+    reader
+        .read_blob(
+            loc.offset.get() as i64,
+            expected_hash,
+            loc.len.get(),
+            sodb::Limits::DEFAULT,
+        )
+        .map_err(|err| match err {
+            sodb::Error::BytecodeHashMismatch => Error::ShaderHashMismatch,
+            sodb::Error::BytecodeChanged => Error::ShaderChanged,
+            other => Error::Sodb(other),
+        })
 }
 
 fn read_loose_file(path: &Path, loc: &ShaderLocation, expected: &Sha256) -> Result<Vec<u8>, Error> {

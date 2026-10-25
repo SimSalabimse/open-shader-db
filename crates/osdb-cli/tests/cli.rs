@@ -50,6 +50,15 @@ fn help_lists_inspect_discover_coverage_records_shaders_rebuild() {
 }
 
 #[test]
+fn rebuild_help_lists_max_output_bytes() {
+    let out = bin().arg("rebuild").arg("--help").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("max-output-bytes"));
+    assert!(stdout.contains("8 GiB"));
+}
+
+#[test]
 fn discover_json_runs_against_missing_root() {
     let missing = temp_path("-no-steam");
     let out = bin()
@@ -618,4 +627,48 @@ fn rebuild_round_trip_cli_prints_local_notice() {
         "{}",
         String::from_utf8_lossy(&coverage.stderr)
     );
+}
+
+#[test]
+fn rebuild_max_output_bytes_is_enforced() {
+    let sodb = create_sodb();
+    let records = TempFile {
+        path: temp_path(".json"),
+    };
+    let extracted = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&records.path)
+        .output()
+        .unwrap();
+    assert!(
+        extracted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&extracted.stderr)
+    );
+    let dest = TempFile {
+        path: temp_path("-capped.sodb"),
+    };
+    let out = bin()
+        .arg("rebuild")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--max-output-bytes")
+        .arg("16")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("exceeds size limit") || stderr.contains("max-output-bytes"),
+        "stderr={stderr}"
+    );
+    assert!(!dest.path.exists());
 }

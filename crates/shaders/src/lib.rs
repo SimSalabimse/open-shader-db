@@ -14,7 +14,7 @@ mod scan;
 mod types;
 
 pub use error::{Error, ScanCap};
-pub use index::LocalShaderIndex;
+pub use index::{LocalShaderIndex, ShaderReadSession};
 pub use limits::Limits;
 pub use matching::match_records;
 pub use osdb_records::{CoverageKind, MatchReport, RecordMatch, Sha256};

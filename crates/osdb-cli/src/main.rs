@@ -94,6 +94,9 @@ enum Command {
         /// Print the rebuild report as JSON on stdout (counts only).
         #[arg(long)]
         json: bool,
+        /// Cap on the rebuilt file in bytes (default 8 GiB, hard maximum 8 GiB).
+        #[arg(long, default_value_t = osdb_rebuild::DEFAULT_MAX_OUTPUT_BYTES)]
+        max_output_bytes: u64,
     },
 }
 
@@ -169,6 +172,7 @@ impl fmt::Debug for Cli {
                 out: _,
                 force,
                 json,
+                max_output_bytes,
             } => f
                 .debug_struct("Rebuild")
                 .field("records", &"<redacted>")
@@ -177,6 +181,7 @@ impl fmt::Debug for Cli {
                 .field("out", &"<redacted>")
                 .field("force", force)
                 .field("json", json)
+                .field("max_output_bytes", max_output_bytes)
                 .finish(),
         }
     }
@@ -370,6 +375,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             out,
             force,
             json,
+            max_output_bytes,
         } => {
             if dir.is_empty() && sodb.is_empty() {
                 return Err("rebuild requires at least one --dir or --sodb".into());
@@ -386,7 +392,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|err| format!("scan: {err}"))?;
             let opts = osdb_rebuild::RebuildOptions {
                 force,
-                max_output_bytes: osdb_rebuild::RebuildOptions::default().max_output_bytes,
+                max_output_bytes,
                 record_input: Some(records),
             };
             let report = osdb_rebuild::rebuild_sodb(&loaded, &index, &out, opts)
@@ -570,6 +576,7 @@ mod tests {
                 out: PathBuf::from("/tmp/os-user-out.sodb"),
                 force: true,
                 json: false,
+                max_output_bytes: osdb_rebuild::DEFAULT_MAX_OUTPUT_BYTES,
             },
         };
         let text = format!("{rebuild:?}");

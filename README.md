@@ -77,7 +77,8 @@ product):
 - `shaders scan --dir <path> | --sodb <file>` — hash local shaders
   (counts only; SODB or loose DXBC)
 - `rebuild --records <file> (--dir|--sodb)... --out <file.sodb>` —
-  rebuild a local SODB (contains bytecode; local use only)
+  rebuild a local SODB (contains bytecode; local use only;
+  `--max-output-bytes` defaults to 8 GiB, hard maximum 8 GiB)
 
 See [ROADMAP.md](ROADMAP.md) for planned milestones and [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) for current feature status.
 

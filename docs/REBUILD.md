@@ -33,15 +33,25 @@ the same file as the input).
 ```
 osdb-cli rebuild --records records.json --sodb game.sodb --out rebuilt.sodb [--force]
 osdb-cli rebuild --records records.json --dir shaders/ --out rebuilt.sodb [--json]
+osdb-cli rebuild ... --out rebuilt.sodb --max-output-bytes 1048576
 ```
 
 `--dir` and `--sodb` may be repeated and mixed. The output must not be
-a record input, an SODB input, or inside a scanned shader root.
-`--force` overwrites an existing regular file. Default size cap is 8
-GiB. The writer builds in a temp database, then `VACUUM INTO` a sibling
-snapshot so the live work file is never renamed. The snapshot is
-fsynced and renamed into place (with a short retry and copy fallback
-on Windows). On success the CLI prints a one-line local-use notice.
+a record input, an SODB input, a symlink, or inside a scanned shader
+root. `--force` overwrites an existing regular file; the previous file
+is left in place if publish fails. `--max-output-bytes` caps the
+rebuilt file (default 8 GiB, hard maximum 8 GiB). A missing output
+parent is a typed error. The output path must be valid UTF-8 (SQLite
+needs a UTF-8 filename).
+
+The writer builds in a temp database (SQLite temp files on disk, not
+`temp_store=MEMORY`), then `VACUUM INTO` a sibling snapshot so the live
+work file is never renamed. Exclusive `create_new` names the siblings
+so a planted file or symlink is never written through. On non-Windows,
+fsync errors on the snapshot are returned and the parent directory is
+synced. On Windows, fsync errors are ignored. If the first rename
+fails, a copy-then-rename fallback runs on every platform. On success
+the CLI prints a one-line local-use notice.
 
 ## What the scanner supports
 
@@ -63,8 +73,10 @@ DXBC out of other containers.
   SHA-256.
 - Symlinks are skipped and counted (not followed outside the root).
 - FIFOs, devices, and sockets are skipped without blocking.
-- A file that grows while being read is bounded by the DXBC `FileSize`
-  and the per-file cap.
+- Hashed loose-file bytes are bounded by the DXBC `FileSize` field, the
+  size observed at open, and the per-file cap. Trailing bytes past
+  `FileSize` are not hashed. A header `FileSize` larger than the file
+  is `corrupt`.
 - Caps (per-file 256 MiB, 1 000 000 files, depth 16, 64 GiB total,
   1 000 000 index entries) produce a typed error that names the cap, or
   a `too_large` skip for a single oversized loose file.
@@ -79,11 +91,15 @@ DXBC out of other containers.
   `PRAGMA application_id = 0xD3D50DB` using
   `sodb::SODB_WRITER_SCHEMA_SQL`.
 - Only fully rebuildable records are written. Missing stages,
-  unresolved stages, and `root_signature_skip` records are counted and
-  omitted. Nothing is fabricated.
+  unresolved stages, `root_signature_skip` records, and records whose
+  stored root signature is not canonical (`skipped_noncanonical_root_signature`)
+  are counted and omitted. Nothing is fabricated.
 - Root signatures are re-parsed and re-serialized. They are never
-  copied raw. The residual numeric capacity in
+  copied raw. A non-canonical stored signature is not rewritten into
+  the output; that record is skipped. The residual numeric capacity in
   [RECORD_FORMAT.md](RECORD_FORMAT.md) still applies.
+- A non-DXBC regular file under `--dir` counts in `files_seen` and is
+  not indexed. It is not added to any skip bucket.
 - The same inputs produce a byte-identical SODB (sorted inserts, fixed
   pragmas, no timestamps).
 - A fixture SODB can be extracted, scanned, rebuilt, and extracted

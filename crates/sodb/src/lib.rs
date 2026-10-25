@@ -37,7 +37,7 @@ pub use limits::Limits;
 pub use parser::{
     extract_pipeline_states, extract_pipeline_states_with_limits, is_sodb, list_bytecode_blobs,
     list_bytecode_blobs_with_limits, open, open_with_limits, probe, read_bytecode_blob,
-    read_bytecode_blob_by_key,
+    read_bytecode_blob_by_key, SodbBytecodeReader,
 };
 pub use rootsig::{
     empty_root_signature_v1_0, empty_root_signature_v1_0_heap_flag, empty_root_signature_v1_1,

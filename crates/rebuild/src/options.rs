@@ -7,6 +7,9 @@ use std::path::PathBuf;
 /// 8 GiB default cap on the rebuilt SODB.
 pub const DEFAULT_MAX_OUTPUT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
+/// Hard maximum for `--max-output-bytes` (same as the default).
+pub const HARD_MAX_OUTPUT_BYTES: u64 = DEFAULT_MAX_OUTPUT_BYTES;
+
 /// Options for [`crate::rebuild_sodb`].
 #[derive(Debug, Clone)]
 pub struct RebuildOptions {

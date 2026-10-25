@@ -129,8 +129,8 @@ pub fn read_bytecode_blob(
     expected_len: u64,
     limits: Limits,
 ) -> Result<Vec<u8>, Error> {
-    let opened = open_db(path.as_ref(), limits)?;
-    read_bytecode_blob_from_conn(&opened.conn, rowid, expected, expected_len, limits)
+    let reader = SodbBytecodeReader::open(path, limits)?;
+    reader.read_blob(rowid, expected, expected_len, limits)
 }
 
 /// Re-read a `WITHOUT ROWID` blob by application key and verify its hash.
@@ -141,33 +141,70 @@ pub fn read_bytecode_blob_by_key(
     expected_len: u64,
     limits: Limits,
 ) -> Result<Vec<u8>, Error> {
-    let opened = open_db(path.as_ref(), limits)?;
-    let table = TableId::ShaderBytecode;
-    if expected_len > limits.max_blob_bytes as u64 {
-        return Err(Error::BlobTooLarge {
-            table,
-            max: limits.max_blob_bytes as u64,
-            got: expected_len,
-        });
+    let reader = SodbBytecodeReader::open(path, limits)?;
+    reader.read_blob_by_key(key, expected, expected_len, limits)
+}
+
+/// Read-only SODB handle that fetches one blob without reloading the catalog.
+///
+/// Open once per source and reuse. Each read re-hashes only that blob.
+pub struct SodbBytecodeReader {
+    conn: Connection,
+}
+
+impl SodbBytecodeReader {
+    /// Open `path` read-only. Does not hash every bytecode blob.
+    pub fn open(path: impl AsRef<Path>, limits: Limits) -> Result<Self, Error> {
+        let (conn, _) = open_readonly_conn(path.as_ref(), limits)?;
+        Ok(Self { conn })
     }
-    let bytes: Option<Vec<u8>> = opened
-        .conn
-        .query_row(
-            "SELECT Bytecode FROM shader_bytecode WHERE Key = ?1",
-            [key.as_bytes()],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|source| Error::from_sqlite(table, source))?;
-    let bytes = bytes.ok_or(Error::BytecodeChanged)?;
-    if bytes.len() as u64 != expected_len {
-        return Err(Error::BytecodeChanged);
+
+    /// Read one blob by rowid and verify SHA-256 and length.
+    pub fn read_blob(
+        &self,
+        rowid: i64,
+        expected: Sha256Hash,
+        expected_len: u64,
+        limits: Limits,
+    ) -> Result<Vec<u8>, Error> {
+        read_bytecode_blob_from_conn(&self.conn, rowid, expected, expected_len, limits)
     }
-    let hash = crate::hash::hash_shader_container(&bytes);
-    if hash != expected {
-        return Err(Error::BytecodeHashMismatch);
+
+    /// Read one blob by application key and verify SHA-256 and length.
+    pub fn read_blob_by_key(
+        &self,
+        key: &AppKey,
+        expected: Sha256Hash,
+        expected_len: u64,
+        limits: Limits,
+    ) -> Result<Vec<u8>, Error> {
+        let table = TableId::ShaderBytecode;
+        if expected_len > limits.max_blob_bytes as u64 {
+            return Err(Error::BlobTooLarge {
+                table,
+                max: limits.max_blob_bytes as u64,
+                got: expected_len,
+            });
+        }
+        let bytes: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT Bytecode FROM shader_bytecode WHERE Key = ?1",
+                [key.as_bytes()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|source| Error::from_sqlite(table, source))?;
+        let bytes = bytes.ok_or(Error::BytecodeChanged)?;
+        if bytes.len() as u64 != expected_len {
+            return Err(Error::BytecodeChanged);
+        }
+        let hash = crate::hash::hash_shader_container(&bytes);
+        if hash != expected {
+            return Err(Error::BytecodeHashMismatch);
+        }
+        Ok(bytes)
     }
-    Ok(bytes)
 }
 
 fn read_bytecode_blob_from_conn(
@@ -231,7 +268,7 @@ struct OpenedSodb {
     budget: Budget,
 }
 
-fn open_db(path: &Path, limits: Limits) -> Result<OpenedSodb, Error> {
+fn open_readonly_conn(path: &Path, limits: Limits) -> Result<(Connection, bool), Error> {
     let header = inspect_path(path, limits.max_file_bytes)?;
 
     let conn = if header.wal {
@@ -280,6 +317,12 @@ fn open_db(path: &Path, limits: Limits) -> Result<OpenedSodb, Error> {
         });
     }
 
+    Ok((conn, header.wal_ignored))
+}
+
+fn open_db(path: &Path, limits: Limits) -> Result<OpenedSodb, Error> {
+    let (conn, wal_ignored) = open_readonly_conn(path, limits)?;
+
     let mut budget = Budget::new(limits);
     let catalog = Catalog::load(&conn, &mut budget, limits)?;
 
@@ -294,7 +337,7 @@ fn open_db(path: &Path, limits: Limits) -> Result<OpenedSodb, Error> {
         catalog,
         bytecode_by_key,
         bytecode_refs,
-        wal_ignored: header.wal_ignored,
+        wal_ignored,
         budget,
     })
 }

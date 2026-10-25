@@ -3,17 +3,24 @@
 //! Rebuild tests. Fixtures are synthetic (CC0 / fake DXBC bytes).
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-use osdb_records::{extract, extract_with_sodb_limits, BuildIdentity};
+use osdb_records::{extract, extract_with_sodb_limits, BuildIdentity, HexBytes};
 use osdb_shaders::{scan_dir, scan_sodb, Limits as ScanLimits};
 use rusqlite::Connection;
-use sodb::{empty_root_signature_v1_0, SODB_APPLICATION_ID, SODB_USER_VERSION};
+use sodb::{
+    empty_root_signature_v1_0, hash_shader_container, one_sampler_border4_v1_0,
+    parse_root_signature, SODB_APPLICATION_ID, SODB_USER_VERSION,
+};
 
-use crate::{rebuild_sodb, Error, RebuildOptions, LOCAL_USE_NOTICE};
+use crate::{
+    inject_fault, rebuild_sodb, Error, InjectedFault, RebuildOptions, HARD_MAX_OUTPUT_BYTES,
+    LOCAL_USE_NOTICE,
+};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "linux")]
@@ -184,6 +191,73 @@ fn rich_fixture() -> TempPath {
 
 fn opts() -> RebuildOptions {
     RebuildOptions::default()
+}
+
+fn leftovers_for(dest: &Path) -> Vec<PathBuf> {
+    let Some(parent) = dest.parent() else {
+        return Vec::new();
+    };
+    let Some(name) = dest.file_name() else {
+        return Vec::new();
+    };
+    let needle = format!(".{}.osdb-rebuild-", name.to_string_lossy());
+    match fs::read_dir(parent) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.contains(&needle))
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn assert_no_leftovers(dest: &Path) {
+    let left = leftovers_for(dest);
+    assert!(left.is_empty(), "leftover rebuild siblings: {left:?}");
+}
+
+struct FaultGuard;
+
+impl Drop for FaultGuard {
+    fn drop(&mut self) {
+        inject_fault(None);
+    }
+}
+
+fn distinct_dxbc(i: u32, size: usize) -> Vec<u8> {
+    let mut bytes = dxbc_of_len(size, 1);
+    let tag = i.to_le_bytes();
+    let start = 32;
+    bytes[start..start + 4].copy_from_slice(&tag);
+    bytes
+}
+
+fn many_distinct_sodb(count: u32, size: usize) -> TempPath {
+    create_sodb(move |conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE shader_bytecode (Key BLOB NOT NULL PRIMARY KEY, Bytecode BLOB);
+            CREATE TABLE pipeline_states (Key BLOB NOT NULL PRIMARY KEY, ByteCode_VS BLOB);
+            ",
+        )?;
+        let tx = conn.transaction()?;
+        {
+            let mut ins_bc = tx.prepare("INSERT INTO shader_bytecode VALUES (?1, ?2)")?;
+            let mut ins_pso = tx.prepare("INSERT INTO pipeline_states VALUES (?1, ?2)")?;
+            for i in 0..count {
+                let key = i.to_le_bytes();
+                let vs = distinct_dxbc(i, size);
+                ins_bc.execute(rusqlite::params![&key, &vs])?;
+                ins_pso.execute(rusqlite::params![&key, &key])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    })
 }
 
 #[test]
@@ -412,6 +486,7 @@ fn output_cap_near_miss() {
     let err = rebuild_sodb(&records, &index, &dest, tiny).unwrap_err();
     assert!(matches!(err, Error::OutputTooLarge { max: 16, .. }));
     assert!(!dest.exists());
+    assert_no_leftovers(&dest);
     let mut ok = opts();
     ok.max_output_bytes = 8 * 1024 * 1024;
     rebuild_sodb(&records, &index, &dest, ok).unwrap();
@@ -558,6 +633,333 @@ fn rebuild_fanout_rss_stays_bounded() {
         assert!(
             delta < 96 * 1024 * 1024,
             "RSS grew by {delta} bytes; per-row shader copies?"
+        );
+    }
+    let _ = fs::remove_file(&dest);
+}
+
+#[test]
+fn rebuild_from_sodb_with_many_distinct_shaders_is_linear() {
+    const COUNT: u32 = 3_000;
+    let fixture = many_distinct_sodb(COUNT, 64);
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let dest = temp_path("-3k.sodb");
+    let start = Instant::now();
+    let report = rebuild_sodb(&records, &index, &dest, opts()).unwrap();
+    let elapsed = start.elapsed();
+    assert_eq!(report.rebuilt, u64::from(COUNT));
+    assert_eq!(report.unique_shaders, u64::from(COUNT));
+    assert!(
+        elapsed < Duration::from_secs(25),
+        "rebuild of {COUNT} distinct SODB shaders took {elapsed:?}; still quadratic?"
+    );
+    assert_no_leftovers(&dest);
+    let _ = fs::remove_file(&dest);
+}
+
+#[test]
+fn persist_fault_keeps_existing_output() {
+    let _fault = FaultGuard;
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let dest = temp_path("-keep.sodb");
+    fs::write(&dest, b"previous-output").unwrap();
+    let mut forced = opts();
+    forced.force = true;
+    inject_fault(Some(InjectedFault::Persist));
+    let err = rebuild_sodb(&records, &index, &dest, forced).unwrap_err();
+    assert!(matches!(err, Error::Io | Error::Sqlite));
+    assert_eq!(fs::read(&dest).unwrap(), b"previous-output");
+    assert_no_leftovers(&dest);
+}
+
+#[test]
+fn vacuum_into_fault_leaves_dest_absent() {
+    let _fault = FaultGuard;
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let dest = temp_path("-vac.sodb");
+    inject_fault(Some(InjectedFault::VacuumInto));
+    let err = rebuild_sodb(&records, &index, &dest, opts()).unwrap_err();
+    assert!(matches!(err, Error::Sqlite));
+    assert!(!dest.exists());
+    assert_no_leftovers(&dest);
+}
+
+#[test]
+fn rename_fault_copy_fallback_is_byte_identical() {
+    let _fault = FaultGuard;
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let control = temp_path("-copy-ctrl.sodb");
+    rebuild_sodb(&records, &index, &control, opts()).unwrap();
+    let dest = temp_path("-copy.sodb");
+    inject_fault(Some(InjectedFault::Rename));
+    rebuild_sodb(&records, &index, &dest, opts()).unwrap();
+    assert_eq!(fs::read(&dest).unwrap(), fs::read(&control).unwrap());
+    assert_no_leftovers(&dest);
+    let _ = fs::remove_file(&dest);
+    let _ = fs::remove_file(&control);
+}
+
+#[test]
+fn output_cap_after_compact_is_typed_and_clean() {
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let measure = temp_path("-cap-measure.sodb");
+    rebuild_sodb(&records, &index, &measure, opts()).unwrap();
+    let compact = fs::metadata(&measure).unwrap().len();
+    let _ = fs::remove_file(&measure);
+    assert!(
+        compact > 1024,
+        "expected compacted file to exceed charged blobs"
+    );
+    let dest = temp_path("-cap-final.sodb");
+    let mut mid = opts();
+    mid.max_output_bytes = compact.saturating_sub(1);
+    let err = rebuild_sodb(&records, &index, &dest, mid).unwrap_err();
+    assert!(matches!(
+        err,
+        Error::OutputTooLarge {
+            max,
+            got
+        } if max == compact.saturating_sub(1) && got == compact
+    ));
+    assert!(!dest.exists());
+    assert_no_leftovers(&dest);
+}
+
+#[test]
+fn refuses_output_equal_to_records_file() {
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let rec = temp_path("-records.json");
+    fs::write(&rec, b"{}").unwrap();
+    let mut options = opts();
+    options.record_input = Some(rec.clone());
+    let err = rebuild_sodb(&records, &index, &rec, options).unwrap_err();
+    assert!(matches!(err, Error::SameAsInput));
+    assert_eq!(fs::read(&rec).unwrap(), b"{}");
+    let _ = fs::remove_file(&rec);
+}
+
+#[cfg(unix)]
+#[test]
+fn refuses_output_symlink() {
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let target = temp_path("-link-target.sodb");
+    fs::write(&target, b"keep").unwrap();
+    let dest = temp_path("-link.sodb");
+    std::os::unix::fs::symlink(&target, &dest).unwrap();
+    let err = rebuild_sodb(&records, &index, &dest, opts()).unwrap_err();
+    assert!(matches!(err, Error::NotRegular));
+    assert_eq!(fs::read(&target).unwrap(), b"keep");
+    let _ = fs::remove_file(&dest);
+    let _ = fs::remove_file(&target);
+}
+
+#[test]
+fn refuses_output_inside_scan_root() {
+    let dir = temp_path("-scan-root");
+    fs::create_dir_all(&dir).unwrap();
+    let vs = dxbc_of_len(32, 5);
+    fs::write(dir.join("a.dxbc"), &vs).unwrap();
+    let (index, _) = scan_dir(&dir, ScanLimits::DEFAULT).unwrap();
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let dest = dir.join("out.sodb");
+    let err = rebuild_sodb(&records, &index, &dest, opts()).unwrap_err();
+    assert!(matches!(err, Error::InsideScanRoot));
+    assert!(!dest.exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn missing_output_parent_is_typed() {
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let dest = temp_path("-no-parent").join("out.sodb");
+    let err = rebuild_sodb(&records, &index, &dest, opts()).unwrap_err();
+    assert!(matches!(err, Error::OutputParentMissing));
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_output_parent_is_io() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let dir = temp_path("-denied");
+    fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("out.sodb");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let err = rebuild_sodb(&records, &index, &dest, opts()).unwrap_err();
+    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
+    assert!(matches!(err, Error::Io));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_output_path_is_typed() {
+    use std::os::unix::ffi::OsStringExt;
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let dir = temp_path("-utf8-dir");
+    fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join(std::ffi::OsString::from_vec(vec![b'o', 0xff, b'.', b's']));
+    let err = rebuild_sodb(&records, &index, &dest, opts()).unwrap_err();
+    let _ = fs::remove_dir_all(&dir);
+    assert!(matches!(err, Error::OutputPathNotUtf8));
+}
+
+#[test]
+fn hard_max_output_bytes_is_rejected() {
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let dest = temp_path("-hard.sodb");
+    let mut huge = opts();
+    huge.max_output_bytes = HARD_MAX_OUTPUT_BYTES.saturating_add(1);
+    let err = rebuild_sodb(&records, &index, &dest, huge).unwrap_err();
+    assert!(matches!(
+        err,
+        Error::MaxOutputBytesTooLarge {
+            max: HARD_MAX_OUTPUT_BYTES,
+            ..
+        }
+    ));
+    assert!(!dest.exists());
+}
+
+#[test]
+fn planted_temp_sibling_is_not_written_through() {
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let dest = temp_path("-planted.sodb");
+    let seq = crate::write::current_temp_seq();
+    let planted = crate::write::predicted_sibling(&dest, seq);
+    fs::write(&planted, b"planted-sibling").unwrap();
+    rebuild_sodb(&records, &index, &dest, opts()).unwrap();
+    assert_eq!(fs::read(&planted).unwrap(), b"planted-sibling");
+    assert!(dest.exists());
+    let _ = fs::remove_file(&planted);
+    assert_no_leftovers(&dest);
+    let _ = fs::remove_file(&dest);
+}
+
+#[test]
+fn noncanonical_root_signature_is_skipped_not_copied() {
+    let vs = dxbc_of_len(32, 6);
+    let fixture = create_sodb(|conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE shader_bytecode (Key BLOB NOT NULL PRIMARY KEY, Bytecode BLOB);
+            CREATE TABLE pipeline_states (Key BLOB NOT NULL PRIMARY KEY, ByteCode_VS BLOB);
+            ",
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode VALUES (?1, ?2)",
+            rusqlite::params![b"bc", &vs],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states VALUES (?1, ?2)",
+            rusqlite::params![b"ok", b"bc"],
+        )?;
+        Ok(())
+    });
+    let mut records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let mut raw = one_sampler_border4_v1_0();
+    raw[24 + 16..24 + 20].copy_from_slice(&(-0.0_f32).to_bits().to_le_bytes());
+    let canonical = parse_root_signature(&raw).unwrap().serialize();
+    assert_ne!(canonical, raw);
+    let hash = osdb_records::Sha256::from_sodb(hash_shader_container(&raw));
+    records
+        .root_signatures
+        .insert(hash, HexBytes::from_bytes(&raw));
+    records.records[0].root_signature = Some(hash);
+    let dest = temp_path("-noncanon.sodb");
+    let report = rebuild_sodb(&records, &index, &dest, opts()).unwrap();
+    assert_eq!(report.rebuilt, 0);
+    assert_eq!(report.skipped_noncanonical_root_signature, 1);
+    assert_no_leftovers(&dest);
+    if dest.exists() {
+        let bytes = fs::read(&dest).unwrap();
+        assert!(
+            !bytes.windows(raw.len()).any(|w| w == raw.as_slice()),
+            "non-canonical root signature was copied raw"
+        );
+    }
+    let _ = fs::remove_file(&dest);
+}
+
+#[test]
+fn rebuilt_root_signature_is_canonical() {
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let dest = temp_path("-canon-rs.sodb");
+    rebuild_sodb(&records, &index, &dest, opts()).unwrap();
+    let conn = Connection::open(&dest).unwrap();
+    let stored: Vec<u8> = conn
+        .query_row("SELECT value FROM root_signatures LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let parsed = parse_root_signature(&stored).unwrap();
+    assert_eq!(parsed.serialize(), stored);
+    assert_eq!(stored, empty_root_signature_v1_0());
+    let _ = fs::remove_file(&dest);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rebuild_distinct_shader_rss_stays_bounded() {
+    if run_rss_isolated("rebuild_distinct_shader_rss_stays_bounded") {
+        return;
+    }
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    const COUNT: u32 = 96;
+    const SIZE: usize = 256 * 1024;
+    let fixture = many_distinct_sodb(COUNT, SIZE);
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let dest = temp_path("-rss-distinct.sodb");
+    let before = rss_bytes();
+    let report = rebuild_sodb(&records, &index, &dest, opts()).unwrap();
+    let after = rss_bytes();
+    let out_len = fs::metadata(&dest).unwrap().len();
+    assert_eq!(report.unique_shaders, u64::from(COUNT));
+    assert!(
+        out_len > 16 * 1024 * 1024,
+        "expected tens of MB of output, got {out_len}"
+    );
+    if let (Some(before), Some(after)) = (before, after) {
+        let delta = after.saturating_sub(before);
+        eprintln!(
+            "distinct-shader rebuild output={} RSS delta={} ({:.1} MiB)",
+            out_len,
+            delta,
+            delta as f64 / (1024.0 * 1024.0)
+        );
+        assert!(
+            delta < out_len / 2,
+            "RSS grew by {delta} bytes tracking output {out_len}"
         );
     }
     let _ = fs::remove_file(&dest);
