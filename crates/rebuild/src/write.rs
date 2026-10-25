@@ -723,11 +723,13 @@ fn reset_writer_hooks() {
 }
 
 #[cfg(test)]
+#[allow(dead_code)] // read by the Linux RSS/disk tests
 pub(crate) fn injected_extra_disk() -> u64 {
     EXTRA_DISK.with(|slot| slot.get())
 }
 
 #[cfg(test)]
+#[allow(dead_code)] // read by the Linux RSS/disk tests
 pub(crate) fn saw_memory_temp_store() -> bool {
     SAW_MEMORY_TEMP.with(|slot| slot.get())
 }
