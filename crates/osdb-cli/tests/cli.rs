@@ -566,6 +566,10 @@ fn rebuild_round_trip_cli_prints_local_notice() {
         "{}",
         String::from_utf8_lossy(&extracted.stderr)
     );
+    assert!(
+        records.path.is_file(),
+        "extract did not write a regular record file"
+    );
     let dest = TempFile {
         path: temp_path("-rebuilt.sodb"),
     };
@@ -582,8 +586,9 @@ fn rebuild_round_trip_cli_prints_local_notice() {
         .unwrap();
     assert!(
         out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
     );
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("local use only"));

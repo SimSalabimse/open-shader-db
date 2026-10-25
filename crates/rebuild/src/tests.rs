@@ -209,6 +209,22 @@ fn round_trip_extract_scan_rebuild_extract() {
 }
 
 #[test]
+fn rebuild_with_record_input_path_matches_cli() {
+    let fixture = rich_fixture();
+    let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();
+    let (index, _) = scan_sodb(&fixture.path, ScanLimits::DEFAULT).unwrap();
+    let rec_path = temp_path("-records.json");
+    fs::write(&rec_path, b"{}").unwrap();
+    let mut options = opts();
+    options.record_input = Some(rec_path.clone());
+    let out = temp_path("-cli-shaped.sodb");
+    rebuild_sodb(&records, &index, &out, options).unwrap();
+    assert!(out.exists());
+    let _ = fs::remove_file(&out);
+    let _ = fs::remove_file(&rec_path);
+}
+
+#[test]
 fn rebuild_is_byte_identical() {
     let fixture = rich_fixture();
     let records = extract(&fixture.path, BuildIdentity::empty()).unwrap();

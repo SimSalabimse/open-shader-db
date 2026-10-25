@@ -38,10 +38,10 @@ osdb-cli rebuild --records records.json --dir shaders/ --out rebuilt.sodb [--jso
 `--dir` and `--sodb` may be repeated and mixed. The output must not be
 a record input, an SODB input, or inside a scanned shader root.
 `--force` overwrites an existing regular file. Default size cap is 8
-GiB. The writer closes the SQLite handle, fsyncs, then renames a temp
-file into place. On Windows it retries and may copy if the just-closed
-database is still locked. On success the CLI prints a one-line
-local-use notice.
+GiB. The writer builds in a temp database, then `VACUUM INTO` a sibling
+snapshot so the live work file is never renamed. The snapshot is
+fsynced and renamed into place (with a short retry and copy fallback
+on Windows). On success the CLI prints a one-line local-use notice.
 
 ## What the scanner supports
 

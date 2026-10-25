@@ -48,21 +48,35 @@ pub fn rebuild_sodb(
     report.unique_shaders = plan.shaders.len() as u64;
     report.unique_root_signatures = plan.root_sigs.len() as u64;
 
-    let tmp = temp_sibling(out);
-    let mut guard = TempGuard {
-        path: tmp.clone(),
+    let work = temp_sibling(out);
+    let compact = temp_sibling(out);
+    let mut work_guard = TempGuard {
+        path: work.clone(),
         persist: false,
     };
-    write_database(&tmp, records, shaders, &plan, opts.max_output_bytes)?;
-    let got = fs::metadata(&tmp).map_err(|_| Error::Io)?.len();
+    let mut compact_guard = TempGuard {
+        path: compact.clone(),
+        persist: false,
+    };
+    write_database(
+        &work,
+        records,
+        shaders,
+        &plan,
+        opts.max_output_bytes,
+        &compact,
+    )?;
+    let got = fs::metadata(&compact).map_err(|_| Error::Io)?.len();
     if got > opts.max_output_bytes {
         return Err(Error::OutputTooLarge {
             max: opts.max_output_bytes,
             got,
         });
     }
-    persist_temp_db(&tmp, out, opts.force)?;
-    guard.persist = true;
+    persist_temp_db(&compact, out, opts.force)?;
+    compact_guard.persist = true;
+    let _ = fs::remove_file(&work);
+    work_guard.persist = true;
     Ok(report)
 }
 
@@ -140,6 +154,7 @@ fn write_database(
     shaders: &LocalShaderIndex,
     plan: &Plan,
     max_output: u64,
+    compact: &Path,
 ) -> Result<(), Error> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "page_size", SODB_WRITER_PAGE_SIZE)?;
@@ -561,8 +576,24 @@ fn write_database(
     let _ = conn
         .query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0))
         .optional()?;
+    // Snapshot into a sibling file so we never rename the live work database.
+    // VACUUM INTO closes that snapshot before this returns.
+    conn.execute("VACUUM INTO ?1", [sqlite_path(compact)?])?;
     conn.close().map_err(|(_, _)| Error::Sqlite)?;
     Ok(())
+}
+
+fn sqlite_path(path: &Path) -> Result<String, Error> {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_err(|_| Error::Io)?.join(path)
+    };
+    let mut text = abs.to_str().ok_or(Error::Io)?.to_owned();
+    if cfg!(windows) {
+        text = text.replace('\\', "/");
+    }
+    Ok(text)
 }
 
 fn stage_key(hash: &Option<Sha256>) -> Option<Vec<u8>> {
@@ -616,17 +647,13 @@ fn refuse_output_path(
             return Err(Error::InsideScanRoot);
         }
     }
-    match fs::symlink_metadata(out) {
-        Ok(meta) => {
-            if meta.file_type().is_symlink() || !meta.file_type().is_file() {
-                return Err(Error::NotRegular);
-            }
-            if !opts.force {
-                return Err(Error::AlreadyExists);
-            }
+    if let Ok(meta) = fs::symlink_metadata(out) {
+        if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+            return Err(Error::NotRegular);
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(Error::Io),
+        if !opts.force {
+            return Err(Error::AlreadyExists);
+        }
     }
     Ok(())
 }
@@ -635,20 +662,21 @@ fn paths_are_same(a: &Path, b: &Path) -> Result<bool, Error> {
     if a == b {
         return Ok(true);
     }
-    match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
-        (Ok(da), Ok(db)) => {
-            if da.file_type().is_symlink() || db.file_type().is_symlink() {
-                return Ok(false);
-            }
-            if da.file_type().is_file() && db.file_type().is_file() {
-                return same_file::is_same_file(a, b).map_err(|_| Error::Io);
-            }
-            Ok(false)
-        }
-        (Err(err), _) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        (_, Err(err)) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        _ => Err(Error::Io),
+    let da = match fs::symlink_metadata(a) {
+        Ok(meta) => meta,
+        Err(_) => return Ok(false),
+    };
+    let db = match fs::symlink_metadata(b) {
+        Ok(meta) => meta,
+        Err(_) => return Ok(false),
+    };
+    if da.file_type().is_symlink() || db.file_type().is_symlink() {
+        return Ok(false);
     }
+    if da.file_type().is_file() && db.file_type().is_file() {
+        return same_file::is_same_file(a, b).map_err(|_| Error::Io);
+    }
+    Ok(false)
 }
 
 fn path_is_under(dest: &Path, root: &Path) -> Result<bool, Error> {
@@ -676,20 +704,17 @@ fn path_is_under(dest: &Path, root: &Path) -> Result<bool, Error> {
 /// Close-and-publish the temp SQLite file. Windows can refuse to rename a
 /// database that was just closed, so this retries and falls back to copy.
 fn persist_temp_db(tmp: &Path, dest: &Path, force: bool) -> Result<(), Error> {
-    sync_path(tmp)?;
+    let _ = sync_path(tmp);
     if force {
-        match fs::symlink_metadata(dest) {
-            Ok(meta) => {
-                if meta.file_type().is_symlink() || !meta.file_type().is_file() {
-                    return Err(Error::NotRegular);
-                }
-                retry_io(|| fs::remove_file(dest))?;
+        if let Ok(meta) = fs::symlink_metadata(dest) {
+            if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+                return Err(Error::NotRegular);
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(Error::Io),
+            retry_io(|| fs::remove_file(dest))?;
         }
     }
     if retry_io(|| fs::rename(tmp, dest)).is_ok() {
+        let _ = sync_path(dest);
         return Ok(());
     }
     let staged = temp_sibling(dest);
@@ -698,7 +723,7 @@ fn persist_temp_db(tmp: &Path, dest: &Path, force: bool) -> Result<(), Error> {
         persist: false,
     };
     retry_io(|| fs::copy(tmp, &staged).map(|_| ()))?;
-    sync_path(&staged)?;
+    let _ = sync_path(&staged);
     retry_io(|| fs::rename(&staged, dest))?;
     staged_guard.persist = true;
     let _ = fs::remove_file(tmp);

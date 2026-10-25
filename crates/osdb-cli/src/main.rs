@@ -374,7 +374,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if dir.is_empty() && sodb.is_empty() {
                 return Err("rebuild requires at least one --dir or --sodb".into());
             }
-            let loaded = osdb_records::load(&records)?;
+            let loaded = osdb_records::load(&records).map_err(|err| format!("records: {err}"))?;
             let mut inputs = Vec::new();
             for path in dir {
                 inputs.push(osdb_shaders::ScanInput::Directory(path));
@@ -382,13 +382,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             for path in sodb {
                 inputs.push(osdb_shaders::ScanInput::Sodb(path));
             }
-            let (index, _) = osdb_shaders::scan(&inputs, osdb_shaders::Limits::DEFAULT)?;
+            let (index, _) = osdb_shaders::scan(&inputs, osdb_shaders::Limits::DEFAULT)
+                .map_err(|err| format!("scan: {err}"))?;
             let opts = osdb_rebuild::RebuildOptions {
                 force,
                 max_output_bytes: osdb_rebuild::RebuildOptions::default().max_output_bytes,
                 record_input: Some(records),
             };
-            let report = osdb_rebuild::rebuild_sodb(&loaded, &index, &out, opts)?;
+            let report = osdb_rebuild::rebuild_sodb(&loaded, &index, &out, opts)
+                .map_err(|err| format!("rebuild: {err}"))?;
             eprintln!("{}", osdb_rebuild::LOCAL_USE_NOTICE);
             if json {
                 let mut stdout = std::io::stdout().lock();
