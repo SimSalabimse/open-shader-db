@@ -2,7 +2,7 @@
 
 This document tracks the implementation status of planned features. Milestone names match GitHub exactly.
 
-**Last updated:** October 24, 2026
+**Last updated:** October 25, 2026
 
 ## Legend
 
@@ -28,7 +28,7 @@ This document tracks the implementation status of planned features. Milestone na
 | Game discovery (Steam) | ⚠️ Partial | crates/steam (osdb-steam) | M0 Index and coverage reports | Temp-dir fixtures: VDF, two libraries, SODB scan, missing root, hostile VDF, installdir confinement (no symlinked install dirs), symlink escape/loop/internal/race (Unix), walk bounds (depth, files, entries, time per game), path isolation. Untested: real Windows registry lookups and real Steam / game folders |
 | SODB file parsing | ✅ Complete | crates/sodb | M0 Index and coverage reports | SQLite `user_version=2`; hashes only |
 | Description hash generation | ⚠️ Partial | crates/sodb | M0 Index and coverage reports | SHA-256 of descriptors and followed tables; `string_associations` is not hashed (see crates/sodb/README.md) |
-| Coverage comparison CLI | 📋 Planned | Client | M0 Index and coverage reports | Local SODB vs community index |
+| Coverage comparison CLI | ⚠️ Partial | crates/coverage, crates/osdb-cli | M0 Index and coverage reports | `osdb-cli coverage` vs unsigned local index; synthetic tests only. **Untested:** real game SODBs, real community indexes, signed indexes (M4), network download |
 | Shader extraction and matching | 📋 Planned | Client | M1 Pipeline-state records | Needs legal clarity first |
 | SODB rebuild from records + local shaders | 📋 Planned | Client | M1 Pipeline-state records | Needs legal clarity first |
 | Upload manifest generation | 📋 Planned | Client | M2 Upload preview and submission | Anonymized JSON |
@@ -77,10 +77,10 @@ This document tracks the implementation status of planned features. Milestone na
 
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
-| CoverageIndex schema | 📋 Planned | Data model | M0 Index and coverage reports | Designed in ARCHITECTURE.md |
+| CoverageIndex schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | format_version 1 JSON in docs/COVERAGE_INDEX_FORMAT.md; logical DescriptionHash objects still M3 |
 | PipelineStateRecord schema | 📋 Planned | Data model | M1 Pipeline-state records | Designed; implementation after legal clarity |
 | UploadManifest schema | 📋 Planned | Data model | M2 Upload preview and submission | Designed in ARCHITECTURE.md |
-| BuildId schema | 📋 Planned | Data model | M0 Index and coverage reports | Designed in ARCHITECTURE.md |
+| BuildId schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | On-disk game_id / version / exe_hash on the index. SODB has no build identifier yet; coverage reports `build_identity: not_compared` |
 
 ## Security and privacy
 
@@ -105,4 +105,4 @@ This document tracks the implementation status of planned features. Milestone na
 ---
 
 **Maintainer:** Simsalabim  
-**Last updated:** October 24, 2026
+**Last updated:** October 25, 2026

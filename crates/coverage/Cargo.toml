@@ -1,0 +1,26 @@
+[package]
+name = "osdb-coverage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Coverage index load and local SODB comparison for open-shader-db"
+readme = "README.md"
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sodb = { path = "../sodb" }
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true
+
+[lints]
+workspace = true

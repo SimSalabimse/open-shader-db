@@ -2,7 +2,7 @@
 
 This document outlines the development milestones and planned features for open-shader-db. GitHub milestones use these names exactly. Each milestone has associated issues drafted in [docs/issues-draft.md](docs/issues-draft.md).
 
-**Last updated:** October 24, 2026  
+**Last updated:** October 25, 2026  
 **Status:** Early design phase
 
 ## Milestone overview
@@ -24,7 +24,7 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 
 **Goal:** Ship foundations and index-only verification so a user can compare a local SODB against a community coverage index.
 
-**Status:** 📋 Planned  
+**Status:** 🚧 In progress (Steam discovery and coverage CLI present; no published index yet)  
 **Ships:** Yes (first release)
 
 ### Deliverables
@@ -36,7 +36,7 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 - [x] Language choice for the client
 - [x] SODB SQLite parser
 - [ ] Steam game discovery (partial; temp-dir fixtures — see FEATURE_MAP)
-- [ ] Coverage comparison CLI (local SODB vs community index)
+- [x] Coverage comparison CLI (local SODB vs community index; unsigned files; synthetic tests)
 
 ### Success criteria
 
@@ -180,4 +180,4 @@ Not a milestone. Track here until scheduled:
 ---
 
 **Maintainer:** Simsalabim  
-**Last updated:** October 24, 2026
+**Last updated:** October 25, 2026

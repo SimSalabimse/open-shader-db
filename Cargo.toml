@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sodb", "crates/osdb-cli", "crates/steam"]
+members = ["crates/sodb", "crates/coverage", "crates/steam", "crates/osdb-cli"]
 
 [workspace.package]
 version = "0.1.0"

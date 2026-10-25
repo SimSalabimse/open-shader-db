@@ -75,6 +75,8 @@ The `osdb-cli` crate exposes:
 - `inspect <file.sodb>` — print `SodbSummary` as JSON
 - `discover` — list Steam games and SODB **counts** (paths only with
   `--show-paths` in human output; JSON never includes paths)
+- `coverage --sodb <file> --index <file>` — compare those hashes to an
+  unsigned coverage index (hashes and counts only)
 
 ## Security limits
 

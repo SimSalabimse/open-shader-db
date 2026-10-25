@@ -72,6 +72,15 @@ On Unix, candidate files are opened with `O_NOFOLLOW | O_NONBLOCK |
 O_NOCTTY`. The opened handle's metadata must report a regular file;
 FIFOs and devices are opened non-blocking, then rejected.
 
+## CLI
+
+`osdb-cli` exposes three commands:
+
+- `inspect <file.sodb>` — print SODB hashes as JSON
+- `discover` — list Steam games and SODB counts (this crate)
+- `coverage --sodb <file> --index <file>` — compare local hashes to an
+  unsigned coverage index
+
 ## What is not verified
 
 - Real Steam installs and real game folders
