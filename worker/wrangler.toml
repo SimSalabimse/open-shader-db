@@ -1,0 +1,30 @@
+# NOT DEPLOYED. Fill in your own account, zone, and bucket names.
+# This file uses placeholders only. No Cloudflare account, token, zone,
+# domain, real URL, or secret belongs in this repository.
+
+name = "osdb-ingest-placeholder"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# PLACEHOLDER — replace with your own account id. NOT DEPLOYED.
+account_id = "00000000000000000000000000000000"
+
+[vars]
+TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+PER_BUILD_UPLOAD_CAP = "64"
+
+# Secrets (set with wrangler secret; never committed): TURNSTILE_SECRET
+
+[[r2_buckets]]
+binding = "STAGING_BUCKET"
+bucket_name = "PLACEHOLDER_STAGING_BUCKET"
+
+# Global rate gate. The Worker calls limit({ key = "v1-upload" }).
+# It never keys this binding by IP or any request header.
+# Per-client edge rules, if any, live in a future dashboard and are
+# not configured here.
+[[ratelimits]]
+name = "UPLOAD_RATE_LIMITER"
+# PLACEHOLDER namespace id. NOT DEPLOYED.
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }

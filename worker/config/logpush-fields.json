@@ -1,0 +1,16 @@
+{
+  "_comment": "NOT DEPLOYED. Fill in your own account and Logpush destination. Use this field list only. Do not add connecting-address fields.",
+  "dataset": "workers_trace_events",
+  "output_options": {
+    "field_names": [
+      "EventType",
+      "Outcome",
+      "ScriptName",
+      "Event",
+      "Exceptions",
+      "Logs",
+      "CPUTimeMs",
+      "WallTimeMs"
+    ]
+  }
+}
