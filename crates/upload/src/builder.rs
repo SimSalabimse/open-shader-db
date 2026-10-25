@@ -149,8 +149,11 @@ impl<'a> ManifestBuilder<'a> {
             Some(hour) => hour,
             None => UtcHour::from_system_time(SystemClock.now())?,
         };
-        let (description_hashes, bytecode_hashes) =
-            collect_hashes(self.records, self.limits.max_hashes_per_list)?;
+        let (description_hashes, bytecode_hashes) = collect_hashes(
+            self.records,
+            self.limits.max_description_hashes,
+            self.limits.max_bytecode_hashes,
+        )?;
         Ok(UploadManifest {
             schema_version: SCHEMA_VERSION,
             build_id,
@@ -191,21 +194,37 @@ impl<'a> ManifestBuilder<'a> {
     }
 }
 
-fn collect_hashes(file: &RecordFile, max_hashes: u64) -> Result<(HashSet, HashSet), Error> {
+fn collect_hashes(
+    file: &RecordFile,
+    max_description: u64,
+    max_bytecode: u64,
+) -> Result<(HashSet, HashSet), Error> {
     let mut description = BTreeSet::new();
     let mut bytecode = BTreeSet::new();
     for record in &file.records {
         if let Some(hash) = record.root_signature {
-            insert_hash(&mut description, Sha256Hex::from_records(hash), max_hashes)?;
+            insert_hash(
+                &mut description,
+                Sha256Hex::from_records(hash),
+                max_description,
+            )?;
         }
         if let Some(hash) = record.input_layout {
-            insert_hash(&mut description, Sha256Hex::from_records(hash), max_hashes)?;
+            insert_hash(
+                &mut description,
+                Sha256Hex::from_records(hash),
+                max_description,
+            )?;
         }
         if let Some(hash) = record.stream_out {
-            insert_hash(&mut description, Sha256Hex::from_records(hash), max_hashes)?;
+            insert_hash(
+                &mut description,
+                Sha256Hex::from_records(hash),
+                max_description,
+            )?;
         }
         for (_, hash) in record.bytecode_hashes.iter() {
-            insert_hash(&mut bytecode, Sha256Hex::from_records(hash), max_hashes)?;
+            insert_hash(&mut bytecode, Sha256Hex::from_records(hash), max_bytecode)?;
         }
     }
     Ok((

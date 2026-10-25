@@ -27,7 +27,7 @@ pub struct HashSet {
 }
 
 impl HashSet {
-    /// Sort, deduplicate, and enforce [`Limits::max_hashes_per_list`].
+    /// Sort, deduplicate, and enforce a caller-supplied hash-list cap.
     pub fn from_unsorted(mut hashes: Vec<Sha256Hex>, max_hashes: u64) -> Result<Self, Error> {
         let got = u64::try_from(hashes.len()).unwrap_or(u64::MAX);
         if got > max_hashes {
@@ -262,11 +262,11 @@ impl RawManifest {
             collected_hour: self.collected_hour,
             description_hashes: HashSet::from_sorted_unique(
                 self.description_hashes,
-                limits.max_hashes_per_list,
+                limits.max_description_hashes,
             )?,
             bytecode_hashes: HashSet::from_sorted_unique(
                 self.bytecode_hashes,
-                limits.max_hashes_per_list,
+                limits.max_bytecode_hashes,
             )?,
             ownership: self.ownership,
         })

@@ -20,8 +20,9 @@ use crate::preview::{UploadPreview, NOTHING_SENT_LINE, THESE_EXACT_BYTES_LINE, U
 use crate::schema::{document, MANIFEST_FIELDS, SCHEMA_JSON};
 use crate::time::{FixedClock, UtcHour};
 use crate::{
-    Error, Limits, BYTECODE_STAGES_PER_RECORD, DEFAULT_MAX_HASHES_PER_LIST, DEFAULT_MAX_JSON_BYTES,
-    DESCRIPTION_HASHES_PER_RECORD,
+    Error, Limits, BYTECODE_STAGES_PER_RECORD, DEFAULT_MAX_BYTECODE_HASHES,
+    DEFAULT_MAX_DESCRIPTION_HASHES, DEFAULT_MAX_HASHES_PER_LIST, DEFAULT_MAX_JSON_BYTES,
+    DEFAULT_PER_BUILD_UPLOAD_CAP, DESCRIPTION_HASHES_PER_RECORD, LIMITS_JSON, WIRE_MAX_JSON_BYTES,
 };
 
 const CANARY_USER: &str = "user-alice-fixture";
@@ -297,7 +298,8 @@ fn parse_rejects_non_utf8_bom_trailing_and_deep_nesting() {
 fn oversized_manifest_and_hash_lists_are_rejected() {
     let tiny = Limits {
         max_json_bytes: 8,
-        max_hashes_per_list: 2,
+        max_description_hashes: 2,
+        max_bytecode_hashes: 2,
         max_json_nesting: 8,
     };
     assert!(matches!(
@@ -723,8 +725,17 @@ fn default_caps_cover_a_full_record_file() {
         osdb_records::Limits::DEFAULT.max_records * BYTECODE_STAGES_PER_RECORD
     );
     assert_eq!(DEFAULT_MAX_HASHES_PER_LIST, 400_000);
+    assert_eq!(DEFAULT_MAX_BYTECODE_HASHES, 400_000);
+    assert_eq!(DEFAULT_MAX_DESCRIPTION_HASHES, 150_000);
+    assert_eq!(
+        DEFAULT_MAX_DESCRIPTION_HASHES,
+        osdb_records::Limits::DEFAULT.max_records * DESCRIPTION_HASHES_PER_RECORD
+    );
     assert_eq!(DEFAULT_MAX_JSON_BYTES, 64 * 1024 * 1024);
-    assert_eq!(Limits::DEFAULT.max_hashes_per_list, 400_000);
+    assert_eq!(WIRE_MAX_JSON_BYTES, 8 * 1024 * 1024);
+    assert_eq!(DEFAULT_PER_BUILD_UPLOAD_CAP, 64);
+    assert_eq!(Limits::DEFAULT.max_bytecode_hashes, 400_000);
+    assert_eq!(Limits::DEFAULT.max_description_hashes, 150_000);
     assert_eq!(Limits::DEFAULT.max_json_bytes, 64 * 1024 * 1024);
     let empty = sample_canonical().len() as u64;
     let with_eight = {
@@ -745,10 +756,57 @@ fn default_caps_cover_a_full_record_file() {
 }
 
 #[test]
+fn shared_limits_json_matches_rust_constants() {
+    let value: serde_json::Value = serde_json::from_str(LIMITS_JSON).unwrap();
+    assert_eq!(
+        value["local_max_json_bytes"].as_u64().unwrap(),
+        DEFAULT_MAX_JSON_BYTES
+    );
+    assert_eq!(
+        value["wire_max_json_bytes"].as_u64().unwrap(),
+        WIRE_MAX_JSON_BYTES
+    );
+    assert_eq!(
+        value["max_description_hashes"].as_u64().unwrap(),
+        DEFAULT_MAX_DESCRIPTION_HASHES
+    );
+    assert_eq!(
+        value["max_bytecode_hashes"].as_u64().unwrap(),
+        DEFAULT_MAX_BYTECODE_HASHES
+    );
+    assert_eq!(value["max_json_nesting"].as_u64().unwrap(), 8);
+    assert_eq!(
+        value["per_build_upload_cap"].as_u64().unwrap(),
+        DEFAULT_PER_BUILD_UPLOAD_CAP
+    );
+    assert_eq!(Limits::DEFAULT.max_json_nesting, 8);
+    assert_eq!(Error::UnknownField.code(), "UNKNOWN_FIELD");
+    assert_eq!(Error::ByteOrderMark.code(), "BYTE_ORDER_MARK");
+}
+
+#[test]
+fn description_and_bytecode_caps_are_independent() {
+    let limits = Limits {
+        max_json_bytes: 64 * 1024 * 1024,
+        max_description_hashes: 1,
+        max_bytecode_hashes: 3,
+        max_json_nesting: 8,
+    };
+    let mut json = sample_json();
+    json["description_hashes"] = serde_json::json!([hex64(1), hex64(2)]);
+    json["bytecode_hashes"] = serde_json::json!([hex64(1), hex64(2)]);
+    let err = UploadManifest::parse_with_limits(&compact(&json), limits).unwrap_err();
+    assert!(matches!(err, Error::TooManyHashes { max: 1, got: 2 }));
+    json["description_hashes"] = serde_json::json!([hex64(1)]);
+    UploadManifest::parse_with_limits(&compact(&json), limits).unwrap();
+}
+
+#[test]
 fn hash_cap_accepts_max_and_refuses_max_plus_one() {
     let limits = Limits {
         max_json_bytes: 64 * 1024 * 1024,
-        max_hashes_per_list: 2,
+        max_description_hashes: 2,
+        max_bytecode_hashes: 2,
         max_json_nesting: 8,
     };
     let two = with_bytecode_hashes(&[&hex64(1), &hex64(2)]);
@@ -768,7 +826,8 @@ fn hash_cap_accepts_max_and_refuses_max_plus_one() {
 fn builder_insert_cap_accepts_max_and_refuses_max_plus_one() {
     let limits = Limits {
         max_json_bytes: 64 * 1024 * 1024,
-        max_hashes_per_list: 2,
+        max_description_hashes: 2,
+        max_bytecode_hashes: 2,
         max_json_nesting: 8,
     };
     let mut two = Vec::new();
@@ -829,7 +888,8 @@ fn encode_enforces_json_size_cap() {
     let bytes = manifest.to_canonical_bytes().unwrap();
     let tiny = Limits {
         max_json_bytes: u64::try_from(bytes.len()).unwrap().saturating_sub(1),
-        max_hashes_per_list: 8,
+        max_description_hashes: 8,
+        max_bytecode_hashes: 8,
         max_json_nesting: 8,
     };
     let err = manifest.to_canonical_bytes_with_limits(tiny).unwrap_err();

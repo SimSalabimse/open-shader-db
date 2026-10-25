@@ -61,7 +61,7 @@
         "pattern": "^[0-9a-f]{64}$",
         "type": "string"
       },
-      "maxItems": 400000,
+      "maxItems": 150000,
       "type": "array",
       "uniqueItems": true
     },
