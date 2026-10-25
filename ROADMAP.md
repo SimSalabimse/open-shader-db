@@ -85,16 +85,16 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 - [x] Upload manifest generation (local; rounded timestamp; no game paths; no network)
 - [x] Upload preview (CLI; same bytes as `--out`; GUI later)
 - [ ] Proof-of-ownership challenge on the client (`unchallenged` only until a server nonce exists)
-- [ ] Cloudflare Worker ingest endpoint
-- [ ] Staging storage (Cloudflare R2 or reviewed PRs)
-- [ ] Cloudflare edge rate limiting + Turnstile (no stored IPs)
+- [x] Cloudflare Worker ingest endpoint (built and tested in `worker/`; not deployed)
+- [x] Staging storage layout and 90-day lifecycle config (placeholders; not deployed)
+- [x] Cloudflare edge rate limiting + Turnstile (code and config; not deployed; no stored IPs)
 
 ### Success criteria
 
 - [x] User can preview the exact payload before it is sent (CLI; nothing is sent)
-- [ ] Worker accepts valid manifests and rejects invalid ones with clear errors
-- [ ] No IP addresses are stored; Logpush omits ClientIP
-- [ ] Rate limiting is edge-only (Cloudflare rules + Turnstile) plus a per-build upload cap
+- [x] Worker accepts valid manifests and rejects invalid ones with clear errors (unit tests; not deployed)
+- [x] No IP addresses are stored; Logpush field list omits ClientIP (template committed; not deployed)
+- [x] Rate limiting is edge-only (binding + documented dashboard rule) plus a per-build upload cap (not deployed)
 
 ---
 

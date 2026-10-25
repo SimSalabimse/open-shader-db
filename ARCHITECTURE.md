@@ -132,26 +132,40 @@ interface ClientTool {
 
 **Purpose:** Receive uploads, validate format, store in staging
 
+**Status:** Built and tested in `worker/` (TypeScript, zero runtime
+dependencies). **Not deployed.** Config uses placeholders only. Design
+contract: [docs/WORKER_DESIGN.md](docs/WORKER_DESIGN.md).
+
 **Key responsibilities:**
-- Accept HTTP POST with upload manifest
-- Validate JSON schema and hash formats
+- Accept `POST /v1/upload` with an UploadManifest v1 JSON body
+- Parse untrusted bytes into a typed manifest (same rules as
+  `osdb-upload`; do not use the JSON Schema alone)
+- Verify a Turnstile token (injected fetch in tests; omit `remoteip`)
+- Write canonical manifest bytes to staging (R2 layout, or a reviewed PR)
+- Return an upload receipt with manifest-derived fields only
+- Record ownership as `UNVERIFIED` (never verify, never claim to)
+
+**Not in this Worker (later, do not stub):**
 - Check hashes against shipped game lists (anti-poisoning)
-- Write to staging store (Cloudflare R2 or GitHub PR)
-- Return upload receipt (no contributor tracking)
+- Ownership challenge verification
+- Consensus or publishing
 
 **Implementation notes:**
 - Stateless: no sessions, no cookies
-- Rate limiting via Cloudflare's built-in rules (temporary, not stored)
-- Turnstile challenge for bot detection (ephemeral, not persistent)
-- Per-build upload cap (limit uploads per BuildId)
+- Rate limiting: wrangler rate-limit binding with a constant key, plus
+  a documented future dashboard rule. No IP counters in our storage.
+- Turnstile: ephemeral; token is never stored or logged
+- Per-build upload cap: count objects under the R2 prefix (approximate
+  under races)
+- 8 MiB wire body cap before parse; 64 MiB remains the local client cap
+- No read of hop-identifying headers or `request.cf` properties
 
 **Type sketch:**
 ```typescript
 interface IngestWorker {
-  handleUpload(manifest: UploadManifest): UploadReceipt | Error
-  validateSchema(manifest: unknown): manifest is UploadManifest
-  checkHashList(hashes: ShaderHash[], gameId: GameId): boolean
-  writeToStaging(manifest: UploadManifest): void
+  handleUpload(request: Request): UploadReceipt | ErrorBody
+  parseManifest(bytes: Uint8Array): UploadManifest | ErrorCode
+  writeToStaging(canonical: Uint8Array, key: string): void
 }
 ```
 

@@ -45,11 +45,11 @@ This document tracks the implementation status of planned features. Milestone na
 
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
-| Ingest Worker (Cloudflare) | 📋 Planned | Ingest | M2 Upload preview and submission | HTTP POST |
-| Schema validation | ⚠️ Partial | crates/upload, schemas/ | M2 Upload preview and submission | JSON Schema + Rust parse/deny_unknown_fields. Worker not implemented |
-| Staging storage (R2 or reviewed PRs) | 📋 Planned | Ingest | M2 Upload preview and submission | Expire staging after 90 days |
-| Rate limiting | 📋 Planned | Ingest | M2 Upload preview and submission | Cloudflare edge + Turnstile; no stored IPs |
-| No IP logging | 📋 Planned | Ingest | M2 Upload preview and submission | Logpush without ClientIP |
+| Ingest Worker (Cloudflare) | ⚠️ Partial | worker/ | M2 Upload preview and submission | `POST /v1/upload` built and tested. **Not deployed.** Placeholders only |
+| Schema validation | ⚠️ Partial | crates/upload, worker/, schemas/ | M2 Upload preview and submission | Shared golden vectors. JSON Schema is looser than the parsers. Worker does not use the schema alone |
+| Staging storage (R2 or reviewed PRs) | ⚠️ Partial | worker/, worker/config/ | M2 Upload preview and submission | Key layout, 90-day lifecycle file, access policy in WORKER_DESIGN. **Not deployed.** Reviewed-PR path documented |
+| Rate limiting | ⚠️ Partial | worker/ | M2 Upload preview and submission | Constant-key wrangler binding + documented dashboard rule. No IP counters in our storage. **Not deployed** |
+| No IP logging | ⚠️ Partial | worker/, worker/config/ | M2 Upload preview and submission | Source lint + Logpush field list without ClientIP. **Not deployed** |
 
 ## Validation and publishing
 
@@ -88,7 +88,7 @@ This document tracks the implementation status of planned features. Milestone na
 |---------|--------|--------------|-----------|-------|
 | No user accounts | 📋 Planned | Privacy | M0 Index and coverage reports | Design decision |
 | Upload preview | ⚠️ Partial | crates/upload, crates/osdb-cli | M2 Upload preview and submission | Local preview; canary tests. No send |
-| No game paths collected | ⚠️ Partial | crates/upload, crates/osdb-cli | M2 Upload preview and submission | Manifest, preview, errors, and Debug omit paths (tested). Worker not implemented |
+| No game paths collected | ⚠️ Partial | crates/upload, crates/osdb-cli, worker/ | M2 Upload preview and submission | Manifest, preview, errors, Debug, stored object, and Worker receipt omit paths (tested). Worker not deployed |
 | Multi-upload consensus | 📋 Planned | Security | M3 Consensus and publishing | |
 | Signed releases (Minisign) | 📋 Planned | Security | M4 Signed releases | Approved |
 | Compile validation | 💭 Proposed | Security | M5 Windows validation | Deferred |
