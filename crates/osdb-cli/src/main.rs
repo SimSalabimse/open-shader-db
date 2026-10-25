@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Thin CLI: inspect a local SODB, discover Steam games, or compare coverage.
+//! Thin CLI: inspect a local SODB, discover Steam games, compare coverage, or extract records.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
@@ -12,6 +12,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use osdb_steam::{discover, discover_default, Discovery};
+
+mod output;
 
 const DEFAULT_MAX_UNMATCHED: usize = 100;
 
@@ -44,6 +46,11 @@ enum Command {
         /// Print identities, SODB counts, and warnings as JSON (no paths).
         #[arg(long)]
         json: bool,
+    },
+    /// Extract pipeline-state records from a local SODB (hashes only, never bytecode).
+    Records {
+        #[command(subcommand)]
+        command: RecordsCommand,
     },
     /// Compare a local SODB to an unsigned coverage index (hashes and counts only).
     Coverage {
@@ -91,8 +98,61 @@ impl fmt::Debug for Cli {
                 .field("json", json)
                 .field("max_unmatched", max_unmatched)
                 .finish(),
+            Command::Records { command } => match command {
+                RecordsCommand::Extract {
+                    sodb: _,
+                    out: _,
+                    game_id,
+                    version,
+                    exe_hash,
+                    force,
+                    hash_app_keys,
+                } => f
+                    .debug_struct("RecordsExtract")
+                    .field("sodb", &"<redacted>")
+                    .field("out", &"<redacted>")
+                    .field("game_id", game_id)
+                    .field("version", version)
+                    .field("exe_hash", exe_hash)
+                    .field("force", force)
+                    .field("hash_app_keys", hash_app_keys)
+                    .finish(),
+            },
         }
     }
+}
+
+#[derive(Subcommand)]
+enum RecordsCommand {
+    /// Write a local record file from an SODB the user already has.
+    Extract {
+        /// Local SODB file. The path is never written into the output.
+        #[arg(long)]
+        sodb: PathBuf,
+        /// Destination JSON file. When omitted, JSON is written to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Optional user-supplied game id (same rules as the coverage index).
+        #[arg(long)]
+        game_id: Option<String>,
+        /// Optional user-supplied version string.
+        #[arg(long)]
+        version: Option<String>,
+        /// Optional user-supplied exe SHA-256 (64 lowercase hex characters).
+        #[arg(long)]
+        exe_hash: Option<String>,
+        /// Overwrite `--out` if it already exists as a regular file.
+        #[arg(long)]
+        force: bool,
+        /// Replace each `app_key` with the SHA-256 of the game-provided key.
+        ///
+        /// The hash is unsalted, so low-entropy keys can be guessed. The
+        /// tool does not alter keys unless this flag is set. Hashing hides
+        /// path-shaped keys at the cost of making the original key
+        /// unrecoverable.
+        #[arg(long)]
+        hash_app_keys: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -129,6 +189,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_human(&found, show_paths)?;
             }
         }
+        Command::Records {
+            command:
+                RecordsCommand::Extract {
+                    sodb,
+                    out,
+                    game_id,
+                    version,
+                    exe_hash,
+                    force,
+                    hash_app_keys,
+                },
+        } => {
+            let build = parse_build(game_id.as_deref(), version.as_deref(), exe_hash.as_deref())?;
+            let report = osdb_records::extract_with_report(
+                &sodb,
+                build,
+                sodb::Limits::DEFAULT,
+                hash_app_keys,
+            )?;
+            match out {
+                Some(path) => output::write_atomic(&path, &sodb, force, |dest| {
+                    osdb_records::encode_record_file_to_writer(&report.file, dest)
+                        .map_err(Into::into)
+                })?,
+                None => {
+                    let mut stdout = std::io::stdout().lock();
+                    osdb_records::encode_record_file_to_writer(&report.file, &mut stdout)?;
+                }
+            }
+            if let Some(msg) =
+                osdb_records::skipped_root_signatures_message(report.skipped_root_signatures)
+            {
+                eprintln!("{msg}");
+            }
+        }
         Command::Coverage {
             sodb,
             index,
@@ -148,6 +243,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn parse_build(
+    game_id: Option<&str>,
+    version: Option<&str>,
+    exe_hash: Option<&str>,
+) -> Result<osdb_records::BuildIdentity, osdb_records::Error> {
+    let game_id = match game_id {
+        Some(text) => Some(osdb_records::GameId::parse(text)?),
+        None => None,
+    };
+    let version = match version {
+        Some(text) => Some(osdb_records::GameVersion::parse(text)?),
+        None => None,
+    };
+    let exe_hash = match exe_hash {
+        Some(text) => Some(osdb_records::ExeHash::parse_hex(text)?),
+        None => None,
+    };
+    Ok(osdb_records::BuildIdentity::new(game_id, version, exe_hash))
 }
 
 fn write_json(found: &Discovery) -> Result<(), Box<dyn std::error::Error>> {
@@ -254,5 +369,23 @@ mod tests {
         assert!(text.contains("<redacted>"));
         assert!(!text.contains("os-user"));
         assert!(text.contains("json: true"));
+
+        let records = Cli {
+            command: Command::Records {
+                command: RecordsCommand::Extract {
+                    sodb: PathBuf::from("/home/os-user/game.sodb"),
+                    out: Some(PathBuf::from("/tmp/os-user-records.json")),
+                    game_id: Some(String::from("synthetic")),
+                    version: Some(String::from("1")),
+                    exe_hash: None,
+                    force: false,
+                    hash_app_keys: false,
+                },
+            },
+        };
+        let text = format!("{records:?}");
+        assert!(text.contains("<redacted>"));
+        assert!(!text.contains("os-user"));
+        assert!(text.contains("synthetic"));
     }
 }

@@ -32,7 +32,10 @@ pub enum Error {
     },
 
     /// SQLite returned an error while reading a known table.
-    #[error("SQLite error while reading {table}: {source}")]
+    ///
+    /// The display text is only the table name. The source error (which may
+    /// contain SQL) is available via [`std::error::Error::source`].
+    #[error("SQLite error while reading {table}")]
     Sqlite {
         table: TableId,
         #[source]
@@ -109,6 +112,38 @@ pub enum Error {
     /// An interned key id was missing from the arena (internal inconsistency).
     #[error("internal key intern inconsistency")]
     InternInconsistency,
+
+    /// `shader_bytecode` declared a `rowid`, `oid`, or `_rowid_` column.
+    #[error("shader_bytecode declares a reserved rowid column")]
+    ReservedRowidColumn,
+
+    /// A DXBC root-signature container was truncated or internally inconsistent.
+    #[error("malformed DXBC root signature container")]
+    DxbcMalformed,
+
+    /// A DXBC container included a part other than RTS0 (bytecode or debug).
+    #[error("DXBC root signature container includes a non-RTS0 part")]
+    DxbcForbiddenPart,
+
+    /// A raw (non-DXBC) root signature exceeded the 1 MiB cap.
+    #[error("root signature exceeds limit of {max} bytes (got {got})")]
+    RootSignatureTooLarge { max: u64, got: u64 },
+
+    /// A raw root signature's leading version field was missing or not 1.0/1.1.
+    #[error("root signature version is not a recognized D3D12 value")]
+    RootSignatureBadVersion,
+
+    /// Serialized root-signature bytes failed structural validation.
+    #[error("malformed root signature")]
+    RootSignatureMalformed,
+
+    /// A REAL descriptor field was NaN or infinite.
+    #[error("non-finite floating point in {table}.{column}")]
+    NonFiniteFloat { table: TableId, column: String },
+
+    /// `SemanticName` was not a C-like identifier.
+    #[error("semantic name is not a valid identifier")]
+    InvalidSemanticName,
 }
 
 impl Error {

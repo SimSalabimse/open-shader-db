@@ -1,0 +1,28 @@
+[package]
+name = "osdb-records"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Local pipeline-state records: bytecode as SHA-256 only; root signatures are parsed and re-serialized canonically; consumers must re-validate"
+readme = "README.md"
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sodb = { path = "../sodb" }
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

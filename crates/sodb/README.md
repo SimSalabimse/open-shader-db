@@ -77,6 +77,8 @@ The `osdb-cli` crate exposes:
   `--show-paths` in human output; JSON never includes paths)
 - `coverage --sodb <file> --index <file>` — compare those hashes to an
   unsigned coverage index (hashes and counts only)
+- `records extract --sodb <file>` — pipeline-state records without
+  bytecode (see `osdb-records`)
 
 ## Security limits
 
@@ -86,6 +88,7 @@ Files are treated as untrusted:
 | --- | ---: | --- |
 | `max_file_bytes` | 256 MiB | Reject huge files before SQLite opens them |
 | `max_blob_bytes` | 8 MiB | Cap bytecode and descriptor BLOBs |
+| `max_root_signature_bytes` | 1 MiB | Cap sanitized root-signature bytes (RTS0 or raw) |
 | `max_key_bytes` | 4 KiB | Cap application-defined keys |
 | `max_text_bytes` | 4 KiB | Cap `app_id` TEXT columns |
 | `max_rows_per_table` | 50 000 | Cap rows read per table |

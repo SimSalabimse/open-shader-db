@@ -310,7 +310,7 @@ interface CoverageIndex {
 
 ### M1 Pipeline-state records (without bytecode)
 
-These types support publishing full state records that clients combine with locally extracted shaders. Implementation proceeds with the safeguards in [docs/LEGAL_RISK_NOTES.md](docs/LEGAL_RISK_NOTES.md).
+These types support publishing full state records that clients combine with locally extracted shaders. Implementation proceeds with the safeguards in [docs/LEGAL_RISK_NOTES.md](docs/LEGAL_RISK_NOTES.md). Publishing and any network path still wait on those safeguards. A local-only extractor (`osdb-cli records extract`) can write format_version 1 JSON from a SODB the user already has: DXIL blobs are hashed (SHA-256) and discarded. See [docs/RECORD_FORMAT.md](docs/RECORD_FORMAT.md).
 
 ```typescript
 // Verified from SODB spec: these are direct fields from pipeline_states table
@@ -359,9 +359,9 @@ interface PipelineStateRecord {
 
 The following aspects require further research or testing:
 
-- **Shader extraction:** How to reliably extract DXIL bytecode from installed game files (format varies by engine)
-- **Matching mechanism:** Whether bytecode hash alone is sufficient, or if additional metadata (entry points, shader models) is needed
-- **Root signature format:** Whether serialized root signatures can be shared or must be reconstructed from descriptors
+- **Shader extraction from game files:** How to reliably extract DXIL bytecode from installed game files (format varies by engine). Local extraction from an already-present SODB is implemented; game-file extraction is not.
+- **Matching mechanism:** Whether bytecode hash alone is sufficient, or if additional metadata (entry points, shader models) is needed. The local matcher only compares SHA-256 sets.
+- **Root signature format:** Whether serialized root signatures can be shared or must be reconstructed from descriptors. Format 1 stores sanitized root-signature bytes once in a file-level table keyed by SHA-256 (RTS0 payload from a DXBC container, or a size-capped raw blob whose leading version is 1..=3). DXIL and other DXBC parts are rejected.
 
 ### UploadManifest
 

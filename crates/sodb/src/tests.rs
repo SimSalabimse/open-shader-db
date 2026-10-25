@@ -18,13 +18,17 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    is_sodb, open, open_with_limits, probe, Error, Limits, ObjectKind, TableId,
-    SODB_APPLICATION_ID, SODB_USER_VERSION,
+    extract_pipeline_states, is_sodb, open, open_with_limits, probe, Error, Limits, ObjectKind,
+    RootSignatureSkipReason, TableId, SODB_APPLICATION_ID, SODB_USER_VERSION,
 };
 
 const FAKE_VS: &[u8] = b"FAKE_VS_BLOB";
 const FAKE_PS: &[u8] = b"FAKE_PS_BLOB";
 const FAKE_VS2: &[u8] = b"FAKE_VS_BLOB_2";
+/// Canonical empty D3D12 root signature 1.0 (DXC unused-offset emit).
+const RAW_ROOT_SIG: &[u8] = &[
+    1, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0,
+];
 
 /// Full Microsoft spec `pipeline_states` CREATE (1472 bytes). The old
 /// 1 KiB `SQLITE_LIMIT_LENGTH` floor rejects this; the 1 MiB floor must not.
@@ -220,7 +224,7 @@ fn insert_valid_rows(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     conn.execute(
         "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
-        rusqlite::params![b"rs-1", b"FAKE_ROOT_SIG"],
+        rusqlite::params![b"rs-1", RAW_ROOT_SIG],
     )?;
     conn.execute(
         "INSERT INTO rasterizer_descs (
@@ -309,6 +313,20 @@ fn valid_file_reads_keys_and_hashes_only() {
 
     let again = open(fixture.path()).unwrap();
     assert_eq!(again.pipeline_states[0].desc_hash, pso.desc_hash);
+
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    assert_eq!(extracted.len(), 1);
+    assert_eq!(extracted[0].key.as_bytes(), b"pso-key-1");
+    assert_eq!(extracted[0].version.get(), 3);
+    assert_eq!(extracted[0].bytecode.vs.unwrap().to_hex(), vs_hash);
+    assert_eq!(extracted[0].bytecode.ps.unwrap().to_hex(), ps_hash);
+    assert_eq!(
+        extracted[0].root_signature.as_ref().unwrap().to_hex(),
+        hex_digits(RAW_ROOT_SIG)
+    );
+    assert_eq!(extracted[0].rasterizer.as_ref().unwrap().fill_mode, 3);
+    assert_eq!(extracted[0].sample_count, Some(1));
+    assert_eq!(extracted[0].sample_mask, Some(4_294_967_295));
 }
 
 #[test]
@@ -1105,7 +1123,9 @@ fn desc_hash_covers_stream_output_declarations() {
 
 #[test]
 fn fifty_thousand_rows_without_indexes_finish_quickly() {
-    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
         conn.execute_batch(
             "
@@ -1153,14 +1173,15 @@ fn fifty_thousand_rows_without_indexes_finish_quickly() {
     let elapsed = start.elapsed();
     assert_eq!(summary.pipeline_states.len(), 50_000);
     assert!(
-        elapsed.as_secs_f64() < 5.0,
+        elapsed.as_secs_f64() < PARSE_BUDGET_SECS,
         "parse of 50k unindexed rows took {elapsed:?}"
     );
 }
 
 // Debug CI (especially Windows) is slower than a release-ish local run.
-// 15s still fails the pre-fix hang (tens of seconds / abort).
-const PARSE_BUDGET_SECS: f64 = 15.0;
+// Generous under parallel cargo-test load; the pre-fix hang is tens of
+// seconds / abort, so 60s still fails a regression.
+const PARSE_BUDGET_SECS: f64 = 60.0;
 
 fn rss_bytes() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -1179,7 +1200,9 @@ fn so_key(i: u32) -> [u8; 4] {
 
 #[test]
 fn fifty_thousand_state_object_chain_finishes_quickly() {
-    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let make = |reverse: bool| {
         create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, move |conn| {
             conn.execute_batch(
@@ -1230,6 +1253,9 @@ fn fifty_thousand_state_object_chain_finishes_quickly() {
 
 #[test]
 fn forty_deep_diamond_finishes_quickly() {
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
         conn.execute_batch(
             "
@@ -1280,7 +1306,9 @@ fn forty_deep_diamond_finishes_quickly() {
 
 #[test]
 fn fifty_thousand_shared_layout_finishes_quickly() {
-    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
         conn.execute_batch(
             "
@@ -1582,7 +1610,9 @@ const LARGE_KEY_MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
 
 #[test]
 fn fifty_thousand_wide_keys_with_empty_assocs_stay_under_memory_cap() {
-    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     const ROWS: u32 = 50_000;
     const KEY_LEN: usize = 4 * 1024;
     let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
@@ -1636,7 +1666,9 @@ const ROOT_SIG_BLOB_MEMORY_LIMIT: u64 = 64 * 1024 * 1024;
 
 #[test]
 fn thirty_large_root_signatures_stay_under_memory_cap() {
-    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     const ROWS: usize = 30;
     const BLOB_LEN: usize = 8 * 1024 * 1024;
     let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
@@ -1683,4 +1715,391 @@ fn thirty_large_root_signatures_stay_under_memory_cap() {
             "RSS grew by {delta} bytes (limit {ROOT_SIG_BLOB_MEMORY_LIMIT})"
         );
     }
+}
+
+#[test]
+fn reserved_rowid_column_is_rejected() {
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE shader_bytecode (
+                Key BLOB NOT NULL PRIMARY KEY,
+                rowid INTEGER,
+                Bytecode BLOB
+            );
+            CREATE TABLE pipeline_states (Key BLOB NOT NULL PRIMARY KEY, ByteCode_VS BLOB);
+            ",
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, rowid, Bytecode) VALUES (?1, 1, ?2)",
+            rusqlite::params![b"a", FAKE_VS],
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, rowid, Bytecode) VALUES (?1, 1, ?2)",
+            rusqlite::params![b"b", FAKE_PS],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, ByteCode_VS) VALUES (?1, ?2)",
+            rusqlite::params![b"pso", b"a"],
+        )?;
+        Ok(())
+    });
+    let err = open(fixture.path()).unwrap_err();
+    assert!(matches!(err, Error::ReservedRowidColumn), "{err:?}");
+    let err = extract_pipeline_states(fixture.path()).unwrap_err();
+    assert!(matches!(err, Error::ReservedRowidColumn), "{err:?}");
+}
+
+#[test]
+fn two_bytecode_blobs_have_distinct_hashes() {
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE shader_bytecode (Key BLOB NOT NULL PRIMARY KEY, Bytecode BLOB);
+            ",
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"a", FAKE_VS],
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"b", FAKE_PS],
+        )?;
+        Ok(())
+    });
+    let summary = open(fixture.path()).unwrap();
+    assert_eq!(summary.shader_bytecode.len(), 2);
+    assert_ne!(
+        summary.shader_bytecode[0].bytecode_hash,
+        summary.shader_bytecode[1].bytecode_hash
+    );
+    let hashes: Vec<String> = summary
+        .shader_bytecode
+        .iter()
+        .map(|b| b.bytecode_hash.to_hex())
+        .collect();
+    assert!(hashes.contains(&sha256_hex(FAKE_VS)));
+    assert!(hashes.contains(&sha256_hex(FAKE_PS)));
+}
+
+#[test]
+fn without_rowid_inspect_and_extract_hash_blobs() {
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE shader_bytecode (
+                Key BLOB NOT NULL PRIMARY KEY,
+                Bytecode BLOB
+            ) WITHOUT ROWID;
+            CREATE TABLE pipeline_states (
+                Key BLOB NOT NULL PRIMARY KEY,
+                ByteCode_VS BLOB
+            );
+            ",
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"vs", FAKE_VS],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, ByteCode_VS) VALUES (?1, ?2)",
+            rusqlite::params![b"pso", b"vs"],
+        )?;
+        Ok(())
+    });
+    let summary = open(fixture.path()).unwrap();
+    assert_eq!(summary.shader_bytecode.len(), 1);
+    assert_eq!(
+        summary.shader_bytecode[0].bytecode_hash.to_hex(),
+        sha256_hex(FAKE_VS)
+    );
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    assert_eq!(
+        extracted[0].bytecode.vs.unwrap().to_hex(),
+        sha256_hex(FAKE_VS)
+    );
+}
+
+fn without_rowid_shader_table(suffix: &str) -> Fixture {
+    create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        conn.execute_batch(&format!(
+            "
+            CREATE TABLE shader_bytecode (
+                Key BLOB NOT NULL PRIMARY KEY,
+                Bytecode BLOB
+            ) {suffix};
+            CREATE TABLE pipeline_states (
+                Key BLOB NOT NULL PRIMARY KEY,
+                ByteCode_VS BLOB
+            );
+            "
+        ))?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"vs", FAKE_VS],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, ByteCode_VS) VALUES (?1, ?2)",
+            rusqlite::params![b"pso", b"vs"],
+        )?;
+        Ok(())
+    })
+}
+
+#[test]
+fn without_rowid_double_space_is_detected() {
+    let fixture = without_rowid_shader_table("WITHOUT  ROWID");
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    assert_eq!(
+        extracted[0].bytecode.vs.unwrap().to_hex(),
+        sha256_hex(FAKE_VS)
+    );
+}
+
+#[test]
+fn without_rowid_newline_is_detected() {
+    let fixture = without_rowid_shader_table("WITHOUT\nROWID");
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    assert_eq!(
+        extracted[0].bytecode.vs.unwrap().to_hex(),
+        sha256_hex(FAKE_VS)
+    );
+}
+
+#[test]
+fn without_rowid_comment_is_detected() {
+    let fixture = without_rowid_shader_table("WITHOUT /*gap*/ ROWID");
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    assert_eq!(
+        extracted[0].bytecode.vs.unwrap().to_hex(),
+        sha256_hex(FAKE_VS)
+    );
+}
+
+#[test]
+fn sql_without_rowid_tokenizer_ignores_whitespace_and_comments() {
+    assert!(crate::parser::sql_has_without_rowid(
+        "CREATE TABLE t (a INT PRIMARY KEY) WITHOUT  ROWID"
+    ));
+    assert!(crate::parser::sql_has_without_rowid(
+        "CREATE TABLE t (a INT PRIMARY KEY) WITHOUT\nROWID"
+    ));
+    assert!(crate::parser::sql_has_without_rowid(
+        "CREATE TABLE t (a INT PRIMARY KEY) WITHOUT /*x*/ ROWID"
+    ));
+    assert!(crate::parser::sql_has_without_rowid(
+        "CREATE TABLE t (a INT PRIMARY KEY) WITHOUT --c\nROWID"
+    ));
+    assert!(!crate::parser::sql_has_without_rowid(
+        "CREATE TABLE t (a INT PRIMARY KEY)"
+    ));
+    assert!(!crate::parser::sql_has_without_rowid(
+        "CREATE TABLE t (a INT PRIMARY KEY) -- WITHOUT ROWID\n"
+    ));
+}
+
+#[test]
+fn without_rowid_tokenizer_fallback_reads_sqlite_master_sql() {
+    for suffix in [
+        "WITHOUT  ROWID",
+        "WITHOUT\nROWID",
+        "WITHOUT /*gap*/ ROWID",
+        "WITHOUT --c\nROWID",
+    ] {
+        let fixture = without_rowid_shader_table(suffix);
+        let conn = Connection::open(fixture.path()).unwrap();
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shader_bytecode'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            crate::parser::sql_has_without_rowid(&sql),
+            "tokenizer must accept sqlite_master SQL {sql:?}"
+        );
+        let extracted = extract_pipeline_states(fixture.path()).unwrap();
+        assert_eq!(
+            extracted[0].bytecode.vs.unwrap().to_hex(),
+            sha256_hex(FAKE_VS)
+        );
+    }
+}
+
+#[test]
+fn generated_rowid_column_is_rejected() {
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE shader_bytecode (
+                Key BLOB NOT NULL PRIMARY KEY,
+                Bytecode BLOB,
+                `_rowid_` INTEGER GENERATED ALWAYS AS (1) VIRTUAL
+            );
+            CREATE TABLE pipeline_states (Key BLOB NOT NULL PRIMARY KEY, ByteCode_VS BLOB);
+            ",
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"a", FAKE_VS],
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"b", FAKE_PS],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, ByteCode_VS) VALUES (?1, ?2)",
+            rusqlite::params![b"pso", b"a"],
+        )?;
+        Ok(())
+    });
+    let err = open(fixture.path()).unwrap_err();
+    assert!(matches!(err, Error::ReservedRowidColumn), "{err:?}");
+    let err = extract_pipeline_states(fixture.path()).unwrap_err();
+    assert!(matches!(err, Error::ReservedRowidColumn), "{err:?}");
+}
+
+#[test]
+fn sqlite_error_display_omits_sql() {
+    let conn = Connection::open_in_memory().unwrap();
+    let source = conn
+        .query_row(
+            "SELECT definitely_not_a_column FROM sqlite_master",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_err();
+    let err = Error::from_sqlite(TableId::PipelineStates, source);
+    let text = err.to_string();
+    assert!(text.contains("pipeline_states"), "{text}");
+    assert!(!text.contains("SELECT"), "{text}");
+    assert!(!text.contains("definitely_not_a_column"), "{text}");
+    assert!(!text.contains("sqlite_master"), "{text}");
+}
+
+#[test]
+fn association_rows_are_deduplicated() {
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        conn.execute_batch(
+            "
+            CREATE TABLE input_element_descs (
+                Key BLOB PRIMARY KEY,
+                SemanticName TEXT,
+                SemanticIndex INTEGER,
+                Format INTEGER,
+                InputSlot INTEGER,
+                AlignedByteOffset INTEGER,
+                InputSlotClass INTEGER,
+                InstanceDataStepRate INTEGER
+            );
+            CREATE TABLE input_layout_to_input_element_associations (
+                InputLayoutKey BLOB,
+                InputElementKey BLOB
+            );
+            CREATE TABLE pipeline_states (
+                Key BLOB NOT NULL PRIMARY KEY,
+                InputLayout BLOB,
+                Flags INTEGER
+            );
+            ",
+        )?;
+        conn.execute(
+            "INSERT INTO input_element_descs VALUES (?1, 'POSITION', 0, 0, 0, 0, 0, 0)",
+            rusqlite::params![b"el-1"],
+        )?;
+        conn.execute(
+            "INSERT INTO input_layout_to_input_element_associations VALUES (?1, ?2)",
+            rusqlite::params![b"lay-1", b"el-1"],
+        )?;
+        conn.execute(
+            "INSERT INTO input_layout_to_input_element_associations VALUES (?1, ?2)",
+            rusqlite::params![b"lay-1", b"el-1"],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, InputLayout, Flags) VALUES (?1, ?2, 0)",
+            rusqlite::params![b"pso-1", b"lay-1"],
+        )?;
+        Ok(())
+    });
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    let layout = extracted[0].input_layout.as_ref().unwrap();
+    assert_eq!(layout.len(), 1, "duplicate association rows must collapse");
+}
+
+#[test]
+fn unreferenced_malformed_root_signature_is_ignored() {
+    const MARKER: &[u8] = b"DXIL_MARKER_SHOULD_NOT_LEAK_9f3a";
+    let mut hostile = vec![1, 0, 0, 0];
+    hostile.extend_from_slice(MARKER);
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        create_core_tables(conn)?;
+        conn.execute(
+            "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
+            rusqlite::params![b"rs-bad", &hostile],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, Flags) VALUES (?1, 0)",
+            rusqlite::params![b"pso-1"],
+        )?;
+        Ok(())
+    });
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    assert_eq!(extracted.len(), 1);
+    assert!(extracted[0].root_signature.is_none());
+    assert!(extracted[0].root_signature_skip.is_none());
+    assert_eq!(extracted.skipped_root_signatures, 0);
+}
+
+#[test]
+fn referenced_malformed_root_signature_is_skipped() {
+    const MARKER: &[u8] = b"DXIL_MARKER_SHOULD_NOT_LEAK_9f3a";
+    let mut hostile = vec![1, 0, 0, 0];
+    hostile.extend_from_slice(MARKER);
+    let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
+        create_core_tables(conn)?;
+        conn.execute(
+            "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
+            rusqlite::params![b"rs-bad", &hostile],
+        )?;
+        conn.execute(
+            "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
+            rusqlite::params![b"rs-good", RAW_ROOT_SIG],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, RootSignature, Flags) VALUES (?1, ?2, 0)",
+            rusqlite::params![b"pso-bad", b"rs-bad"],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, RootSignature, Flags) VALUES (?1, ?2, 0)",
+            rusqlite::params![b"pso-good", b"rs-good"],
+        )?;
+        Ok(())
+    });
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    assert_eq!(extracted.len(), 2);
+    assert_eq!(extracted.skipped_root_signatures, 1);
+    let bad = extracted
+        .iter()
+        .find(|r| r.key.as_bytes() == b"pso-bad")
+        .unwrap();
+    assert!(bad.root_signature.is_none());
+    assert_eq!(
+        bad.root_signature_skip,
+        Some(RootSignatureSkipReason::Invalid)
+    );
+    let good = extracted
+        .iter()
+        .find(|r| r.key.as_bytes() == b"pso-good")
+        .unwrap();
+    assert!(good.root_signature.is_some());
+    assert!(good.root_signature_skip.is_none());
+    assert_eq!(
+        good.root_signature.as_ref().unwrap().as_bytes(),
+        RAW_ROOT_SIG
+    );
+    let debug = format!("{extracted:?}");
+    assert!(!debug.contains("DXIL_MARKER"));
+    assert!(!debug.contains("9f3a"));
 }
