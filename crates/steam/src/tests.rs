@@ -7,6 +7,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use crate::scan::ScanLimits;
