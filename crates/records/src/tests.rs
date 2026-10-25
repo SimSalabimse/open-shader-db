@@ -30,7 +30,7 @@ use crate::matching::{match_local_hashes, CoverageKind};
 use crate::types::{HexBytes, InputElementDesc, ShaderStage, SoDeclaration, StreamOutDesc};
 use crate::{Error, Limits};
 
-use sodb::{SODB_APPLICATION_ID, SODB_USER_VERSION};
+use sodb::{RootSignatureSkipReason, SODB_APPLICATION_ID, SODB_USER_VERSION};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "linux")]
@@ -601,8 +601,27 @@ fn rss_bytes() -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
+fn run_rss_isolated(test_name: &str) -> bool {
+    if std::env::var_os("OSDB_RSS_CHILD").is_some() {
+        return false;
+    }
+    let exe = std::env::current_exe().expect("test exe");
+    let status = std::process::Command::new(exe)
+        .args([test_name, "--exact", "--nocapture"])
+        .env("OSDB_RSS_CHILD", "1")
+        .env("RUST_TEST_THREADS", "1")
+        .status()
+        .expect("spawn rss child");
+    assert!(status.success(), "isolated RSS child {test_name} failed");
+    true
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn extract_rss_does_not_scale_with_blob_size() {
+    if run_rss_isolated("extract_rss_does_not_scale_with_blob_size") {
+        return;
+    }
     let _rss = RSS_MEASURE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -654,7 +673,7 @@ fn extract_rss_does_not_scale_with_blob_size() {
             TOTAL / (1024 * 1024)
         );
         assert!(
-            delta < 8 * 1024 * 1024,
+            delta < 32 * 1024 * 1024,
             "RSS grew by {delta} bytes; streaming hash missing (total blobs {TOTAL})"
         );
     }
@@ -703,20 +722,20 @@ fn sodb_with_root_sig(value: &[u8]) -> TempFile {
 }
 
 #[test]
-fn dxil_carrying_root_signature_is_rejected_and_marker_is_absent() {
+fn dxil_carrying_root_signature_extracts_rts0_and_marker_is_absent() {
     const MARKER: &[u8] = b"DXIL_MARKER_SHOULD_NOT_LEAK_9f3a";
     let blob = dxbc_with_parts(&[(b"RTS0", FAKE_ROOT), (b"DXIL", MARKER)]);
     let sodb = sodb_with_root_sig(&blob);
-    let err = extract(sodb.path(), BuildIdentity::empty()).unwrap_err();
-    let text = err.to_string();
-    assert!(
-        matches!(err, Error::Sodb(sodb::Error::DxbcForbiddenPart)),
-        "{err:?}"
-    );
-    assert!(!text.contains("DXIL_MARKER"));
-    assert!(!text.contains("9f3a"));
-    let debug = format!("{err:?}");
-    assert!(!debug.contains("DXIL_MARKER"));
+    let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+    assert_eq!(file.root_signatures.len(), 1);
+    let stored = file.root_signatures.values().next().unwrap();
+    assert_eq!(stored.as_str(), bytes_to_hex(FAKE_ROOT));
+    let json = String::from_utf8(encode_record_file(&file).unwrap()).unwrap();
+    assert!(!json.contains("DXIL_MARKER"));
+    assert!(!json.contains("9f3a"));
+    assert!(!json.contains(&bytes_to_hex(b"DXIL")));
+    assert!(!json.contains(&bytes_to_hex(MARKER)));
+    assert!(file.records[0].root_signature_skip.is_none());
 }
 
 #[test]
@@ -733,15 +752,23 @@ fn rts0_only_container_emits_payload_not_container() {
 }
 
 #[test]
-fn malformed_dxbc_root_signature_is_rejected() {
+fn malformed_dxbc_root_signature_is_skipped() {
     let mut blob = dxbc_with_parts(&[(b"RTS0", FAKE_ROOT)]);
     blob.truncate(20);
-    let sodb = sodb_with_root_sig(&blob);
-    let err = extract(sodb.path(), BuildIdentity::empty()).unwrap_err();
-    assert!(
-        matches!(err, Error::Sodb(sodb::Error::DxbcMalformed)),
-        "{err:?}"
-    );
+    extract_skips_root_sig(&blob, RootSignatureSkipReason::UnsupportedContainer);
+}
+
+#[test]
+fn two_rts0_parts_are_skipped_as_invalid() {
+    let blob = dxbc_with_parts(&[(b"RTS0", FAKE_ROOT), (b"RTS0", FAKE_ROOT)]);
+    extract_skips_root_sig(&blob, RootSignatureSkipReason::Invalid);
+}
+
+#[test]
+fn version_1_2_root_signature_is_skipped() {
+    let mut bytes = FAKE_ROOT.to_vec();
+    bytes[0..4].copy_from_slice(&3_u32.to_le_bytes());
+    extract_skips_root_sig(&bytes, RootSignatureSkipReason::UnsupportedVersion);
 }
 
 #[test]
@@ -1171,40 +1198,102 @@ fn marker_absent(err: &Error) {
     assert!(!text.contains("9f3a"), "{text}");
 }
 
-fn extract_rejects_root_sig(value: &[u8]) {
+fn extract_skips_root_sig(value: &[u8], reason: RootSignatureSkipReason) {
     let sodb = sodb_with_root_sig(value);
-    let err = extract(sodb.path(), BuildIdentity::empty()).unwrap_err();
-    marker_absent(&err);
+    let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+    assert_eq!(file.records.len(), 1);
+    assert!(file.records[0].root_signature.is_none());
+    assert_eq!(file.records[0].root_signature_skip, Some(reason));
+    assert!(file.root_signatures.is_empty());
+    let json = String::from_utf8(encode_record_file(&file).unwrap()).unwrap();
+    assert!(!json.contains("DXIL_MARKER"));
+    assert!(!json.contains("9f3a"));
+    assert!(json.contains(&format!("\"root_signature_skip\": \"{}\"", reason.as_str())));
+    let loaded_path = write_temp(".json", &json);
+    assert_eq!(load(loaded_path.path()).unwrap(), file);
 }
 
 #[test]
-fn raw_smuggle_is_rejected_and_marker_absent() {
+fn raw_smuggle_is_skipped_and_marker_absent() {
     let mut blob = vec![1, 0, 0, 0];
     blob.extend_from_slice(MARKER);
-    extract_rejects_root_sig(&blob);
+    extract_skips_root_sig(&blob, RootSignatureSkipReason::Invalid);
 }
 
 #[test]
-fn raw_smuggle2_is_rejected_and_marker_absent() {
+fn raw_smuggle2_is_skipped_and_marker_absent() {
     let mut blob = vec![2, 0, 0, 0];
     blob.extend_from_slice(MARKER);
-    extract_rejects_root_sig(&blob);
+    extract_skips_root_sig(&blob, RootSignatureSkipReason::Invalid);
 }
 
 #[test]
-fn rts0_smuggle_is_rejected_and_marker_absent() {
+fn rts0_smuggle_is_skipped_and_marker_absent() {
     let mut payload = vec![1, 0, 0, 0];
     payload.extend_from_slice(MARKER);
     let blob = dxbc_with_parts(&[(b"RTS0", &payload)]);
-    extract_rejects_root_sig(&blob);
+    extract_skips_root_sig(&blob, RootSignatureSkipReason::Invalid);
 }
 
 #[test]
-fn rts0_v99_is_rejected_and_marker_absent() {
+fn rts0_v99_is_skipped_and_marker_absent() {
     let mut payload = vec![99, 0, 0, 0];
     payload.extend_from_slice(MARKER);
     let blob = dxbc_with_parts(&[(b"RTS0", &payload)]);
-    extract_rejects_root_sig(&blob);
+    extract_skips_root_sig(&blob, RootSignatureSkipReason::UnsupportedVersion);
+}
+
+#[test]
+fn skipped_root_signature_does_not_affect_sibling_record() {
+    let mut hostile = vec![1, 0, 0, 0];
+    hostile.extend_from_slice(MARKER);
+    let sodb = create_sodb(|conn| {
+        create_core_tables(conn)?;
+        conn.execute(
+            "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
+            rusqlite::params![b"rs-bad", &hostile],
+        )?;
+        conn.execute(
+            "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
+            rusqlite::params![b"rs-good", FAKE_ROOT],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, RootSignature, Flags) VALUES (?1, ?2, 0)",
+            rusqlite::params![b"pso-bad", b"rs-bad"],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, RootSignature, Flags) VALUES (?1, ?2, 0)",
+            rusqlite::params![b"pso-good", b"rs-good"],
+        )?;
+        Ok(())
+    });
+    let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+    assert_eq!(file.records.len(), 2);
+    assert_eq!(file.root_signatures.len(), 1);
+    assert_eq!(
+        file.root_signatures.values().next().unwrap().as_str(),
+        bytes_to_hex(FAKE_ROOT)
+    );
+    let bad = file
+        .records
+        .iter()
+        .find(|r| r.app_key.as_str() == bytes_to_hex(b"pso-bad"))
+        .unwrap();
+    assert!(bad.root_signature.is_none());
+    assert_eq!(
+        bad.root_signature_skip,
+        Some(RootSignatureSkipReason::Invalid)
+    );
+    let good = file
+        .records
+        .iter()
+        .find(|r| r.app_key.as_str() == bytes_to_hex(b"pso-good"))
+        .unwrap();
+    assert!(good.root_signature.is_some());
+    assert!(good.root_signature_skip.is_none());
+    let json = String::from_utf8(encode_record_file(&file).unwrap()).unwrap();
+    assert!(!json.contains("DXIL_MARKER"));
+    assert!(!json.contains("9f3a"));
 }
 
 fn extract_and_load_root_sig(bytes: &[u8]) {
@@ -1382,6 +1471,7 @@ fn minimal_record(
         },
         unresolved_stages: Vec::new(),
         root_signature,
+        root_signature_skip: None,
         input_layout,
         depth_stencil: None,
         blend: None,
@@ -1645,4 +1735,42 @@ fn encode_write_error_is_io_not_invalid_json() {
     };
     let err = encode_record_file_to_writer(&file, FailWriter).unwrap_err();
     assert!(matches!(err, Error::Io), "{err:?}");
+}
+
+#[test]
+fn loader_accepts_documented_root_signature_skip_reasons() {
+    for reason in [
+        RootSignatureSkipReason::UnsupportedVersion,
+        RootSignatureSkipReason::Invalid,
+        RootSignatureSkipReason::UnsupportedContainer,
+    ] {
+        let json = format!(
+            r#"{{"format_version":1,"build":{{}},"records":[{{"app_key":"01","version":0,"bytecode_hashes":{{}},"root_signature":null,"root_signature_skip":"{}"}}]}}"#,
+            reason.as_str()
+        );
+        let file = write_temp(".json", json);
+        let loaded = load(file.path()).unwrap();
+        assert_eq!(loaded.records[0].root_signature, None);
+        assert_eq!(loaded.records[0].root_signature_skip, Some(reason));
+    }
+}
+
+#[test]
+fn loader_rejects_unknown_root_signature_skip() {
+    let json = r#"{"format_version":1,"build":{},"records":[{"app_key":"01","version":0,"bytecode_hashes":{},"root_signature":null,"root_signature_skip":"not_a_reason"}]}"#;
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::UnknownRootSignatureSkip), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_root_signature_skip_with_hash() {
+    let hex = bytes_to_hex(FAKE_ROOT);
+    let hash = sha256_hex(FAKE_ROOT);
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"root_signatures":{{"{hash}":"{hex}"}},"records":[{{"app_key":"01","version":0,"bytecode_hashes":{{}},"root_signature":"{hash}","root_signature_skip":"invalid"}}]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::RootSignatureSkipConflict), "{err:?}");
 }

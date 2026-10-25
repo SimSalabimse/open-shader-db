@@ -18,7 +18,7 @@ mod rootsig;
 mod schema;
 mod types;
 
-pub use dxbc::sanitize_root_signature;
+pub use dxbc::{sanitize_root_signature, RootSignatureSkipReason, SanitizedRootSignature};
 pub use error::Error;
 pub use extract::{
     validate_semantic_name, DescriptorBlob, ExtractedBlend, ExtractedDepthStencil,
@@ -36,7 +36,8 @@ pub use rootsig::{
     empty_root_signature_v1_0, empty_root_signature_v1_0_heap_flag, empty_root_signature_v1_1,
     one_cbv_root_signature_v1_0, one_cbv_root_signature_v1_1, one_cbv_v1_0_payload_before_params,
     one_constants_root_signature_v1_0, one_sampler_border4_v1_0, one_table_root_signature_v1_1,
-    parse_root_signature, table_three_ranges_v1_0, table_two_ranges_v1_1, CanonicalRootSignature,
+    parse_root_signature, table_three_ranges_v1_0, table_two_ranges_v1_1,
+    worst_case_loose_numeric_bytes, CanonicalRootSignature, WORST_CASE_LOOSE_NUMERIC_BYTES,
 };
 pub use schema::{SODB_APPLICATION_ID, SODB_USER_VERSION};
 pub use types::{

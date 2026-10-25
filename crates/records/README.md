@@ -9,10 +9,17 @@ parsed as the serialized D3D12 1.0/1.1 blob that DXC /
 `D3D12SerializeRootSignature` emit (24-byte header, 12-byte parameter
 records with payload offsets, type-specific payloads, 52-byte static
 samplers) and re-serialized in DXC order so only structured fields are
-carried. The remaining in-range numeric fields are at most ~104 KiB per
-signature — too small and too structured to hide bytecode. Matching
+carried. After DXC `RootSignatureVerifier` / `StaticSamplerVerifier`
+rules the remaining loosely constrained numeric fields are at most
+106 976 bytes (~104.5 KiB) per signature. That is not shader bytecode,
+and a normal file never contains such a payload, but an adversarial
+file can fill those fields. Any consumer that accepts records from
+others (upload server, consensus builder, signing) MUST re-validate
+with the same parser and treat records as untrusted. Matching
 compares bytecode hashes to a `HashSet` of local hashes. There is no
-upload, download, hosting, or signing.
+upload, download, hosting, or signing. Version 1.2
+(`D3D12_ROOT_SIGNATURE_DESC2`) is skipped as `unsupported_version`
+because DXC does not serialize that layout.
 
 The implementation is written from this repository's architecture notes
 and Microsoft's published SODB SQL schema. It does not reuse code from

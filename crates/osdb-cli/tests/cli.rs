@@ -218,6 +218,57 @@ fn records_extract_writes_json_without_bytecode_or_paths() {
 }
 
 #[test]
+fn records_extract_prints_skipped_root_signature_count() {
+    let path = temp_path(".sodb");
+    let conn = Connection::open(&path).unwrap();
+    conn.pragma_update(None, "journal_mode", "OFF").unwrap();
+    conn.pragma_update(None, "user_version", SODB_USER_VERSION)
+        .unwrap();
+    conn.pragma_update(None, "application_id", SODB_APPLICATION_ID)
+        .unwrap();
+    conn.execute_batch(
+        "
+        CREATE TABLE root_signatures (Key BLOB NOT NULL PRIMARY KEY, value BLOB);
+        CREATE TABLE pipeline_states (
+            Key BLOB NOT NULL PRIMARY KEY, RootSignature BLOB, Flags INTEGER
+        );
+        INSERT INTO root_signatures (Key, value) VALUES (x'01', x'0100000044454144');
+        INSERT INTO pipeline_states (Key, RootSignature, Flags) VALUES (x'01', x'01', 0);
+        INSERT INTO pipeline_states (Key, Flags) VALUES (x'02', 0);
+        ",
+    )
+    .unwrap();
+    drop(conn);
+    let sodb = TempFile { path };
+    let out_path = TempFile {
+        path: temp_path(".json"),
+    };
+    let result = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&out_path.path)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stderr = String::from_utf8(result.stderr).unwrap();
+    assert!(
+        stderr.contains("skipped 1 root signature"),
+        "stderr was {stderr:?}"
+    );
+    let text = std::fs::read_to_string(&out_path.path).unwrap();
+    assert!(text.contains("\"root_signature_skip\": \"invalid\""));
+    assert!(text.contains("\"app_key\": \"02\""));
+    assert!(!text.contains("DEAD"));
+}
+
+#[test]
 fn coverage_load_error_is_nonzero() {
     let sodb = create_sodb();
     let missing = temp_path("-missing.json");

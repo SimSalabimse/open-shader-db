@@ -15,7 +15,7 @@ use rusqlite::types::ValueRef;
 use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 
-use crate::dxbc::sanitize_root_signature;
+use crate::dxbc::{sanitize_root_signature, RootSignatureSkipReason, SanitizedRootSignature};
 use crate::extract::{
     validate_semantic_name, DescriptorBlob, ExtractedBlend, ExtractedDepthStencil,
     ExtractedDepthStencilOp, ExtractedInputElement, ExtractedPipelineState, ExtractedRasterizer,
@@ -238,10 +238,15 @@ fn extract_from_opened(opened: OpenedSodb, limits: Limits) -> Result<ExtractedSo
     if !catalog.present.contains(&TableId::PipelineStates) {
         return Ok(ExtractedSodb {
             records: Vec::new(),
+            skipped_root_signatures: 0,
         });
     }
-    let records = read_pipeline_extract(&conn, &catalog, &mut budget, &bytecode_by_key, limits)?;
-    Ok(ExtractedSodb { records })
+    let (records, skipped_root_signatures) =
+        read_pipeline_extract(&conn, &catalog, &mut budget, &bytecode_by_key, limits)?;
+    Ok(ExtractedSodb {
+        records,
+        skipped_root_signatures,
+    })
 }
 
 struct FileHeader {
@@ -2134,7 +2139,7 @@ fn read_pipeline_extract(
     budget: &mut Budget,
     bytecode_by_key: &BTreeMap<AppKey, Sha256Hash>,
     limits: Limits,
-) -> Result<Vec<ExtractedPipelineState>, Error> {
+) -> Result<(Vec<ExtractedPipelineState>, u64), Error> {
     let table = TableId::PipelineStates;
     let count = row_count(conn, table)?;
     budget.charge(table, count)?;
@@ -2229,7 +2234,7 @@ fn read_pipeline_extract(
                 }
             }
         }
-        let root_signature = lookup_arc(
+        let (root_signature, root_signature_skip) = lookup_root_sig(
             &root_sigs,
             &opt_key(row, &select, table, limits, "RootSignature")?,
         );
@@ -2273,6 +2278,7 @@ fn read_pipeline_extract(
             },
             unresolved_stages,
             root_signature,
+            root_signature_skip,
             input_layout,
             depth_stencil,
             blend,
@@ -2291,7 +2297,11 @@ fn read_pipeline_extract(
         });
     }
     out.sort_by(|a, b| a.key.cmp(&b.key));
-    Ok(out)
+    let skipped_root_signatures = root_sigs
+        .values()
+        .filter(|v| matches!(v, LoadedRootSig::Skipped(_)))
+        .count() as u64;
+    Ok((out, skipped_root_signatures))
 }
 
 fn opt_key(
@@ -2322,6 +2332,22 @@ fn opt_i64(
 
 fn lookup_arc<T>(map: &HashMap<AppKey, Arc<T>>, key: &Option<AppKey>) -> Option<Arc<T>> {
     key.as_ref().and_then(|k| map.get(k).cloned())
+}
+
+enum LoadedRootSig {
+    Canonical(Arc<DescriptorBlob>),
+    Skipped(RootSignatureSkipReason),
+}
+
+fn lookup_root_sig(
+    map: &HashMap<AppKey, LoadedRootSig>,
+    key: &Option<AppKey>,
+) -> (Option<Arc<DescriptorBlob>>, Option<RootSignatureSkipReason>) {
+    match key.as_ref().and_then(|k| map.get(k)) {
+        Some(LoadedRootSig::Canonical(blob)) => (Some(Arc::clone(blob)), None),
+        Some(LoadedRootSig::Skipped(reason)) => (None, Some(*reason)),
+        None => (None, None),
+    }
 }
 
 fn lookup_clone<T: Clone>(map: &HashMap<AppKey, T>, key: &Option<AppKey>) -> Option<T> {
@@ -2365,7 +2391,7 @@ fn load_root_signatures(
     catalog: &Catalog,
     limits: Limits,
     referenced: &HashSet<AppKey>,
-) -> Result<HashMap<AppKey, Arc<DescriptorBlob>>, Error> {
+) -> Result<HashMap<AppKey, LoadedRootSig>, Error> {
     let table = TableId::RootSignatures;
     if !catalog.present.contains(&table) {
         return Ok(HashMap::new());
@@ -2386,8 +2412,17 @@ fn load_root_signatures(
                 None => None,
             };
             if let Some(bytes) = value {
-                let sanitized = sanitize_root_signature(&bytes, limits.max_root_signature_bytes)?;
-                out.insert(key, Arc::new(DescriptorBlob::new(sanitized)));
+                match sanitize_root_signature(&bytes, limits.max_root_signature_bytes) {
+                    SanitizedRootSignature::Canonical(sanitized) => {
+                        out.insert(
+                            key,
+                            LoadedRootSig::Canonical(Arc::new(DescriptorBlob::new(sanitized))),
+                        );
+                    }
+                    SanitizedRootSignature::Skipped(reason) => {
+                        out.insert(key, LoadedRootSig::Skipped(reason));
+                    }
+                }
             }
             Ok(())
         },

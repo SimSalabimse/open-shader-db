@@ -27,15 +27,22 @@ Each record holds:
 - `unresolved_stages` when a `ByteCode_*` key does not resolve
 
 DXIL / bytecode bytes are **never** stored. The extractor hashes each blob
-incrementally and discards it. Root signatures are structurally parsed as
-the D3D12 serialized root-signature blob that
-`D3D12SerializeRootSignature` / DXC emit (identical to the DXBC RTS0
-part payload) and **re-serialized in DXC `SimpleSerializer` order**, so
-only structured fields are carried. A DXBC container used as a root
-signature must contain only an RTS0 part whose payload is that same
-structure; any other part (DXIL, SHEX, SHDR, ILDB, …) rejects the extract.
+incrementally and discards it. Root signatures are copied only after
+structural validation and canonical re-serialization (DXC
+`SimpleSerializer` order of the D3D12 1.0 / 1.1 blob, identical to an
+RTS0 part payload). A DXBC container may also hold other parts (a root
+signature embedded in a shader); only the RTS0 payload is parsed and
+other parts are ignored and never copied. Two RTS0 parts, a container
+with no RTS0, or a structurally invalid blob do **not** abort the
+extract: that record stores `root_signature: null` plus a
+`root_signature_skip` reason code. Version 1.2 (`Version = 3`,
+`D3D12_ROOT_SIGNATURE_DESC2`) is `unsupported_version` — DXC has no
+serializer for that layout, so this tool does not guess it.
 
-Signing is **not** part of this format.
+Signing is **not** part of this format. Record files are untrusted input:
+any consumer that accepts records from others (the upload server, the
+consensus builder, the signing step) MUST re-validate every record with
+the same parser.
 
 ## JSON schema (`format_version` 1)
 
@@ -101,7 +108,8 @@ deeper than 8 is rejected.
 | `records[].version` | integer | `groups.Version` for that PSO key, or `0` if none. |
 | `records[].bytecode_hashes` | object | Keys from `vs`, `ps`, `hs`, `ds`, `gs`, `as`, `ms`, `cs` only. Values are 64-character lowercase hex. Stages are written in that order. |
 | `records[].unresolved_stages` | array | Stage names whose `ByteCode_*` key was non-NULL but missing from `shader_bytecode`. Omitted when empty. |
-| `records[].root_signature` | string or null | SHA-256 of an entry in `root_signatures`. Must resolve. |
+| `records[].root_signature` | string or null | SHA-256 of an entry in `root_signatures`. Must resolve when non-null. Null when the PSO had no root signature or the referenced blob was skipped. |
+| `records[].root_signature_skip` | string | Omitted unless the referenced blob was skipped. Documented codes only: `unsupported_version`, `invalid`, `unsupported_container`. Never includes bytes or content. Must not be set together with a `root_signature` hash. |
 | `records[].input_layout` | string or null | SHA-256 of an entry in `input_layouts`. Must resolve. |
 | `records[].stream_out` | string or null | SHA-256 of an entry in `stream_outputs`. Must resolve. |
 | other descriptor objects | object or null | Integer / real / text columns stored inline (small). |
@@ -117,9 +125,9 @@ output (`--out`) is atomic (temp file, fsync, rename).
 
 Only **one** field family is stored as raw bytes (lowercase hex):
 
-| Table field | Source | Why it cannot carry bytecode |
+| Table field | Source | What is stored |
 | --- | --- | --- |
-| `root_signatures` values | `root_signatures.value` | Parsed as the serialized D3D12 root signature 1.0 (`Version = 1`) or 1.1 (`Version = 2`) that DXC / `D3D12SerializeRootSignature` write (same bytes as a DXBC RTS0 part payload). Layout: 24-byte little-endian header (`Version`, `NumParameters`, `RootParametersOffset`, `NumStaticSamplers`, `StaticSamplersOffset`, `Flags`); then `NumParameters` × 12-byte `{ParameterType, ShaderVisibility, PayloadOffset}` records at `RootParametersOffset`; then type-specific payloads at each absolute `PayloadOffset` (descriptor table = 8-byte `{NumDescriptorRanges, DescriptorRangesOffset}` plus 20-byte 1.0 or 24-byte 1.1 ranges; 32-bit constants = 12 bytes; CBV/SRV/UAV = 8 bytes in 1.0 or 12 in 1.1); then 52-byte static samplers at `StaticSamplersOffset`. Every offset and count is bounds-checked; spans must not overlap; every byte of the blob must be exactly the header + parameter array + payloads + ranges + samplers (no gaps, no trailing bytes). Parameter type, shader visibility, range type, filter, address mode, comparison func, and border color (including `OpaqueWhiteUint = 4`) are allow-listed. Root-signature flags must be a subset of DXC `ValidFlags` `0x80000fff` (bits 0–11 plus `0x80000000`; official `CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED` / `SAMPLER_HEAP_DIRECTLY_INDEXED` are `0x400` / `0x800`). Version 1.1 range flags ⊆ `0x1000f`; root-descriptor flags ⊆ `0xe`. Sampler floats must be finite (`NaN` / `Inf` rejected; `-0` canonicalised to `+0`); `MipLODBias` ∈ `[-16, 15.99]`; `MinLOD` / `MaxLOD` ∈ `[0, f32::MAX]`. Caps: ≤ 64 parameters, ≤ 1024 ranges per table, ≤ 4096 ranges total, ≤ 2048 static samplers, ≤ 1 MiB. The extract emits the **canonical DXC-order re-serialization**, never the input bytes. The loader re-parses every table value and rejects it unless `serialize() == stored`. If the blob starts with `DXBC`, the container must contain only an RTS0 part (plus the standard checksum header); the RTS0 payload is parsed the same way. Any other part (DXIL, SHEX, SHDR, ILDB, STAT, …), a malformed container, a gap/trailing byte, or a leftover fails with a typed error that names no content. **Free-form capacity:** the only fields that accept arbitrary in-range numbers are register indices / spaces, range counts and table offsets, and the three sampler floats (already range-checked). Worst case that is 107 008 bytes per signature (~104.5 KiB) inside a structured blob of at most 206 344 bytes (~201.5 KiB: 24 + 64×12 + 4×(8+1024×24) + 60×12 + 2048×52). That is orders of magnitude too small and too structured to carry shader bytecode. |
+| `root_signatures` values | `root_signatures.value` | Copied only after structural validation and canonical re-serialization of D3D12 root signature 1.0 (`Version = 1`) or 1.1 (`Version = 2`) as DXC / `D3D12SerializeRootSignature` write it (same bytes as a DXBC RTS0 part payload). Layout: 24-byte little-endian header (`Version`, `NumParameters`, `RootParametersOffset`, `NumStaticSamplers`, `StaticSamplersOffset`, `Flags`); then `NumParameters` × 12-byte `{ParameterType, ShaderVisibility, PayloadOffset}` records at `RootParametersOffset`; then type-specific payloads at each absolute `PayloadOffset` (descriptor table = 8-byte `{NumDescriptorRanges, DescriptorRangesOffset}` plus 20-byte 1.0 or 24-byte 1.1 ranges; 32-bit constants = 12 bytes; CBV/SRV/UAV = 8 bytes in 1.0 or 12 in 1.1); then 52-byte static samplers at `StaticSamplersOffset`. Every offset and count is bounds-checked; spans must not overlap; every byte of the blob must be exactly the header + parameter array + payloads + ranges + samplers (no gaps, no trailing bytes). Parameter type, shader visibility, range type, filter (including Agility `MINIMUM`/`MAXIMUM` `MIN_MAG_ANISOTROPIC_MIP_POINT` `0x54` / `0xd4` / `0x154` / `0x1d4`), address mode, and border color (including `OpaqueWhiteUint = 4`) are allow-listed. `ComparisonFunc` is checked only for `COMPARISON_*` filters (`StaticSamplerVerifier::Verify`). Root-signature flags must be a subset of DXC `ValidFlags` `0x80000fff` (bits 0–11 plus `0x80000000`; official `CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED` / `SAMPLER_HEAP_DIRECTLY_INDEXED` are `0x400` / `0x800`). Version 1.1 range flags ⊆ `0x1000f`; root-descriptor flags ⊆ `0xe`. Sampler `MinLOD` / `MaxLOD` follow `StaticSamplerVerifier::Verify`: every non-NaN value is accepted, including ±INF and the D3D11 default `-FLT_MAX`; `MipLODBias` ∈ `[-16, 15.99]` (NaN and INF rejected). `-0.0` is canonicalised to `+0.0`. Binding rules match DXC `DescriptorTableVerifier::Verify` and `RootSignatureVerifier::AddRegisterRange` / `VerifyRootSignature`: `NumDescriptors != 0` (except `UINT_MAX` unbounded), reserved register spaces `≥ 0xfffffff0` rejected, `base + num` overflow rejected, overlapping register bindings in the same space and visibility rejected (shader visibility `ALL` overlaps a specific visibility). Caps: ≤ 64 parameters, ≤ 1024 ranges per table, ≤ 4096 ranges total, ≤ 2048 static samplers, ≤ 1 MiB. The extract emits the **canonical DXC-order re-serialization**, never the input bytes. The loader re-parses every table value and rejects it unless `serialize() == stored`. If the blob starts with `DXBC`, only the RTS0 part is extracted; other parts are ignored and never copied. Two RTS0 parts, no RTS0 part, or a structurally invalid payload skip that record (`root_signature: null` plus `invalid`). An unwalkable DXBC header skips as `unsupported_container`. Version 1.2 (`Version = 3`) skips as `unsupported_version`. One skipped signature does not abort the extract; the extractor prints the unique skipped-key count to stderr. **Free-form capacity:** register indices / spaces, non-zero range counts, table offsets, leftover root-parameter numeric fields, and the three sampler floats (LOD any non-NaN; bias range-checked) can still hold arbitrary in-range numbers. Worst case after the verifier rules is **106 976 loose bytes** per signature (4096 ranges × 16 + 60 leftover parameters × 8 + 2048 samplers × 20) inside a structured blob of at most 206 344 bytes (24 + 64×12 + 4×(8+1024×24) + 60×12 + 2048×52). This is not shader bytecode, and a normal file never contains such a payload, but the format cannot rule out an adversarial file. Any consumer that accepts records from others (the upload server, the consensus builder, the signing step) MUST re-validate records with the same parser and treat them as untrusted. |
 
 Every other descriptor is structured JSON of INTEGER / REAL / TEXT columns
 from the published SQL schema. None of those columns is a bytecode BLOB:

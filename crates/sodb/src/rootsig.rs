@@ -64,11 +64,24 @@ const OFFSET_APPEND: u32 = 0xFFFF_FFFF;
 const MIP_LOD_BIAS_MIN: f32 = -16.0;
 const MIP_LOD_BIAS_MAX: f32 = 15.99;
 
+/// `DxilSystemReservedRegisterSpaceValuesStart` — reject in
+/// `RootSignatureVerifier::AddRegisterRange`.
+const RESERVED_SPACE_START: u32 = 0xFFFF_FFF0;
+
+/// Worst-case loosely constrained numeric bytes: 4 tables × 1024 ranges
+/// (16 B) + 60 leftover root parameters (8 B) + 2048 samplers
+/// (register/space 8 B + three floats 12 B).
+pub const WORST_CASE_LOOSE_NUMERIC_BYTES: usize = 106_976;
+
 const FILTERS: &[u32] = &[
-    0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15, 0x55, 0x80, 0x81, 0x84, 0x85, 0x90, 0x91, 0x94,
-    0x95, 0xD5, 0x100, 0x101, 0x104, 0x105, 0x110, 0x111, 0x114, 0x115, 0x155, 0x180, 0x181, 0x184,
-    0x185, 0x190, 0x191, 0x194, 0x195, 0x1D5,
+    0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15, 0x54, 0x55, 0x80, 0x81, 0x84, 0x85, 0x90, 0x91,
+    0x94, 0x95, 0xD4, 0xD5, 0x100, 0x101, 0x104, 0x105, 0x110, 0x111, 0x114, 0x115, 0x154, 0x155,
+    0x180, 0x181, 0x184, 0x185, 0x190, 0x191, 0x194, 0x195, 0x1D4, 0x1D5,
 ];
+
+/// Agility SDK `D3D12_FILTER_COMPARISON_*` including
+/// `MIN_MAG_ANISOTROPIC_MIP_POINT` (`0xd4`).
+const COMPARISON_FILTERS: &[u32] = &[0x80, 0x81, 0x84, 0x85, 0x90, 0x91, 0x94, 0x95, 0xD4, 0xD5];
 
 /// Parsed root signature. [`Self::serialize`] emits the DXC order
 /// (header, parameter array, per-parameter payloads, static samplers).
@@ -394,12 +407,14 @@ pub fn parse_root_signature(bytes: &[u8]) -> Result<CanonicalRootSignature, Erro
         samplers.push(parse_sampler(bytes, samplers_off + i * SAMPLER_LEN)?);
     }
     cover.finish(bytes.len())?;
-    Ok(CanonicalRootSignature {
+    let parsed = CanonicalRootSignature {
         version,
         flags,
         parameters,
         samplers,
-    })
+    };
+    parsed.verify_dxc_bindings()?;
+    Ok(parsed)
 }
 
 fn parse_range(bytes: &[u8], off: usize, v11: bool) -> Result<DescriptorRange, Error> {
@@ -408,8 +423,25 @@ fn parse_range(bytes: &[u8], off: usize, v11: bool) -> Result<DescriptorRange, E
         return Err(Error::RootSignatureMalformed);
     }
     let num_descriptors = u32_at(bytes, off + 4)?;
+    // `DescriptorTableVerifier::Verify`: NumDescriptors cannot be 0.
+    // `UINT_MAX` is the unbounded-range exception.
+    if num_descriptors == 0 {
+        return Err(Error::RootSignatureMalformed);
+    }
     let base_shader_register = u32_at(bytes, off + 8)?;
     let register_space = u32_at(bytes, off + 12)?;
+    if is_reserved_space(register_space) {
+        return Err(Error::RootSignatureMalformed);
+    }
+    if num_descriptors != u32::MAX {
+        let last = u64::from(base_shader_register)
+            .checked_add(u64::from(num_descriptors))
+            .and_then(|v| v.checked_sub(1))
+            .ok_or(Error::RootSignatureMalformed)?;
+        if last > u64::from(u32::MAX) {
+            return Err(Error::RootSignatureMalformed);
+        }
+    }
     let (flags, offset) = if v11 {
         let flags = u32_at(bytes, off + 16)?;
         if flags & !RANGE_FLAGS != 0 {
@@ -445,22 +477,23 @@ fn parse_sampler(bytes: &[u8], off: usize) -> Result<StaticSampler, Error> {
             return Err(Error::RootSignatureMalformed);
         }
     }
-    let mip_lod_bias =
-        finite_f32_bits(u32_at(bytes, off + 16)?, MIP_LOD_BIAS_MIN, MIP_LOD_BIAS_MAX)?;
+    let mip_lod_bias = sampler_mip_lod_bias(u32_at(bytes, off + 16)?)?;
     let max_anisotropy = u32_at(bytes, off + 20)?;
     if max_anisotropy > ANISO_MAX {
         return Err(Error::RootSignatureMalformed);
     }
     let comparison_func = u32_at(bytes, off + 24)?;
-    if comparison_func > CMP_MAX {
+    // `StaticSamplerVerifier::Verify`: ComparisonFunc is checked only for
+    // COMPARISON_* filters (`IsDxilComparisonFunc`).
+    if COMPARISON_FILTERS.contains(&filter) && !(1..=CMP_MAX).contains(&comparison_func) {
         return Err(Error::RootSignatureMalformed);
     }
     let border_color = u32_at(bytes, off + 28)?;
     if border_color > BORDER_MAX {
         return Err(Error::RootSignatureMalformed);
     }
-    let min_lod = finite_f32_bits(u32_at(bytes, off + 32)?, 0.0, f32::MAX)?;
-    let max_lod = finite_f32_bits(u32_at(bytes, off + 36)?, 0.0, f32::MAX)?;
+    let min_lod = sampler_lod_bits(u32_at(bytes, off + 32)?)?;
+    let max_lod = sampler_lod_bits(u32_at(bytes, off + 36)?)?;
     let shader_register = u32_at(bytes, off + 40)?;
     let register_space = u32_at(bytes, off + 44)?;
     let visibility = u32_at(bytes, off + 48)?;
@@ -484,18 +517,263 @@ fn parse_sampler(bytes: &[u8], off: usize) -> Result<StaticSampler, Error> {
     })
 }
 
-fn finite_f32_bits(bits: u32, min: f32, max: f32) -> Result<u32, Error> {
+/// `StaticSamplerVerifier::Verify` + DXC `isNaN`: MinLOD/MaxLOD accept every
+/// non-NaN value including ±INF and `-FLT_MAX`. `-0.0` is canonicalised to `+0`.
+fn sampler_lod_bits(bits: u32) -> Result<u32, Error> {
     let value = f32::from_bits(bits);
-    if !value.is_finite() {
-        return Err(Error::RootSignatureMalformed);
-    }
-    if value < min || value > max {
+    if value.is_nan() {
         return Err(Error::RootSignatureMalformed);
     }
     if value == 0.0 {
         return Ok(0);
     }
     Ok(bits)
+}
+
+/// `StaticSamplerVerifier::Verify`: MipLODBias rejects NaN and values outside
+/// `[DxilMipLodBiaxMin, DxilMipLodBiaxMax]`. `-0.0` is canonicalised to `+0`.
+fn sampler_mip_lod_bias(bits: u32) -> Result<u32, Error> {
+    let value = f32::from_bits(bits);
+    if value.is_nan() || value < MIP_LOD_BIAS_MIN || value > MIP_LOD_BIAS_MAX {
+        return Err(Error::RootSignatureMalformed);
+    }
+    if value == 0.0 {
+        return Ok(0);
+    }
+    Ok(bits)
+}
+
+fn is_reserved_space(space: u32) -> bool {
+    space >= RESERVED_SPACE_START
+}
+
+impl CanonicalRootSignature {
+    /// `RootSignatureVerifier::VerifyRootSignature` +
+    /// `DescriptorTableVerifier::Verify` + `AddRegisterRange`.
+    fn verify_dxc_bindings(&self) -> Result<(), Error> {
+        let mut kinds: [[Vec<Interval>; 4]; 8] = Default::default();
+        for (i, param) in self.parameters.iter().enumerate() {
+            match param {
+                Parameter::Table { visibility, ranges } => {
+                    verify_descriptor_table(ranges, i)?;
+                    for r in ranges {
+                        verify_range_flag_combo(r)?;
+                        add_register_range(
+                            &mut kinds,
+                            *visibility,
+                            r.range_type,
+                            r.num_descriptors,
+                            r.base_shader_register,
+                            r.register_space,
+                        )?;
+                    }
+                }
+                Parameter::Constants {
+                    visibility,
+                    shader_register,
+                    register_space,
+                    ..
+                } => {
+                    add_register_range(
+                        &mut kinds,
+                        *visibility,
+                        2,
+                        1,
+                        *shader_register,
+                        *register_space,
+                    )?;
+                }
+                Parameter::Descriptor {
+                    kind,
+                    visibility,
+                    shader_register,
+                    register_space,
+                    flags,
+                } => {
+                    if self.version == VERSION_1_1 {
+                        verify_root_desc_flags(*flags)?;
+                    }
+                    let ty = match *kind {
+                        PARAM_CBV => 2,
+                        PARAM_SRV => 0,
+                        PARAM_UAV => 1,
+                        _ => return Err(Error::RootSignatureMalformed),
+                    };
+                    add_register_range(
+                        &mut kinds,
+                        *visibility,
+                        ty,
+                        1,
+                        *shader_register,
+                        *register_space,
+                    )?;
+                }
+            }
+        }
+        for s in &self.samplers {
+            add_register_range(
+                &mut kinds,
+                s.visibility,
+                3,
+                1,
+                s.shader_register,
+                s.register_space,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Interval {
+    space: u32,
+    lb: u32,
+    ub: u32,
+}
+
+impl Interval {
+    fn overlaps(self, other: Self) -> bool {
+        self.space == other.space && self.lb <= other.ub && other.lb <= self.ub
+    }
+}
+
+/// `DescriptorTableVerifier::Verify`
+fn verify_descriptor_table(ranges: &[DescriptorRange], _i_rp: usize) -> Result<(), Error> {
+    let mut has_samplers = false;
+    let mut has_resources = false;
+    let mut append_start: u64 = 0;
+    for r in ranges {
+        match r.range_type {
+            0..=2 => has_resources = true,
+            3 => has_samplers = true,
+            _ => return Err(Error::RootSignatureMalformed),
+        }
+        if has_resources && has_samplers {
+            return Err(Error::RootSignatureMalformed);
+        }
+        let mut start = append_start;
+        if r.offset != OFFSET_APPEND {
+            start = u64::from(r.offset);
+        }
+        if start > u64::from(u32::MAX) {
+            return Err(Error::RootSignatureMalformed);
+        }
+        if r.num_descriptors != u32::MAX {
+            let ub = start
+                .checked_add(u64::from(r.num_descriptors))
+                .and_then(|v| v.checked_sub(1))
+                .ok_or(Error::RootSignatureMalformed)?;
+            if ub > u64::from(u32::MAX) {
+                return Err(Error::RootSignatureMalformed);
+            }
+            append_start = start.saturating_add(u64::from(r.num_descriptors));
+        } else {
+            append_start = 1u64 + u64::from(u32::MAX);
+        }
+    }
+    Ok(())
+}
+
+/// `RootSignatureVerifier::VerifyRootSignature` descriptor-range flag combos.
+fn verify_range_flag_combo(r: &DescriptorRange) -> Result<(), Error> {
+    let flags = r.flags;
+    if r.range_type == 3 {
+        let data = 0x2 | 0x4 | 0x8;
+        if flags & data != 0 {
+            return Err(Error::RootSignatureMalformed);
+        }
+    } else {
+        let mut data_flags = 0;
+        if flags & 0x2 != 0 {
+            data_flags += 1;
+        }
+        if flags & 0x4 != 0 {
+            data_flags += 1;
+        }
+        if flags & 0x8 != 0 {
+            data_flags += 1;
+        }
+        if data_flags > 1 {
+            return Err(Error::RootSignatureMalformed);
+        }
+        if flags & 0x8 != 0 && flags & 0x1 != 0 {
+            return Err(Error::RootSignatureMalformed);
+        }
+    }
+    Ok(())
+}
+
+fn verify_root_desc_flags(flags: u32) -> Result<(), Error> {
+    let mut data_flags = 0;
+    if flags & 0x2 != 0 {
+        data_flags += 1;
+    }
+    if flags & 0x4 != 0 {
+        data_flags += 1;
+    }
+    if flags & 0x8 != 0 {
+        data_flags += 1;
+    }
+    if data_flags > 1 {
+        return Err(Error::RootSignatureMalformed);
+    }
+    Ok(())
+}
+
+/// `RootSignatureVerifier::AddRegisterRange`
+fn add_register_range(
+    kinds: &mut [[Vec<Interval>; 4]; 8],
+    visibility: u32,
+    desc_type: u32,
+    num: u32,
+    base: u32,
+    space: u32,
+) -> Result<(), Error> {
+    if visibility > VIS_MAX || desc_type > RANGE_TYPE_MAX {
+        return Err(Error::RootSignatureMalformed);
+    }
+    if is_reserved_space(space) {
+        return Err(Error::RootSignatureMalformed);
+    }
+    let ub = if num == u32::MAX {
+        u32::MAX
+    } else {
+        base.saturating_add(num.saturating_sub(1))
+    };
+    let interval = Interval {
+        space,
+        lb: base,
+        ub,
+    };
+    let ty = desc_type as usize;
+    if visibility == 0 {
+        for slot in kinds.iter() {
+            if slot[ty].iter().any(|ex| ex.overlaps(interval)) {
+                return Err(Error::RootSignatureMalformed);
+            }
+        }
+    } else {
+        let vis = visibility as usize;
+        if kinds[vis][ty].iter().any(|ex| ex.overlaps(interval))
+            || kinds[0][ty].iter().any(|ex| ex.overlaps(interval))
+        {
+            return Err(Error::RootSignatureMalformed);
+        }
+    }
+    kinds[visibility as usize][ty].push(interval);
+    Ok(())
+}
+
+/// Documented worst-case loosely constrained numeric capacity.
+#[must_use]
+pub fn worst_case_loose_numeric_bytes() -> usize {
+    let range_bytes = MAX_RANGES.saturating_mul(16);
+    let leftover_params = MAX_PARAMETERS.saturating_sub(MAX_RANGES / MAX_RANGES_PER_TABLE);
+    let param_bytes = leftover_params.saturating_mul(8);
+    let sampler_bytes = MAX_SAMPLERS.saturating_mul(20);
+    range_bytes
+        .saturating_add(param_bytes)
+        .saturating_add(sampler_bytes)
 }
 
 struct Coverage {
@@ -671,7 +949,7 @@ pub fn table_three_ranges_v1_0() -> Vec<u8> {
                 offset: 0,
             },
             DescriptorRange {
-                range_type: 3,
+                range_type: 1,
                 num_descriptors: 1,
                 base_shader_register: 0,
                 register_space: 0,
@@ -1012,8 +1290,16 @@ mod tests {
         reject(&addr);
 
         let mut cmp = one_sampler_border4_v1_0();
+        cmp[24..28].copy_from_slice(&0x80_u32.to_le_bytes());
         cmp[24 + 24..24 + 28].copy_from_slice(&9_u32.to_le_bytes());
         reject(&cmp);
+    }
+
+    #[test]
+    fn comparison_func_is_ignored_for_non_comparison_filter() {
+        let mut bytes = one_sampler_border4_v1_0();
+        bytes[24 + 24..24 + 28].copy_from_slice(&9_u32.to_le_bytes());
+        round_trip(&bytes);
     }
 
     #[test]
@@ -1024,17 +1310,16 @@ mod tests {
         reject(&params);
 
         let many = {
-            let ranges = vec![
-                DescriptorRange {
+            let ranges = (0..=MAX_RANGES_PER_TABLE as u32)
+                .map(|space| DescriptorRange {
                     range_type: 2,
                     num_descriptors: 1,
                     base_shader_register: 0,
-                    register_space: 0,
+                    register_space: space,
                     flags: 0,
                     offset: 0,
-                };
-                MAX_RANGES_PER_TABLE + 1
-            ];
+                })
+                .collect();
             table(VERSION_1_0, ranges)
         };
         reject(&many);
@@ -1048,8 +1333,8 @@ mod tests {
             version: VERSION_1_0,
             flags: 0,
             parameters: Vec::new(),
-            samplers: vec![
-                StaticSampler {
+            samplers: (0..=MAX_SAMPLERS as u32)
+                .map(|i| StaticSampler {
                     filter: 0,
                     address_u: 1,
                     address_v: 1,
@@ -1060,12 +1345,11 @@ mod tests {
                     border_color: 0,
                     min_lod: 0,
                     max_lod: 0,
-                    shader_register: 0,
+                    shader_register: i,
                     register_space: 0,
                     visibility: 0,
-                };
-                MAX_SAMPLERS + 1
-            ],
+                })
+                .collect(),
         }
         .serialize();
         reject(&many_samplers);
@@ -1073,16 +1357,15 @@ mod tests {
 
     #[test]
     fn sixty_five_cbv_parameters_are_rejected() {
-        let parameters = vec![
-            Parameter::Descriptor {
+        let parameters = (0..65_u32)
+            .map(|i| Parameter::Descriptor {
                 kind: PARAM_CBV,
                 visibility: 0,
-                shader_register: 0,
+                shader_register: i,
                 register_space: 0,
                 flags: 0,
-            };
-            65
-        ];
+            })
+            .collect();
         let bytes = CanonicalRootSignature {
             version: VERSION_1_0,
             flags: 0,
@@ -1094,26 +1377,37 @@ mod tests {
     }
 
     #[test]
-    fn nan_and_inf_sampler_floats_are_rejected() {
-        let mut nan = one_sampler_border4_v1_0();
-        nan[24 + 16..24 + 20].copy_from_slice(&f32::NAN.to_bits().to_le_bytes());
-        reject(&nan);
-        let mut inf = one_sampler_border4_v1_0();
-        inf[24 + 32..24 + 36].copy_from_slice(&f32::INFINITY.to_bits().to_le_bytes());
-        reject(&inf);
-        let mut ninf = one_sampler_border4_v1_0();
-        ninf[24 + 36..24 + 40].copy_from_slice(&f32::NEG_INFINITY.to_bits().to_le_bytes());
-        reject(&ninf);
+    fn nan_sampler_floats_are_rejected() {
+        let mut nan_bias = one_sampler_border4_v1_0();
+        nan_bias[24 + 16..24 + 20].copy_from_slice(&f32::NAN.to_bits().to_le_bytes());
+        reject(&nan_bias);
+        let mut nan_min = one_sampler_border4_v1_0();
+        nan_min[24 + 32..24 + 36].copy_from_slice(&f32::NAN.to_bits().to_le_bytes());
+        reject(&nan_min);
+        let mut nan_max = one_sampler_border4_v1_0();
+        nan_max[24 + 36..24 + 40].copy_from_slice(&f32::NAN.to_bits().to_le_bytes());
+        reject(&nan_max);
     }
 
     #[test]
-    fn out_of_range_sampler_floats_are_rejected() {
+    fn sampler_lod_accepts_inf_and_neg_float_max() {
+        let mut bytes = one_sampler_border4_v1_0();
+        bytes[24 + 32..24 + 36].copy_from_slice(&f32::NEG_INFINITY.to_bits().to_le_bytes());
+        bytes[24 + 36..24 + 40].copy_from_slice(&f32::INFINITY.to_bits().to_le_bytes());
+        round_trip(&bytes);
+        let mut min_max = one_sampler_border4_v1_0();
+        min_max[24 + 32..24 + 36].copy_from_slice(&(-f32::MAX).to_bits().to_le_bytes());
+        round_trip(&min_max);
+    }
+
+    #[test]
+    fn out_of_range_mip_lod_bias_is_rejected() {
         let mut bias = one_sampler_border4_v1_0();
         bias[24 + 16..24 + 20].copy_from_slice(&20.0_f32.to_bits().to_le_bytes());
         reject(&bias);
-        let mut min_lod = one_sampler_border4_v1_0();
-        min_lod[24 + 32..24 + 36].copy_from_slice(&(-1.0_f32).to_bits().to_le_bytes());
-        reject(&min_lod);
+        let mut inf_bias = one_sampler_border4_v1_0();
+        inf_bias[24 + 16..24 + 20].copy_from_slice(&f32::INFINITY.to_bits().to_le_bytes());
+        reject(&inf_bias);
     }
 
     #[test]
@@ -1154,5 +1448,154 @@ mod tests {
         let mut offset = table_three_ranges_v1_0();
         offset[60..64].copy_from_slice(&(i32::MAX as u32 + 1).to_le_bytes());
         reject(&offset);
+    }
+
+    #[test]
+    fn total_ranges_over_cap_are_rejected() {
+        let tables = 5;
+        let per = MAX_RANGES_PER_TABLE;
+        let mut parameters = Vec::new();
+        let mut space = 0_u32;
+        for _ in 0..tables {
+            let mut ranges = Vec::with_capacity(per);
+            for _ in 0..per {
+                ranges.push(DescriptorRange {
+                    range_type: 2,
+                    num_descriptors: 1,
+                    base_shader_register: 0,
+                    register_space: space,
+                    flags: 0,
+                    offset: 0,
+                });
+                space += 1;
+            }
+            parameters.push(Parameter::Table {
+                visibility: 0,
+                ranges,
+            });
+        }
+        let bytes = CanonicalRootSignature {
+            version: VERSION_1_0,
+            flags: 0,
+            parameters,
+            samplers: Vec::new(),
+        }
+        .serialize();
+        reject(&bytes);
+    }
+
+    #[test]
+    fn root_descriptor_flags_mask_is_enforced() {
+        let mut bytes = one_cbv_root_signature_v1_1();
+        bytes[44..48].copy_from_slice(&0x1_u32.to_le_bytes());
+        reject(&bytes);
+    }
+
+    #[test]
+    fn range_flags_mask_is_enforced() {
+        let mut bytes = table_two_ranges_v1_1();
+        bytes[60..64].copy_from_slice(&0x20_u32.to_le_bytes());
+        reject(&bytes);
+    }
+
+    #[test]
+    fn sampler_visibility_over_max_is_rejected() {
+        let mut bytes = one_sampler_border4_v1_0();
+        bytes[24 + 48..24 + 52].copy_from_slice(&8_u32.to_le_bytes());
+        reject(&bytes);
+    }
+
+    #[test]
+    fn reserved_register_space_is_rejected() {
+        let mut bytes = one_cbv_root_signature_v1_0();
+        bytes[40..44].copy_from_slice(&RESERVED_SPACE_START.to_le_bytes());
+        reject(&bytes);
+    }
+
+    #[test]
+    fn zero_num_descriptors_is_rejected() {
+        let mut bytes = one_table_root_signature_v1_1();
+        bytes[48..52].copy_from_slice(&0_u32.to_le_bytes());
+        reject(&bytes);
+    }
+
+    #[test]
+    fn overlapping_register_bindings_are_rejected() {
+        let bytes = CanonicalRootSignature {
+            version: VERSION_1_0,
+            flags: 0,
+            parameters: vec![
+                Parameter::Descriptor {
+                    kind: PARAM_CBV,
+                    visibility: 0,
+                    shader_register: 0,
+                    register_space: 0,
+                    flags: 0,
+                },
+                Parameter::Descriptor {
+                    kind: PARAM_CBV,
+                    visibility: 1,
+                    shader_register: 0,
+                    register_space: 0,
+                    flags: 0,
+                },
+            ],
+            samplers: Vec::new(),
+        }
+        .serialize();
+        reject(&bytes);
+    }
+
+    #[test]
+    fn base_plus_num_overflow_is_rejected() {
+        let bytes = table(
+            VERSION_1_0,
+            vec![DescriptorRange {
+                range_type: 2,
+                num_descriptors: 2,
+                base_shader_register: u32::MAX,
+                register_space: 0,
+                flags: 0,
+                offset: 0,
+            }],
+        );
+        reject(&bytes);
+    }
+
+    #[test]
+    fn worst_case_loose_numeric_capacity_is_documented() {
+        assert_eq!(
+            worst_case_loose_numeric_bytes(),
+            WORST_CASE_LOOSE_NUMERIC_BYTES
+        );
+        assert_eq!(WORST_CASE_LOOSE_NUMERIC_BYTES, 106_976);
+    }
+
+    #[test]
+    fn agility_aniso_mip_point_filters_round_trip() {
+        for filter in [0x54_u32, 0xD4, 0x154, 0x1D4] {
+            let bytes = CanonicalRootSignature {
+                version: VERSION_1_0,
+                flags: 0,
+                parameters: Vec::new(),
+                samplers: vec![StaticSampler {
+                    filter,
+                    address_u: 1,
+                    address_v: 1,
+                    address_w: 1,
+                    mip_lod_bias: 0,
+                    max_anisotropy: 0,
+                    comparison_func: if filter == 0xD4 { 1 } else { 0 },
+                    border_color: 0,
+                    min_lod: 0,
+                    max_lod: 0,
+                    shader_register: 0,
+                    register_space: 0,
+                    visibility: 0,
+                }],
+            }
+            .serialize();
+            round_trip(&bytes);
+        }
     }
 }

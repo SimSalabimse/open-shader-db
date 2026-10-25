@@ -27,6 +27,7 @@ pub use file::{load, load_with_limits, RecordFile, RedactedPath, FORMAT_VERSION}
 pub use hash::Sha256;
 pub use limits::Limits;
 pub use matching::{match_local_hashes, CoverageKind, MatchReport, RecordMatch};
+pub use sodb::RootSignatureSkipReason;
 pub use types::{
     AppKeyHex, BlendDesc, DepthStencilDesc, DepthStencilOpDesc, HexBytes, InputElementDesc,
     PipelineStateRecord, RasterizerDesc, RenderTargetBlendDesc, RenderTargetFormats, SampleDesc,

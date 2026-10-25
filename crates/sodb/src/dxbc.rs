@@ -2,6 +2,8 @@
 
 //! Bounds-checked DXBC container parse used only for root signatures.
 
+use serde::{Deserialize, Serialize};
+
 use crate::rootsig::parse_root_signature;
 use crate::Error;
 
@@ -12,85 +14,167 @@ const DXBC_MAGIC: &[u8; 4] = b"DXBC";
 const RTS0: &[u8; 4] = b"RTS0";
 const HEADER_LEN: usize = 32;
 
+/// Why a referenced root signature was not copied into the record file.
+///
+/// On-disk codes are `unsupported_version`, `invalid`, and
+/// `unsupported_container`. They never include bytes or content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootSignatureSkipReason {
+    /// Version field is not D3D12 1.0 or 1.1 (includes 1.2 / `Version = 3`).
+    UnsupportedVersion,
+    /// Structurally invalid, over cap, or a container with no usable RTS0.
+    Invalid,
+    /// Starts with `DXBC` but the container header cannot be walked.
+    UnsupportedContainer,
+}
+
+impl RootSignatureSkipReason {
+    /// Stable on-disk reason code.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnsupportedVersion => "unsupported_version",
+            Self::Invalid => "invalid",
+            Self::UnsupportedContainer => "unsupported_container",
+        }
+    }
+
+    /// Parse a documented reason code. Unknown strings are `None`.
+    #[must_use]
+    pub fn parse(code: &str) -> Option<Self> {
+        match code {
+            "unsupported_version" => Some(Self::UnsupportedVersion),
+            "invalid" => Some(Self::Invalid),
+            "unsupported_container" => Some(Self::UnsupportedContainer),
+            _ => None,
+        }
+    }
+}
+
+/// Result of sanitizing a `root_signatures.value` blob.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SanitizedRootSignature {
+    /// Canonical DXC-order serialization.
+    Canonical(Vec<u8>),
+    /// Do not copy the blob; the referencing record stores a reason code.
+    Skipped(RootSignatureSkipReason),
+}
+
 /// Sanitize a `root_signatures.value` blob.
 ///
-/// DXBC containers must contain **only** an RTS0 part. The RTS0 payload
-/// (or a raw non-DXBC blob) is parsed as a D3D12 root signature version
-/// 1.0 or 1.1 and **re-serialized canonically**. Free-form bytes cannot
-/// pass through.
-pub fn sanitize_root_signature(bytes: &[u8], max_bytes: usize) -> Result<Vec<u8>, Error> {
+/// A DXBC container may contain other parts (DXIL, …). Only the RTS0
+/// payload is parsed; other parts are ignored and never copied. Two RTS0
+/// parts is invalid. Version 1.2 (`Version = 3`) is
+/// `unsupported_version` — DXC does not serialize that layout.
+pub fn sanitize_root_signature(bytes: &[u8], max_bytes: usize) -> SanitizedRootSignature {
     if bytes.len() >= 4 && bytes.starts_with(DXBC_MAGIC) {
         return extract_rts0_only(bytes, max_bytes);
     }
     canonicalize_root_signature(bytes, max_bytes)
 }
 
-fn canonicalize_root_signature(bytes: &[u8], max_bytes: usize) -> Result<Vec<u8>, Error> {
-    let got = bytes.len() as u64;
-    if got > max_bytes as u64 {
-        return Err(Error::RootSignatureTooLarge {
-            max: max_bytes as u64,
-            got,
-        });
+fn canonicalize_root_signature(bytes: &[u8], max_bytes: usize) -> SanitizedRootSignature {
+    if bytes.len() as u64 > max_bytes as u64 {
+        return SanitizedRootSignature::Skipped(RootSignatureSkipReason::Invalid);
     }
     if bytes.len() < 4 {
-        return Err(Error::RootSignatureBadVersion);
+        return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedVersion);
     }
-    let parsed = parse_root_signature(bytes)?;
-    let out = parsed.serialize();
-    if out.len() > max_bytes {
-        return Err(Error::RootSignatureTooLarge {
-            max: max_bytes as u64,
-            got: out.len() as u64,
-        });
+    match parse_root_signature(bytes) {
+        Ok(parsed) => {
+            let out = parsed.serialize();
+            if out.len() > max_bytes {
+                SanitizedRootSignature::Skipped(RootSignatureSkipReason::Invalid)
+            } else {
+                SanitizedRootSignature::Canonical(out)
+            }
+        }
+        Err(Error::RootSignatureBadVersion) => {
+            SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedVersion)
+        }
+        Err(_) => SanitizedRootSignature::Skipped(RootSignatureSkipReason::Invalid),
     }
-    Ok(out)
 }
 
-fn extract_rts0_only(bytes: &[u8], max_bytes: usize) -> Result<Vec<u8>, Error> {
+fn extract_rts0_only(bytes: &[u8], max_bytes: usize) -> SanitizedRootSignature {
     if bytes.len() < HEADER_LEN {
-        return Err(Error::DxbcMalformed);
+        return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedContainer);
     }
-    let file_size = u32_at(bytes, 24)? as usize;
+    let file_size = match u32_at(bytes, 24) {
+        Ok(v) => v as usize,
+        Err(()) => {
+            return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedContainer)
+        }
+    };
     if file_size < HEADER_LEN || file_size > bytes.len() || file_size != bytes.len() {
-        return Err(Error::DxbcMalformed);
+        return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedContainer);
     }
-    let part_count = u32_at(bytes, 28)? as usize;
-    let offsets_end = HEADER_LEN
-        .checked_add(part_count.checked_mul(4).ok_or(Error::DxbcMalformed)?)
-        .ok_or(Error::DxbcMalformed)?;
+    let part_count = match u32_at(bytes, 28) {
+        Ok(v) => v as usize,
+        Err(()) => {
+            return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedContainer)
+        }
+    };
+    let Some(offsets_end) = part_count
+        .checked_mul(4)
+        .and_then(|n| HEADER_LEN.checked_add(n))
+    else {
+        return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedContainer);
+    };
     if offsets_end > file_size {
-        return Err(Error::DxbcMalformed);
+        return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedContainer);
     }
     let mut rts0 = None;
     for i in 0..part_count {
-        let off = u32_at(bytes, HEADER_LEN + i * 4)? as usize;
-        let fourcc_end = off.checked_add(8).ok_or(Error::DxbcMalformed)?;
+        let off = match u32_at(bytes, HEADER_LEN + i * 4) {
+            Ok(v) => v as usize,
+            Err(()) => {
+                return SanitizedRootSignature::Skipped(
+                    RootSignatureSkipReason::UnsupportedContainer,
+                )
+            }
+        };
+        let Some(fourcc_end) = off.checked_add(8) else {
+            return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedContainer);
+        };
         if fourcc_end > file_size {
-            return Err(Error::DxbcMalformed);
+            return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedContainer);
         }
         let fourcc = &bytes[off..off + 4];
-        let size = u32_at(bytes, off + 4)? as usize;
-        let data_end = fourcc_end.checked_add(size).ok_or(Error::DxbcMalformed)?;
+        let size = match u32_at(bytes, off + 4) {
+            Ok(v) => v as usize,
+            Err(()) => {
+                return SanitizedRootSignature::Skipped(
+                    RootSignatureSkipReason::UnsupportedContainer,
+                )
+            }
+        };
+        let Some(data_end) = fourcc_end.checked_add(size) else {
+            return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedContainer);
+        };
         if data_end > file_size {
-            return Err(Error::DxbcMalformed);
+            return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedContainer);
         }
         if fourcc != RTS0 {
-            return Err(Error::DxbcForbiddenPart);
+            continue;
         }
         if rts0.is_some() {
-            return Err(Error::DxbcMalformed);
+            return SanitizedRootSignature::Skipped(RootSignatureSkipReason::Invalid);
         }
         let payload = &bytes[fourcc_end..data_end];
-        rts0 = Some(canonicalize_root_signature(payload, max_bytes)?);
+        rts0 = Some(canonicalize_root_signature(payload, max_bytes));
     }
-    rts0.ok_or(Error::DxbcMalformed)
+    match rts0 {
+        Some(outcome) => outcome,
+        None => SanitizedRootSignature::Skipped(RootSignatureSkipReason::Invalid),
+    }
 }
 
-fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, Error> {
-    let end = offset.checked_add(4).ok_or(Error::DxbcMalformed)?;
-    let slice = bytes.get(offset..end).ok_or(Error::DxbcMalformed)?;
-    let arr: [u8; 4] = slice.try_into().map_err(|_| Error::DxbcMalformed)?;
+fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, ()> {
+    let end = offset.checked_add(4).ok_or(())?;
+    let slice = bytes.get(offset..end).ok_or(())?;
+    let arr: [u8; 4] = slice.try_into().map_err(|_| ())?;
     Ok(u32::from_le_bytes(arr))
 }
 
@@ -129,19 +213,25 @@ mod tests {
         out
     }
 
-    fn reject_marker(err: Error) {
-        let text = format!("{err}{err:?}");
+    fn skip_reason(out: SanitizedRootSignature) -> RootSignatureSkipReason {
+        match out {
+            SanitizedRootSignature::Skipped(reason) => reason,
+            SanitizedRootSignature::Canonical(_) => panic!("expected skip"),
+        }
+    }
+
+    fn assert_no_marker(reason: RootSignatureSkipReason) {
+        let text = format!("{reason:?}{}", reason.as_str());
         assert!(!text.contains("DXIL_MARKER"));
         assert!(!text.contains("9f3a"));
     }
 
     #[test]
-    fn raw_size_cap_rejects_oversized_valid_signature() {
+    fn raw_size_cap_skips_oversized_valid_signature() {
         let bytes = empty_root_signature_v1_0();
-        let err = sanitize_root_signature(&bytes, 10).unwrap_err();
-        assert!(
-            matches!(err, Error::RootSignatureTooLarge { max: 10, .. }),
-            "{err:?}"
+        assert_eq!(
+            skip_reason(sanitize_root_signature(&bytes, 10)),
+            RootSignatureSkipReason::Invalid
         );
     }
 
@@ -150,8 +240,10 @@ mod tests {
         let rs = empty_root_signature_v1_0();
         let mut blob = dxbc_with_parts(&[(b"RTS0", &rs)]);
         blob.push(0);
-        let err = sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES).unwrap_err();
-        assert!(matches!(err, Error::DxbcMalformed), "{err:?}");
+        assert_eq!(
+            skip_reason(sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES)),
+            RootSignatureSkipReason::UnsupportedContainer
+        );
     }
 
     #[test]
@@ -160,8 +252,10 @@ mod tests {
         let mut blob = dxbc_with_parts(&[(b"RTS0", &rs)]);
         let declared = u32::from_le_bytes(blob[24..28].try_into().unwrap());
         blob[24..28].copy_from_slice(&(declared.saturating_sub(8)).to_le_bytes());
-        let err = sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES).unwrap_err();
-        assert!(matches!(err, Error::DxbcMalformed), "{err:?}");
+        assert_eq!(
+            skip_reason(sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES)),
+            RootSignatureSkipReason::UnsupportedContainer
+        );
     }
 
     #[test]
@@ -169,25 +263,72 @@ mod tests {
         let mut payload = vec![1, 0, 0, 0];
         payload.extend_from_slice(MARKER);
         let blob = dxbc_with_parts(&[(b"RTS0", &payload)]);
-        let err = sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES).unwrap_err();
-        reject_marker(err);
+        let reason = skip_reason(sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES));
+        assert_eq!(reason, RootSignatureSkipReason::Invalid);
+        assert_no_marker(reason);
     }
 
     #[test]
-    fn rts0_v99_is_rejected() {
+    fn rts0_v99_is_unsupported_version() {
         let mut payload = vec![99, 0, 0, 0];
         payload.extend_from_slice(MARKER);
         let blob = dxbc_with_parts(&[(b"RTS0", &payload)]);
-        let err = sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES).unwrap_err();
-        reject_marker(err);
+        let reason = skip_reason(sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES));
+        assert_eq!(reason, RootSignatureSkipReason::UnsupportedVersion);
+        assert_no_marker(reason);
+    }
+
+    #[test]
+    fn version_1_2_is_unsupported_version() {
+        let mut bytes = empty_root_signature_v1_0();
+        bytes[0..4].copy_from_slice(&3_u32.to_le_bytes());
+        assert_eq!(
+            skip_reason(sanitize_root_signature(&bytes, MAX_ROOT_SIGNATURE_BYTES)),
+            RootSignatureSkipReason::UnsupportedVersion
+        );
     }
 
     #[test]
     fn rts0_only_emits_canonical_payload() {
         let rs = empty_root_signature_v1_0();
         let blob = dxbc_with_parts(&[(b"RTS0", &rs)]);
-        let out = sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES).unwrap();
-        assert_eq!(out, rs);
+        match sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES) {
+            SanitizedRootSignature::Canonical(out) => assert_eq!(out, rs),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn rts0_plus_dxil_extracts_rts0_and_drops_marker() {
+        let rs = empty_root_signature_v1_0();
+        let blob = dxbc_with_parts(&[(b"RTS0", &rs), (b"DXIL", MARKER)]);
+        match sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES) {
+            SanitizedRootSignature::Canonical(out) => {
+                assert_eq!(out, rs);
+                let text = format!("{out:?}");
+                assert!(!text.contains("DXIL_MARKER"));
+                assert!(!out.windows(MARKER.len()).any(|w| w == MARKER));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_rts0_parts_are_invalid() {
+        let rs = empty_root_signature_v1_0();
+        let blob = dxbc_with_parts(&[(b"RTS0", &rs), (b"RTS0", &rs)]);
+        assert_eq!(
+            skip_reason(sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES)),
+            RootSignatureSkipReason::Invalid
+        );
+    }
+
+    #[test]
+    fn dxbc_without_rts0_is_invalid() {
+        let blob = dxbc_with_parts(&[(b"DXIL", MARKER)]);
+        let reason = skip_reason(sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES));
+        assert_eq!(reason, RootSignatureSkipReason::Invalid);
+        assert_no_marker(reason);
     }
 
     #[test]
@@ -205,15 +346,15 @@ mod tests {
             crate::empty_root_signature_v1_0_heap_flag(),
         ];
         for rs in samples {
-            assert_eq!(
-                sanitize_root_signature(&rs, MAX_ROOT_SIGNATURE_BYTES).unwrap(),
-                rs
-            );
+            match sanitize_root_signature(&rs, MAX_ROOT_SIGNATURE_BYTES) {
+                SanitizedRootSignature::Canonical(out) => assert_eq!(out, rs),
+                other => panic!("{other:?}"),
+            }
             let blob = dxbc_with_parts(&[(b"RTS0", &rs)]);
-            assert_eq!(
-                sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES).unwrap(),
-                rs
-            );
+            match sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES) {
+                SanitizedRootSignature::Canonical(out) => assert_eq!(out, rs),
+                other => panic!("{other:?}"),
+            }
         }
     }
 }

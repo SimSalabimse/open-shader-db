@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     extract_pipeline_states, is_sodb, open, open_with_limits, probe, Error, Limits, ObjectKind,
-    TableId, SODB_APPLICATION_ID, SODB_USER_VERSION,
+    RootSignatureSkipReason, TableId, SODB_APPLICATION_ID, SODB_USER_VERSION,
 };
 
 const FAKE_VS: &[u8] = b"FAKE_VS_BLOB";
@@ -1173,14 +1173,15 @@ fn fifty_thousand_rows_without_indexes_finish_quickly() {
     let elapsed = start.elapsed();
     assert_eq!(summary.pipeline_states.len(), 50_000);
     assert!(
-        elapsed.as_secs_f64() < 5.0,
+        elapsed.as_secs_f64() < PARSE_BUDGET_SECS,
         "parse of 50k unindexed rows took {elapsed:?}"
     );
 }
 
 // Debug CI (especially Windows) is slower than a release-ish local run.
-// 15s still fails the pre-fix hang (tens of seconds / abort).
-const PARSE_BUDGET_SECS: f64 = 15.0;
+// Generous under parallel cargo-test load; the pre-fix hang is tens of
+// seconds / abort, so 60s still fails a regression.
+const PARSE_BUDGET_SECS: f64 = 60.0;
 
 fn rss_bytes() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -1252,6 +1253,9 @@ fn fifty_thousand_state_object_chain_finishes_quickly() {
 
 #[test]
 fn forty_deep_diamond_finishes_quickly() {
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fixture = create_sodb(SODB_USER_VERSION, SODB_APPLICATION_ID, |conn| {
         conn.execute_batch(
             "
@@ -2044,10 +2048,12 @@ fn unreferenced_malformed_root_signature_is_ignored() {
     let extracted = extract_pipeline_states(fixture.path()).unwrap();
     assert_eq!(extracted.len(), 1);
     assert!(extracted[0].root_signature.is_none());
+    assert!(extracted[0].root_signature_skip.is_none());
+    assert_eq!(extracted.skipped_root_signatures, 0);
 }
 
 #[test]
-fn referenced_malformed_root_signature_fails_extract() {
+fn referenced_malformed_root_signature_is_skipped() {
     const MARKER: &[u8] = b"DXIL_MARKER_SHOULD_NOT_LEAK_9f3a";
     let mut hostile = vec![1, 0, 0, 0];
     hostile.extend_from_slice(MARKER);
@@ -2058,13 +2064,42 @@ fn referenced_malformed_root_signature_fails_extract() {
             rusqlite::params![b"rs-bad", &hostile],
         )?;
         conn.execute(
+            "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
+            rusqlite::params![b"rs-good", RAW_ROOT_SIG],
+        )?;
+        conn.execute(
             "INSERT INTO pipeline_states (Key, RootSignature, Flags) VALUES (?1, ?2, 0)",
-            rusqlite::params![b"pso-1", b"rs-bad"],
+            rusqlite::params![b"pso-bad", b"rs-bad"],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, RootSignature, Flags) VALUES (?1, ?2, 0)",
+            rusqlite::params![b"pso-good", b"rs-good"],
         )?;
         Ok(())
     });
-    let err = extract_pipeline_states(fixture.path()).unwrap_err();
-    let text = format!("{err}{err:?}");
-    assert!(!text.contains("DXIL_MARKER"));
-    assert!(!text.contains("9f3a"));
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    assert_eq!(extracted.len(), 2);
+    assert_eq!(extracted.skipped_root_signatures, 1);
+    let bad = extracted
+        .iter()
+        .find(|r| r.key.as_bytes() == b"pso-bad")
+        .unwrap();
+    assert!(bad.root_signature.is_none());
+    assert_eq!(
+        bad.root_signature_skip,
+        Some(RootSignatureSkipReason::Invalid)
+    );
+    let good = extracted
+        .iter()
+        .find(|r| r.key.as_bytes() == b"pso-good")
+        .unwrap();
+    assert!(good.root_signature.is_some());
+    assert!(good.root_signature_skip.is_none());
+    assert_eq!(
+        good.root_signature.as_ref().unwrap().as_bytes(),
+        RAW_ROOT_SIG
+    );
+    let debug = format!("{extracted:?}");
+    assert!(!debug.contains("DXIL_MARKER"));
+    assert!(!debug.contains("9f3a"));
 }

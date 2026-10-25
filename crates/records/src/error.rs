@@ -116,4 +116,12 @@ pub enum Error {
     /// `unresolved_stages` listed a stage that also has a bytecode hash.
     #[error("unresolved_stages overlaps a resolved bytecode hash")]
     OverlappingUnresolvedStage,
+
+    /// `root_signature_skip` was not one of the documented reason codes.
+    #[error("unknown root_signature_skip reason")]
+    UnknownRootSignatureSkip,
+
+    /// `root_signature_skip` was set together with a root-signature hash.
+    #[error("root_signature_skip cannot be set with a root_signature hash")]
+    RootSignatureSkipConflict,
 }

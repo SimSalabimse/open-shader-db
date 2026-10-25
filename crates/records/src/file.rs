@@ -348,6 +348,9 @@ fn validate_refs(
     let mut used_layouts = BTreeSet::new();
     let mut used_so = BTreeSet::new();
     for record in records {
+        if record.root_signature.is_some() && record.root_signature_skip.is_some() {
+            return Err(Error::RootSignatureSkipConflict);
+        }
         if let Some(hash) = record.root_signature {
             if !root_signatures.contains_key(&hash) {
                 return Err(Error::UnresolvedDescriptor);
@@ -540,6 +543,7 @@ struct RawRecord {
     bytecode_hashes: StageHashes,
     unresolved_stages: Vec<ShaderStage>,
     root_signature: Option<String>,
+    root_signature_skip: Option<sodb::RootSignatureSkipReason>,
     input_layout: Option<String>,
     depth_stencil: Option<DepthStencilDesc>,
     blend: Option<BlendDesc>,
@@ -561,6 +565,9 @@ impl RawRecord {
         if self.app_key.is_empty() {
             return Err(Error::EmptyAppKey);
         }
+        if self.root_signature.is_some() && self.root_signature_skip.is_some() {
+            return Err(Error::RootSignatureSkipConflict);
+        }
         Ok(PipelineStateRecord {
             app_key: AppKeyHex::parse_hex(&self.app_key)?,
             version: self.version,
@@ -570,6 +577,7 @@ impl RawRecord {
                 Some(text) => Some(Sha256::parse_hex(&text)?),
                 None => None,
             },
+            root_signature_skip: self.root_signature_skip,
             input_layout: match self.input_layout {
                 Some(text) => Some(Sha256::parse_hex(&text)?),
                 None => None,
@@ -616,6 +624,7 @@ impl<'de> Visitor<'de> for RawRecordVisitor {
         let mut bytecode_hashes = None;
         let mut unresolved_stages = None;
         let mut root_signature = None;
+        let mut root_signature_skip = None;
         let mut input_layout = None;
         let mut depth_stencil = None;
         let mut blend = None;
@@ -642,6 +651,16 @@ impl<'de> Visitor<'de> for RawRecordVisitor {
                 }
                 "unresolved_stages" => unresolved_stages = Some(map.next_value()?),
                 "root_signature" => root_signature = map.next_value()?,
+                "root_signature_skip" => {
+                    let text: Option<String> = map.next_value()?;
+                    root_signature_skip = match text {
+                        None => None,
+                        Some(code) => Some(
+                            sodb::RootSignatureSkipReason::parse(&code)
+                                .ok_or_else(|| store_typed(Error::UnknownRootSignatureSkip))?,
+                        ),
+                    };
+                }
                 "input_layout" => input_layout = map.next_value()?,
                 "depth_stencil" => depth_stencil = map.next_value()?,
                 "blend" => blend = map.next_value()?,
@@ -665,6 +684,7 @@ impl<'de> Visitor<'de> for RawRecordVisitor {
             bytecode_hashes: bytecode_hashes.ok_or_else(|| store_typed(Error::InvalidJson))?,
             unresolved_stages: unresolved_stages.unwrap_or_default(),
             root_signature,
+            root_signature_skip,
             input_layout,
             depth_stencil,
             blend,

@@ -63,6 +63,17 @@ pub fn extract_with_options(
         }
         records.sort_by(|a, b| a.app_key.cmp(&b.app_key));
     }
+    if extracted.skipped_root_signatures > 0 {
+        eprintln!(
+            "skipped {} root signature{}",
+            extracted.skipped_root_signatures,
+            if extracted.skipped_root_signatures == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+    }
     Ok(RecordFile {
         format_version: FORMAT_VERSION,
         build,
@@ -180,6 +191,7 @@ fn from_extracted(
         },
         unresolved_stages: row.unresolved_stages.into_iter().map(map_stage).collect(),
         root_signature,
+        root_signature_skip: row.root_signature_skip,
         input_layout,
         depth_stencil: row.depth_stencil.map(map_ds),
         blend: row.blend.map(map_blend),

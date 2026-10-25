@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use crate::dxbc::RootSignatureSkipReason;
 use crate::hash::hex_encode;
 use crate::{AppKey, ObjectVersion, Sha256Hash};
 
@@ -213,6 +214,8 @@ pub struct ExtractedPipelineState {
     pub bytecode: ExtractedStageHashes,
     pub unresolved_stages: Vec<ExtractedStage>,
     pub root_signature: Option<Arc<DescriptorBlob>>,
+    /// Set when the referenced blob was skipped (never copied).
+    pub root_signature_skip: Option<RootSignatureSkipReason>,
     pub input_layout: Option<Arc<Vec<ExtractedInputElement>>>,
     pub depth_stencil: Option<ExtractedDepthStencil>,
     pub blend: Option<ExtractedBlend>,
@@ -234,6 +237,8 @@ pub struct ExtractedPipelineState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtractedSodb {
     pub records: Vec<ExtractedPipelineState>,
+    /// Unique referenced root-signature keys that were skipped.
+    pub skipped_root_signatures: u64,
 }
 
 impl std::ops::Deref for ExtractedSodb {
