@@ -10,7 +10,7 @@ use osdb_records::Sha256;
 use sodb::{hash_shader_container, parse_dxbc_header, starts_with_dxbc, SodbBytecodeReader};
 
 use crate::scan::open_regular_nonblocking;
-use crate::types::{ShaderLocation, ShaderSourceKind, SourceId};
+use crate::types::{ShaderLocation, ShaderLocator, ShaderSourceKind, SourceId};
 use crate::{Error, ScanReport};
 
 pub(crate) struct SourceSlot {
@@ -80,6 +80,15 @@ impl LocalShaderIndex {
     #[must_use]
     pub fn source_kind(&self, id: SourceId) -> Option<ShaderSourceKind> {
         self.sources.iter().find(|s| s.id == id).map(|s| s.kind)
+    }
+
+    /// Absolute path of a source id. For tests and same-file checks only.
+    #[must_use]
+    pub fn source_path(&self, id: SourceId) -> Option<&Path> {
+        self.sources
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.path.as_path())
     }
 
     /// Absolute source paths. For same-file checks only; never print these.
@@ -193,41 +202,54 @@ impl<'a> ShaderReadSession<'a> {
     }
 }
 
+fn map_sodb_read(err: sodb::Error) -> Error {
+    match err {
+        sodb::Error::BytecodeHashMismatch => Error::ShaderHashMismatch,
+        sodb::Error::BytecodeChanged => Error::ShaderChanged,
+        other => Error::Sodb(other),
+    }
+}
+
 fn read_sodb_blob(
     reader: &SodbBytecodeReader,
     loc: &ShaderLocation,
     expected: &Sha256,
 ) -> Result<Vec<u8>, Error> {
     let expected_hash = expected.as_sodb();
-    reader
-        .read_blob(
-            loc.offset.get() as i64,
-            expected_hash,
-            loc.len.get(),
-            sodb::Limits::DEFAULT,
-        )
-        .map_err(|err| match err {
-            sodb::Error::BytecodeHashMismatch => Error::ShaderHashMismatch,
-            sodb::Error::BytecodeChanged => Error::ShaderChanged,
-            other => Error::Sodb(other),
-        })
+    match &loc.locator {
+        ShaderLocator::SodbRowid { rowid, len } => reader
+            .read_blob(*rowid, expected_hash, len.get(), sodb::Limits::DEFAULT)
+            .map_err(map_sodb_read),
+        ShaderLocator::SodbKey { key, len } => {
+            let app_key = sodb::AppKey::from_bytes(key.clone());
+            reader
+                .read_blob_by_key(&app_key, expected_hash, len.get(), sodb::Limits::DEFAULT)
+                .map_err(map_sodb_read)
+        }
+        ShaderLocator::Loose { .. } => Err(Error::ShaderChanged),
+    }
 }
 
 fn read_loose_file(path: &Path, loc: &ShaderLocation, expected: &Sha256) -> Result<Vec<u8>, Error> {
+    let ShaderLocator::Loose { offset, len } = &loc.locator else {
+        return Err(Error::ShaderChanged);
+    };
+    let offset = *offset;
+    let len = *len;
     let mut file = open_regular_nonblocking(path)?;
     let meta = file.metadata().map_err(|_| Error::Io)?;
     if !meta.is_file() {
         return Err(Error::NotARegularFile);
     }
-    if meta.len() < loc.offset.get().saturating_add(loc.len.get()) {
+    if meta.len() < offset.get().saturating_add(len.get()) {
         return Err(Error::ShaderChanged);
     }
-    file.seek(SeekFrom::Start(loc.offset.get()))
+    file.seek(SeekFrom::Start(offset.get()))
         .map_err(|_| Error::Io)?;
-    let mut limited = file.take(loc.len.get());
+    let mut limited = file.take(len.get());
     let mut bytes = Vec::new();
     limited.read_to_end(&mut bytes).map_err(|_| Error::Io)?;
-    if bytes.len() as u64 != loc.len.get() {
+    if bytes.len() as u64 != len.get() {
         return Err(Error::ShaderChanged);
     }
     if !starts_with_dxbc(&bytes) {

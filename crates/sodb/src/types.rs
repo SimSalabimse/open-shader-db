@@ -58,6 +58,12 @@ impl AppKey {
         Self(bytes)
     }
 
+    /// Reconstruct a key from bytes stored by the local shader index.
+    #[must_use]
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
     /// Key bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {

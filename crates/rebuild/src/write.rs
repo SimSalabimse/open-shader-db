@@ -48,6 +48,7 @@ pub fn rebuild_sodb(
         return Err(Error::OutputPathNotUtf8);
     }
     refuse_output_path(out, shaders, &opts)?;
+    reset_writer_hooks();
 
     let mut report = RebuildReport::default();
     let mut plan = Plan::default();
@@ -58,12 +59,11 @@ pub fn rebuild_sodb(
     report.unique_root_signatures = plan.root_sigs.len() as u64;
 
     let work = create_exclusive_sibling(out)?;
-    let compact = create_exclusive_sibling(out)?;
-    fs::remove_file(&compact).map_err(|_| Error::Io)?;
     let mut work_guard = TempGuard {
         path: work.clone(),
         persist: false,
     };
+    let compact = reserve_sibling_path(out)?;
     let mut compact_guard = TempGuard {
         path: compact.clone(),
         persist: false,
@@ -85,10 +85,12 @@ pub fn rebuild_sodb(
             got,
         });
     }
-    persist_temp_db(&compact, out)?;
+    report.publish_warnings = persist_temp_db(&compact, out)?;
     compact_guard.persist = true;
     if retry_io(|| fs::remove_file(&work)).is_ok() {
         work_guard.persist = true;
+    } else {
+        report.publish_warnings = report.publish_warnings.saturating_add(1);
     }
     Ok(report)
 }
@@ -187,7 +189,7 @@ fn write_database(
     max_output: u64,
     compact: &Path,
 ) -> Result<(), Error> {
-    let conn = Connection::open(path)?;
+    let conn = WriterConn::open(path)?;
     conn.pragma_update(None, "page_size", SODB_WRITER_PAGE_SIZE)?;
     conn.pragma_update(None, "encoding", "UTF-8")?;
     conn.pragma_update(None, "journal_mode", "OFF")?;
@@ -204,6 +206,7 @@ fn write_database(
             continue;
         }
         for (stage, hash) in record.bytecode_hashes.iter() {
+            // First spec-order stage name wins when one hash is used in several stages.
             shader_type.entry(hash).or_insert(stage.as_str());
         }
     }
@@ -600,8 +603,6 @@ fn write_database(
     }
 
     conn.pragma_update(None, "synchronous", "FULL")?;
-    conn.pragma_update(None, "user_version", SODB_USER_VERSION)?;
-    conn.pragma_update(None, "application_id", SODB_APPLICATION_ID)?;
     let _ = conn
         .query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0))
         .optional()?;
@@ -610,8 +611,125 @@ fn write_database(
     }
     // Snapshot into a sibling file so we never rename the live work database.
     conn.execute("VACUUM INTO ?1", [sqlite_path(compact)?])?;
-    conn.close().map_err(|(_, _)| Error::Sqlite)?;
+    conn.close()?;
     Ok(())
+}
+
+/// SQLite connection that records test-only writer hooks for every SQL string.
+/// Mutants that add `VACUUM;` or `temp_store=MEMORY` still go through these methods.
+struct WriterConn {
+    inner: Connection,
+}
+
+impl WriterConn {
+    fn open(path: &Path) -> Result<Self, Error> {
+        Ok(Self {
+            inner: Connection::open(path)?,
+        })
+    }
+
+    fn pragma_update<V: rusqlite::ToSql>(
+        &self,
+        schema: Option<rusqlite::DatabaseName<'_>>,
+        name: &str,
+        value: V,
+    ) -> rusqlite::Result<()> {
+        note_pragma(name);
+        self.inner.pragma_update(schema, name, value)
+    }
+
+    fn execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
+        note_sql(&self.inner, sql);
+        self.inner.execute_batch(sql)
+    }
+
+    fn execute<P: rusqlite::Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize> {
+        note_sql(&self.inner, sql);
+        self.inner.execute(sql, params)
+    }
+
+    fn query_row<T, P, F>(&self, sql: &str, params: P, f: F) -> rusqlite::Result<T>
+    where
+        P: rusqlite::Params,
+        F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        note_sql(&self.inner, sql);
+        self.inner.query_row(sql, params, f)
+    }
+
+    fn close(self) -> Result<(), Error> {
+        self.inner.close().map_err(|(_, _)| Error::Sqlite)
+    }
+}
+
+fn note_pragma(name: &str) {
+    let _ = name;
+    #[cfg(test)]
+    if name.eq_ignore_ascii_case("temp_store") {
+        SAW_MEMORY_TEMP.with(|slot| slot.set(true));
+    }
+}
+
+fn note_sql(conn: &Connection, sql: &str) {
+    let _ = (conn, sql);
+    #[cfg(test)]
+    {
+        if sql_has_plain_vacuum(sql) {
+            EXTRA_DISK.with(|slot| {
+                let extra = writer_file_bytes(conn);
+                slot.set(slot.get().saturating_add(extra.max(1)));
+            });
+        }
+        let upper = sql.to_ascii_uppercase();
+        if upper.contains("TEMP_STORE") && upper.contains("MEMORY") {
+            SAW_MEMORY_TEMP.with(|slot| slot.set(true));
+        }
+    }
+}
+
+#[cfg(test)]
+fn sql_has_plain_vacuum(sql: &str) -> bool {
+    let upper = sql.to_ascii_uppercase();
+    let mut rest = upper.as_str();
+    while let Some(idx) = rest.find("VACUUM") {
+        let after = rest[idx + 6..].trim_start();
+        if !after.starts_with("INTO") {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+#[cfg(test)]
+fn writer_file_bytes(conn: &Connection) -> u64 {
+    let pages = conn
+        .query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0))
+        .unwrap_or(0)
+        .max(0) as u64;
+    let page = conn
+        .query_row("PRAGMA page_size", [], |row| row.get::<_, i64>(0))
+        .unwrap_or(4096)
+        .max(1) as u64;
+    pages.saturating_mul(page)
+}
+
+fn reset_writer_hooks() {
+    #[cfg(test)]
+    {
+        EXTRA_DISK.with(|slot| slot.set(0));
+        SAW_MEMORY_TEMP.with(|slot| slot.set(false));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn injected_extra_disk() -> u64 {
+    EXTRA_DISK.with(|slot| slot.get())
+}
+
+#[cfg(test)]
+pub(crate) fn saw_memory_temp_store() -> bool {
+    SAW_MEMORY_TEMP.with(|slot| slot.get())
 }
 
 fn sqlite_path(path: &Path) -> Result<String, Error> {
@@ -652,7 +770,7 @@ fn decode_hex(text: &str) -> Result<Vec<u8>, Error> {
 fn charge(written: &mut u64, add: u64, max: u64) -> Result<(), Error> {
     let next = written.saturating_add(add);
     if next > max {
-        return Err(Error::OutputTooLarge { max, got: next });
+        return Err(Error::ChargedPayloadTooLarge { max, got: next });
     }
     *written = next;
     Ok(())
@@ -663,21 +781,7 @@ fn refuse_output_path(
     shaders: &LocalShaderIndex,
     opts: &RebuildOptions,
 ) -> Result<(), Error> {
-    if let Some(rec) = opts.record_input.as_deref() {
-        if paths_are_same(out, rec)? {
-            return Err(Error::SameAsInput);
-        }
-    }
-    for src in shaders.source_paths() {
-        if paths_are_same(out, src)? {
-            return Err(Error::SameAsInput);
-        }
-    }
-    for root in shaders.directory_roots() {
-        if path_is_under(out, root)? {
-            return Err(Error::InsideScanRoot);
-        }
-    }
+    // Parent and dest first so a file-as-parent is NotRegular, not a later ENOTDIR Io.
     match out.parent() {
         None => {}
         Some(parent) if parent.as_os_str().is_empty() => {}
@@ -695,17 +799,33 @@ fn refuse_output_path(
             }
         }
     }
-    match fs::symlink_metadata(out) {
+    let dest_exists = match fs::symlink_metadata(out) {
         Ok(meta) => {
             if meta.file_type().is_symlink() || !meta.file_type().is_file() {
                 return Err(Error::NotRegular);
             }
-            if !opts.force {
-                return Err(Error::AlreadyExists);
-            }
+            true
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
         Err(_) => return Err(Error::Io),
+    };
+    if let Some(rec) = opts.record_input.as_deref() {
+        if paths_are_same(out, rec)? {
+            return Err(Error::SameAsInput);
+        }
+    }
+    for src in shaders.source_paths() {
+        if paths_are_same(out, src)? {
+            return Err(Error::SameAsInput);
+        }
+    }
+    for root in shaders.directory_roots() {
+        if path_is_under(out, root)? {
+            return Err(Error::InsideScanRoot);
+        }
+    }
+    if dest_exists && !opts.force {
+        return Err(Error::AlreadyExists);
     }
     Ok(())
 }
@@ -761,11 +881,13 @@ fn path_is_under(dest: &Path, root: &Path) -> Result<bool, Error> {
 
 /// Publish the compact snapshot. Rename replaces an existing regular dest.
 /// Copy fallback runs on every platform if the first rename fails.
-fn persist_temp_db(tmp: &Path, dest: &Path) -> Result<(), Error> {
+///
+/// After the new file is at `dest`, cleanup and dest-fsync problems are
+/// counted as warnings (returned `u64`) and the run is still success.
+fn persist_temp_db(tmp: &Path, dest: &Path) -> Result<u64, Error> {
     sync_published(tmp)?;
     if !take_fault(InjectedFault::Rename) && retry_io(|| fs::rename(tmp, dest)).is_ok() {
-        sync_published(dest)?;
-        return Ok(());
+        return Ok(warn_after_publish(dest, None));
     }
     if take_fault(InjectedFault::Copy) {
         return Err(Error::Io);
@@ -779,10 +901,20 @@ fn persist_temp_db(tmp: &Path, dest: &Path) -> Result<(), Error> {
     sync_published(&staged)?;
     retry_io(|| fs::rename(&staged, dest))?;
     staged_guard.persist = true;
-    if retry_io(|| fs::remove_file(tmp)).is_err() {
-        return Err(Error::Io);
+    Ok(warn_after_publish(dest, Some(tmp)))
+}
+
+fn warn_after_publish(dest: &Path, tmp: Option<&Path>) -> u64 {
+    let mut warnings = 0_u64;
+    if take_fault(InjectedFault::DestFsync) || sync_published(dest).is_err() {
+        warnings = warnings.saturating_add(1);
     }
-    Ok(())
+    if let Some(tmp) = tmp {
+        if take_fault(InjectedFault::RemoveTmp) || retry_io(|| fs::remove_file(tmp)).is_err() {
+            warnings = warnings.saturating_add(1);
+        }
+    }
+    warnings
 }
 
 fn sync_published(path: &Path) -> Result<(), Error> {
@@ -862,24 +994,53 @@ fn create_exclusive_sibling(dest: &Path) -> Result<PathBuf, Error> {
     Err(Error::TempFileExists)
 }
 
+/// Reserve a sibling name without creating the file. `VACUUM INTO` creates it
+/// and refuses an existing target.
+fn reserve_sibling_path(dest: &Path) -> Result<PathBuf, Error> {
+    if take_fault(InjectedFault::ReserveCompact) {
+        return Err(Error::TempFileExists);
+    }
+    for _ in 0..32 {
+        let path = temp_sibling_name(dest);
+        match fs::symlink_metadata(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(path),
+            Err(_) => return Err(Error::Io),
+            Ok(_) => continue,
+        }
+    }
+    Err(Error::TempFileExists)
+}
+
 /// Test-only fault injection. Consumed once per kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InjectedFault {
+#[allow(dead_code)]
+pub(crate) enum InjectedFault {
     VacuumInto,
     Rename,
     Copy,
     /// Fail both rename and the copy fallback.
     Persist,
+    /// Fail reserving the compact sibling name (after the work file exists).
+    ReserveCompact,
+    /// Fail dest fsync after the new file is already at `--out`.
+    DestFsync,
+    /// Fail deleting the compact tmp after a successful fallback publish.
+    RemoveTmp,
+    /// Fail the first rename, then fail tmp remove after fallback publish.
+    FallbackRemoveTmp,
 }
 
 #[cfg(test)]
 thread_local! {
     static INJECTED_FAULT: std::cell::Cell<Option<InjectedFault>> =
         const { std::cell::Cell::new(None) };
+    static EXTRA_DISK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SAW_MEMORY_TEMP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Arm a one-shot publish fault. Production builds ignore this.
-pub fn inject_fault(fault: Option<InjectedFault>) {
+#[allow(dead_code)]
+pub(crate) fn inject_fault(fault: Option<InjectedFault>) {
     let _ = fault;
     #[cfg(test)]
     INJECTED_FAULT.with(|slot| slot.set(fault));
@@ -892,6 +1053,11 @@ fn take_fault(kind: InjectedFault) -> bool {
             Some(InjectedFault::Persist)
                 if matches!(kind, InjectedFault::Rename | InjectedFault::Copy) =>
             {
+                true
+            }
+            Some(InjectedFault::FallbackRemoveTmp) if kind == InjectedFault::Rename => true,
+            Some(InjectedFault::FallbackRemoveTmp) if kind == InjectedFault::RemoveTmp => {
+                slot.set(None);
                 true
             }
             Some(got) if got == kind => {

@@ -21,9 +21,13 @@ pub enum Error {
     #[error("output file already exists (pass --force to overwrite)")]
     AlreadyExists,
 
-    /// Written bytes exceeded [`crate::RebuildOptions::max_output_bytes`].
-    #[error("rebuilt SODB exceeds size limit of {max} bytes (got {got})")]
+    /// Compacted output file exceeded [`crate::RebuildOptions::max_output_bytes`].
+    #[error("rebuilt SODB exceeds size limit of {max} bytes (compacted file is {got} bytes)")]
     OutputTooLarge { max: u64, got: u64 },
+
+    /// Charged shader/root-signature payload exceeded the output cap before compacting.
+    #[error("rebuilt SODB exceeds size limit of {max} bytes (charged payload is {got} bytes)")]
+    ChargedPayloadTooLarge { max: u64, got: u64 },
 
     /// `--max-output-bytes` is above the documented hard maximum.
     #[error("max-output-bytes {got} exceeds hard maximum of {max}")]

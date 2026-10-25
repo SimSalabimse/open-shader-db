@@ -20,7 +20,7 @@ pub use matching::match_records;
 pub use osdb_records::{CoverageKind, MatchReport, RecordMatch, Sha256};
 pub use report::ScanReport;
 pub use scan::{scan, scan_dir, scan_sodb, ScanInput};
-pub use types::{ByteLen, FileOffset, ShaderLocation, ShaderSourceKind, SourceId};
+pub use types::{ByteLen, FileOffset, ShaderLocation, ShaderLocator, ShaderSourceKind, SourceId};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

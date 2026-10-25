@@ -38,20 +38,25 @@ osdb-cli rebuild ... --out rebuilt.sodb --max-output-bytes 1048576
 
 `--dir` and `--sodb` may be repeated and mixed. The output must not be
 a record input, an SODB input, a symlink, or inside a scanned shader
-root. `--force` overwrites an existing regular file; the previous file
-is left in place if publish fails. `--max-output-bytes` caps the
-rebuilt file (default 8 GiB, hard maximum 8 GiB). A missing output
-parent is a typed error. The output path must be valid UTF-8 (SQLite
-needs a UTF-8 filename).
+root. `--force` overwrites an existing regular file. The previous file stays
+in place until the rename or copy that puts the new snapshot at
+`--out` succeeds. After that point the run is a success: a failed dest
+fsync or leftover-temp delete is a counted `publish_warnings` value,
+never an error. `--max-output-bytes` caps the rebuilt file (default 8
+GiB, hard maximum 8 GiB). Charged payload and compacted file size are
+reported separately. A missing output parent is a typed error. The
+output path must be valid UTF-8 (SQLite needs a UTF-8 filename).
 
-The writer builds in a temp database (SQLite temp files on disk, not
-`temp_store=MEMORY`), then `VACUUM INTO` a sibling snapshot so the live
-work file is never renamed. Exclusive `create_new` names the siblings
-so a planted file or symlink is never written through. On non-Windows,
-fsync errors on the snapshot are returned and the parent directory is
-synced. On Windows, fsync errors are ignored. If the first rename
-fails, a copy-then-rename fallback runs on every platform. On success
-the CLI prints a one-line local-use notice.
+The writer builds in a temp work file created with exclusive
+`create_new`. The compact snapshot name is reserved without creating
+the file; `VACUUM INTO` creates it and refuses an existing target, so
+a planted file or symlink is not written through. SQLite temps stay on
+disk (`temp_store` is not set to MEMORY). The live work file is never
+renamed. On non-Windows, fsync errors on the snapshot are returned
+until publish; after publish they are warnings, and the parent
+directory is synced. On Windows, fsync errors are ignored. If the
+first rename fails, a copy-then-rename fallback runs on every
+platform. On success the CLI prints a one-line local-use notice.
 
 ## What the scanner supports
 
@@ -74,9 +79,10 @@ DXBC out of other containers.
 - Symlinks are skipped and counted (not followed outside the root).
 - FIFOs, devices, and sockets are skipped without blocking.
 - Hashed loose-file bytes are bounded by the DXBC `FileSize` field, the
-  size observed at open, and the per-file cap. Trailing bytes past
-  `FileSize` are not hashed. A header `FileSize` larger than the file
-  is `corrupt`.
+  size observed at open, and the per-file cap. A file that grows while
+  being read is not hashed past that bound (`growing_loose_file_is_bounded_by_filesize`).
+  Trailing bytes past `FileSize` are not hashed. A header `FileSize`
+  larger than the file is `corrupt`.
 - Caps (per-file 256 MiB, 1 000 000 files, depth 16, 64 GiB total,
   1 000 000 index entries) produce a typed error that names the cap, or
   a `too_large` skip for a single oversized loose file.
@@ -106,6 +112,9 @@ DXBC out of other containers.
   again with equal records (modulo records the report counted as
   skipped).
 - The rebuilt file opens with `inspect`.
+- When one bytecode hash is used in more than one stage, the writer
+  stores the first spec-order stage name as `shader_bytecode.Type`.
+- A `WITHOUT ROWID` SODB source is reopened by application key.
 
 ## UNVERIFIED
 

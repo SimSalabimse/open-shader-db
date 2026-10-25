@@ -39,12 +39,17 @@ Nothing is fabricated.
 
 ## Output safety
 
-The writer uses on-disk SQLite temps, `VACUUM INTO` a sibling snapshot,
-then rename (copy fallback on every platform if rename fails). On
-non-Windows, snapshot fsync errors are returned and the parent
-directory is synced. Exclusive sibling names refuse an existing path.
-The output must not be a record input, an SODB input, a symlink, or
-inside a scanned shader root. A missing parent or a non-UTF-8 output
-path is a typed error. `--force` is required to overwrite; a failed
-publish leaves the previous file. Default and hard-maximum size cap is
-8 GiB (`--max-output-bytes`).
+The writer uses on-disk SQLite temps, `VACUUM INTO` a reserved sibling
+name (the compact file is not pre-created), then rename (copy fallback
+on every platform if rename fails). Until that rename/copy replaces
+`--out`, a failure leaves the previous file. After the new file is at
+`--out`, dest fsync or leftover-temp cleanup problems are counted as
+`publish_warnings` and the run still succeeds. On non-Windows the
+parent directory is synced after publish. Exclusive `create_new` is
+used for the work file; `VACUUM INTO` refuses an existing compact
+target. The output must not be a record input, an SODB input, a
+symlink, or inside a scanned shader root. A missing parent or a
+non-UTF-8 output path is a typed error. `--force` is required to
+overwrite. Default and hard-maximum size cap is 8 GiB
+(`--max-output-bytes`). Charged payload and compacted file size have
+separate error messages.

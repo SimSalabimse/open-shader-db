@@ -548,26 +548,26 @@ fn scan_combines_sodb_and_dir() {
 
 #[test]
 fn insert_counter_matches_location_sum() {
-    use crate::types::{ByteLen, FileOffset, ShaderLocation, ShaderSourceKind};
+    use crate::types::{ByteLen, ShaderLocation, ShaderSourceKind};
     use crate::ScanReport;
 
     let mut index = crate::LocalShaderIndex::new();
     let mut report = ScanReport::default();
     let source = index.add_source(ShaderSourceKind::LooseFile, PathBuf::from("synthetic"));
-    let loc = ShaderLocation {
-        source,
-        offset: FileOffset(0),
-        len: ByteLen(32),
-    };
+    let loc = ShaderLocation::loose(source, ByteLen(32));
     for i in 0_u32..4_000 {
         let mut bytes = [0_u8; 32];
         bytes[..4].copy_from_slice(&i.to_le_bytes());
         let hash = Sha256::from_sodb(hash_shader_container(&bytes));
-        index.insert(hash, loc, &mut report, 1_000_000).unwrap();
+        index
+            .insert(hash, loc.clone(), &mut report, 1_000_000)
+            .unwrap();
     }
     let dup = Sha256::from_sodb(hash_shader_container(&[7_u8; 32]));
     for _ in 0..200 {
-        index.insert(dup, loc, &mut report, 1_000_000).unwrap();
+        index
+            .insert(dup, loc.clone(), &mut report, 1_000_000)
+            .unwrap();
     }
     let sum: u64 = index
         .hashes()
@@ -582,28 +582,53 @@ fn insert_counter_matches_location_sum() {
 #[test]
 fn read_verified_falls_back_to_later_duplicate() {
     let dir = temp_dir();
-    write_dxbc(&dir.path.join("a.dxbc"), 32, 3);
-    write_dxbc(&dir.path.join("b.dxbc"), 32, 3);
+    write_dxbc(&dir.path.join("a.dxbc"), 48, 3);
+    write_dxbc(&dir.path.join("b.dxbc"), 48, 3);
+    assert_ne!(dxbc_of_len(48, 3), dxbc_of_len(48, 9));
     let (index, _) = scan_dir(&dir.path, default_limits()).unwrap();
     let hash = index.hashes().next().unwrap();
     assert_eq!(index.locations(&hash).len(), 2);
-    write_dxbc(&dir.path.join("a.dxbc"), 32, 9);
+    write_dxbc(&dir.path.join("a.dxbc"), 48, 9);
     let bytes = index.read_verified(&hash).unwrap();
-    assert_eq!(bytes, dxbc_of_len(32, 3));
+    assert_eq!(bytes, dxbc_of_len(48, 3));
 }
 
 #[test]
 fn duplicate_locations_follow_sorted_directory_order() {
     let dir = temp_dir();
-    write_dxbc(&dir.path.join("z.dxbc"), 32, 3);
-    write_dxbc(&dir.path.join("a.dxbc"), 32, 3);
+    // Create in non-sorted order so a missing directory sort is visible.
+    let created = ["m2.dxbc", "z1.dxbc", "a9.dxbc", "q0.dxbc", "b3.dxbc"];
+    for name in created {
+        write_dxbc(&dir.path.join(name), 48, 3);
+    }
+    let raw: Vec<String> = fs::read_dir(&dir.path)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+        .collect();
+    let mut sorted = raw.clone();
+    sorted.sort();
+    assert_ne!(
+        raw, sorted,
+        "readdir already sorted; pick names that keep dir_sort observable"
+    );
     let (index, _) = scan_dir(&dir.path, default_limits()).unwrap();
     let hash = index.hashes().next().unwrap();
     let locs = index.locations(&hash);
-    assert_eq!(locs.len(), 2);
-    assert!(locs[0].source.get() < locs[1].source.get());
+    assert_eq!(locs.len(), created.len());
+    let names: Vec<_> = locs
+        .iter()
+        .map(|loc| {
+            index
+                .source_path(loc.source)
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(names, sorted);
     let first = index.read_location(&locs[0], &hash).unwrap();
-    assert_eq!(first, dxbc_of_len(32, 3));
+    assert_eq!(first, dxbc_of_len(48, 3));
 }
 
 #[test]
@@ -635,4 +660,76 @@ fn reopen_detects_changed_sodb_blob() {
         Error::ShaderHashMismatch | Error::ShaderChanged
     ));
     let _ = fs::remove_file(&sodb_path);
+}
+
+#[test]
+fn without_rowid_sodb_stores_key_locator() {
+    use crate::ShaderLocator;
+    let blob = dxbc_of_len(40, 4);
+    let sodb_path = create_sodb(|conn| {
+        conn.execute_batch(
+            "CREATE TABLE shader_bytecode (Key BLOB NOT NULL PRIMARY KEY, Bytecode BLOB) WITHOUT ROWID;",
+        )?;
+        conn.execute(
+            "INSERT INTO shader_bytecode (Key, Bytecode) VALUES (?1, ?2)",
+            rusqlite::params![b"k", &blob],
+        )?;
+        Ok(())
+    });
+    let (index, _) = scan_sodb(&sodb_path, default_limits()).unwrap();
+    let hash = index.hashes().next().unwrap();
+    match &index.locations(&hash)[0].locator {
+        ShaderLocator::SodbKey { key, len } => {
+            assert_eq!(key.as_slice(), b"k");
+            assert_eq!(len.get(), 40);
+        }
+        other => panic!("expected SodbKey, got {other:?}"),
+    }
+    assert_eq!(index.read_verified(&hash).unwrap(), blob);
+    let conn = Connection::open(&sodb_path).unwrap();
+    conn.execute(
+        "UPDATE shader_bytecode SET Bytecode = ?1",
+        rusqlite::params![dxbc_of_len(40, 99)],
+    )
+    .unwrap();
+    drop(conn);
+    let err = index.read_verified(&hash).unwrap_err();
+    assert!(matches!(
+        err,
+        Error::ShaderHashMismatch | Error::ShaderChanged
+    ));
+    let _ = fs::remove_file(&sodb_path);
+}
+
+#[cfg(unix)]
+#[test]
+fn growing_loose_file_is_bounded_by_filesize() {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::sync::Arc;
+    let dir = temp_dir();
+    let path = dir.path.join("grow.dxbc");
+    let original = dxbc_of_len(256 * 1024, 7);
+    fs::write(&path, &original).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer_path = path.clone();
+    let stop_w = Arc::clone(&stop);
+    let handle = std::thread::spawn(move || {
+        if let Ok(mut file) = fs::OpenOptions::new().append(true).open(&writer_path) {
+            let buf = [0xAA_u8; 65_536];
+            while !stop_w.load(AtomicOrdering::Relaxed) {
+                if file.write_all(&buf).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (index, report) = scan_dir(&dir.path, default_limits()).unwrap();
+    stop.store(true, AtomicOrdering::Relaxed);
+    let _ = handle.join();
+    assert_eq!(report.shaders_indexed, 1);
+    let hash = index.hashes().next().unwrap();
+    assert_eq!(hash, Sha256::from_sodb(hash_shader_container(&original)));
+    assert_eq!(index.read_verified(&hash).unwrap(), original);
 }

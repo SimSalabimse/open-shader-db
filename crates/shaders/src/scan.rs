@@ -12,7 +12,7 @@ use sodb::{
 };
 
 use crate::index::LocalShaderIndex;
-use crate::types::{ByteLen, FileOffset, ShaderLocation, ShaderSourceKind};
+use crate::types::{ByteLen, ShaderLocation, ShaderLocator, ShaderSourceKind};
 use crate::{Error, Limits, ScanCap, ScanReport};
 
 /// One user-supplied scan input.
@@ -86,14 +86,19 @@ fn scan_sodb_into(
     for blob in refs {
         charge_bytes(hashed_bytes, blob.len, limits)?;
         let hash = Sha256::from_sodb(blob.hash);
-        let offset = FileOffset(blob.rowid.unwrap_or(0) as u64);
-        index.insert(
-            hash,
-            ShaderLocation {
-                source,
-                offset,
+        let locator = match blob.rowid {
+            Some(rowid) => ShaderLocator::SodbRowid {
+                rowid,
                 len: ByteLen(blob.len),
             },
+            None => ShaderLocator::SodbKey {
+                key: blob.key.as_bytes().to_vec(),
+                len: ByteLen(blob.len),
+            },
+        };
+        index.insert(
+            hash,
+            ShaderLocation { source, locator },
             report,
             limits.max_index_entries,
         )?;
@@ -242,11 +247,7 @@ fn consider_file(
             let source = index.add_source(ShaderSourceKind::LooseFile, path.to_path_buf());
             index.insert(
                 hash,
-                ShaderLocation {
-                    source,
-                    offset: FileOffset(0),
-                    len: ByteLen(declared),
-                },
+                ShaderLocation::loose(source, ByteLen(declared)),
                 report,
                 limits.max_index_entries,
             )?;

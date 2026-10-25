@@ -31,12 +31,12 @@ pub enum ShaderSourceKind {
     LooseFile,
 }
 
-/// Byte offset of a container inside a source. For an SODB this is the rowid.
+/// Byte offset of a container inside a source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FileOffset(pub(crate) u64);
 
 impl FileOffset {
-    /// Integer offset (SODB rowid, or 0 for a loose file).
+    /// Integer offset (0 for a loose file).
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0
@@ -55,10 +55,68 @@ impl ByteLen {
     }
 }
 
+/// How to reopen one stored shader. Bytes are not stored.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ShaderLocator {
+    /// Loose DXBC: byte offset and container length.
+    Loose { offset: FileOffset, len: ByteLen },
+    /// SODB table with an implicit rowid.
+    SodbRowid { rowid: i64, len: ByteLen },
+    /// SODB `WITHOUT ROWID` table: reopen by application key.
+    SodbKey { key: Vec<u8>, len: ByteLen },
+}
+
+impl ShaderLocator {
+    /// Stored container length.
+    #[must_use]
+    pub const fn len(&self) -> ByteLen {
+        match *self {
+            Self::Loose { len, .. } | Self::SodbRowid { len, .. } | Self::SodbKey { len, .. } => {
+                len
+            }
+        }
+    }
+}
+
+impl fmt::Debug for ShaderLocator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Loose { offset, len } => f
+                .debug_struct("Loose")
+                .field("offset", offset)
+                .field("len", len)
+                .finish(),
+            Self::SodbRowid { rowid, len } => f
+                .debug_struct("SodbRowid")
+                .field("rowid", rowid)
+                .field("len", len)
+                .finish(),
+            Self::SodbKey { key, len } => f
+                .debug_struct("SodbKey")
+                .field("key_len", &key.len())
+                .field("len", len)
+                .finish(),
+        }
+    }
+}
+
 /// Where a hashed shader can be reopened. Bytes are not stored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShaderLocation {
     pub source: SourceId,
-    pub offset: FileOffset,
-    pub len: ByteLen,
+    pub locator: ShaderLocator,
+}
+
+impl ShaderLocation {
+    /// Loose-file location at offset 0.
+    #[must_use]
+    pub fn loose(source: SourceId, len: ByteLen) -> Self {
+        Self {
+            source,
+            locator: ShaderLocator::Loose {
+                offset: FileOffset(0),
+                len,
+            },
+        }
+    }
 }
