@@ -79,6 +79,10 @@ The `osdb-cli` crate exposes:
   unsigned coverage index (hashes and counts only)
 - `records extract --sodb <file>` — pipeline-state records without
   bytecode (see `osdb-records`)
+- `shaders scan` — hash local SODB blobs or loose DXBC files
+  (see `osdb-shaders`)
+- `rebuild` — write a local SODB from records plus those shaders
+  (see `osdb-rebuild`; output is for local use only)
 
 ## Security limits
 

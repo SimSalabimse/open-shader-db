@@ -178,8 +178,9 @@ contains no install paths, no machine identifiers, and no timestamps.
 - Whether these SQL column values are sufficient to rebuild a game-usable
   SODB (descriptor row `Key` blobs are not preserved)
 - Whether bytecode hash alone is enough to match shaders extracted from
-  installed game files (this slice hashes blobs already inside a local SODB)
-- Real game SODBs; non-SODB engines
+  packed engine archives (loose DXBC and SODB blobs are hashed; archives
+  are unsupported)
+- Real game SODBs; engines other than SODB and loose DXBC
 - `state_objects` / raytracing / work graphs (not extracted in format 1)
 - Mapping of INTEGER enum columns to D3D12 C struct field names beyond
   the SQL identifiers

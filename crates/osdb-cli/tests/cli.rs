@@ -37,7 +37,7 @@ fn bin() -> Command {
 }
 
 #[test]
-fn help_lists_inspect_discover_coverage_and_records() {
+fn help_lists_inspect_discover_coverage_records_shaders_rebuild() {
     let out = bin().arg("--help").output().unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
@@ -45,6 +45,17 @@ fn help_lists_inspect_discover_coverage_and_records() {
     assert!(stdout.contains("discover"));
     assert!(stdout.contains("coverage"));
     assert!(stdout.contains("records"));
+    assert!(stdout.contains("shaders"));
+    assert!(stdout.contains("rebuild"));
+}
+
+#[test]
+fn rebuild_help_lists_max_output_bytes() {
+    let out = bin().arg("rebuild").arg("--help").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("max-output-bytes"));
+    assert!(stdout.contains("8 GiB"));
 }
 
 #[test]
@@ -509,4 +520,155 @@ fn records_extract_refuses_fifo_out_without_hanging() {
     };
     let _ = std::fs::remove_file(&fifo);
     assert!(!status.success());
+}
+
+fn write_minimal_dxbc(path: &Path) {
+    let mut bytes = vec![0_u8; 32];
+    bytes[..4].copy_from_slice(b"DXBC");
+    bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[24..28].copy_from_slice(&32_u32.to_le_bytes());
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn shaders_scan_json_has_counts_no_paths() {
+    let dir = temp_path("-shaders");
+    std::fs::create_dir_all(&dir).unwrap();
+    write_minimal_dxbc(&dir.join("a.dxbc"));
+    let out = bin()
+        .arg("shaders")
+        .arg("scan")
+        .arg("--dir")
+        .arg(&dir)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["shaders_indexed"], 1);
+    assert!(!stdout.contains(dir.to_string_lossy().as_ref()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rebuild_round_trip_cli_prints_local_notice() {
+    let sodb = create_sodb();
+    let records = TempFile {
+        path: temp_path(".json"),
+    };
+    let extracted = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&records.path)
+        .output()
+        .unwrap();
+    assert!(
+        extracted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&extracted.stderr)
+    );
+    assert!(
+        records.path.is_file(),
+        "extract did not write a regular record file"
+    );
+    let dest = TempFile {
+        path: temp_path("-rebuilt.sodb"),
+    };
+    let out = bin()
+        .arg("rebuild")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("local use only"));
+    assert!(!stderr.contains(sodb.path.to_string_lossy().as_ref()));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(value["rebuilt"].as_u64().unwrap() >= 1);
+    let inspect = bin().arg("inspect").arg(&dest.path).output().unwrap();
+    assert!(inspect.status.success());
+    let summary: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    let hex = summary["pipeline_states"][0]["desc_hash"].as_str().unwrap();
+    let index = TempFile {
+        path: temp_path("-cov.json"),
+    };
+    write_index(&index.path, &[hex]);
+    let coverage = bin()
+        .arg("coverage")
+        .arg("--sodb")
+        .arg(&dest.path)
+        .arg("--index")
+        .arg(&index.path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        coverage.status.success(),
+        "{}",
+        String::from_utf8_lossy(&coverage.stderr)
+    );
+}
+
+#[test]
+fn rebuild_max_output_bytes_is_enforced() {
+    let sodb = create_sodb();
+    let records = TempFile {
+        path: temp_path(".json"),
+    };
+    let extracted = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&records.path)
+        .output()
+        .unwrap();
+    assert!(
+        extracted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&extracted.stderr)
+    );
+    let dest = TempFile {
+        path: temp_path("-capped.sodb"),
+    };
+    let out = bin()
+        .arg("rebuild")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--max-output-bytes")
+        .arg("16")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("exceeds size limit") || stderr.contains("max-output-bytes"),
+        "stderr={stderr}"
+    );
+    assert!(!dest.path.exists());
 }

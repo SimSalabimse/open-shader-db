@@ -1,0 +1,24 @@
+[package]
+name = "osdb-rebuild"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Rebuild a local SODB from records plus local shaders"
+readme = "README.md"
+publish = false
+
+[dependencies]
+osdb-records = { path = "../records" }
+osdb-shaders = { path = "../shaders" }
+rusqlite.workspace = true
+same-file.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sodb = { path = "../sodb" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

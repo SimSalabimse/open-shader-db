@@ -671,6 +671,293 @@ pub(crate) fn keyed_spec(table: TableId) -> Option<&'static KeyedSpec> {
     KEYED_SPECS.iter().find(|s| s.table == table)
 }
 
+/// Keyed tables format-1 records can populate. Used by the writer and the
+/// schema-drift test so reader and writer cannot diverge silently.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const WRITER_KEYED_TABLES: &[TableId] = &[
+    TableId::RootSignatures,
+    TableId::DepthStencilOpDescs,
+    TableId::DepthStencilDescs,
+    TableId::RenderTargetFormats,
+    TableId::RenderTargetBlendDescs,
+    TableId::BlendDescs,
+    TableId::RasterizerDescs,
+    TableId::ViewInstancingDescs,
+    TableId::StreamOutDescs,
+    TableId::SoDeclarations,
+    TableId::InputElementDescs,
+];
+
+/// Association tables format-1 records can populate.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const WRITER_ASSOC_TABLES: &[TableId] = &[
+    TableId::InputLayoutToInputElementAssociations,
+    TableId::StreamOutputDescToDeclAssociations,
+];
+
+/// Expected writer table → columns, derived from the parser specs.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn writer_expected_columns() -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut tables = Vec::new();
+    tables.push(("shader_bytecode", vec!["Key", "Type", "Bytecode"]));
+    for spec in KEYED_SPECS {
+        if WRITER_KEYED_TABLES.contains(&spec.table) {
+            tables.push((spec.table.sql_name(), spec.columns.to_vec()));
+        }
+    }
+    for spec in ASSOC_SPECS {
+        if WRITER_ASSOC_TABLES.contains(&spec.table) {
+            tables.push((spec.table.sql_name(), spec.columns.to_vec()));
+        }
+    }
+    tables.push(("groups", vec!["Key", "Version", "PSOKey", "SOKey"]));
+    let mut pso =
+        Vec::with_capacity(1 + PIPELINE_BYTECODE_COLUMNS.len() + PIPELINE_DESC_COLUMNS.len());
+    pso.push("Key");
+    pso.extend_from_slice(PIPELINE_BYTECODE_COLUMNS);
+    pso.extend_from_slice(PIPELINE_DESC_COLUMNS);
+    tables.push(("pipeline_states", pso));
+    tables
+}
+
+/// Expected writer table → (column, declared SQLite type).
+///
+/// Names come from [`writer_expected_columns`] (parser specs). Types match
+/// [`SODB_WRITER_SCHEMA_SQL`]. A drift in either list fails the schema test.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn writer_expected_schema() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    writer_expected_columns()
+        .into_iter()
+        .map(|(table, cols)| {
+            let typed = cols
+                .into_iter()
+                .map(|col| (col, writer_declared_type(table, col)))
+                .collect();
+            (table, typed)
+        })
+        .collect()
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn writer_declared_type(table: &str, col: &str) -> &'static str {
+    match (table, col) {
+        ("shader_bytecode", "Type") | (_, "SemanticName") => "TEXT",
+        ("rasterizer_descs", "DepthBias" | "DepthBiasClamp" | "SlopeScaledDepthBias") => "REAL",
+        (
+            _,
+            "Key"
+            | "Bytecode"
+            | "value"
+            | "FrontFace"
+            | "BackFace"
+            | "RenderTarget0"
+            | "RenderTarget1"
+            | "RenderTarget2"
+            | "RenderTarget3"
+            | "RenderTarget4"
+            | "RenderTarget5"
+            | "RenderTarget6"
+            | "RenderTarget7"
+            | "InputLayoutKey"
+            | "InputElementKey"
+            | "StreamOutDescKey"
+            | "StreamOutDeclKey"
+            | "PSOKey"
+            | "SOKey"
+            | "RootSignature"
+            | "InputLayout"
+            | "ByteCode_VS"
+            | "ByteCode_PS"
+            | "ByteCode_HS"
+            | "ByteCode_DS"
+            | "ByteCode_GS"
+            | "ByteCode_AS"
+            | "ByteCode_MS"
+            | "ByteCode_CS"
+            | "DepthStencilDesc"
+            | "RenderTargetFormats"
+            | "BlendDesc"
+            | "RasterizerDesc"
+            | "ViewInstancingDesc"
+            | "StreamOutDesc",
+        ) => "BLOB",
+        _ => "INTEGER",
+    }
+}
+
+/// Fixed page size used by the SODB writer so output is byte-identical.
+pub const SODB_WRITER_PAGE_SIZE: i64 = 4096;
+
+/// SQLite statements that create the tables the writer emits.
+///
+/// Column names match [`KEYED_SPECS`], [`PIPELINE_DESC_COLUMNS`],
+/// [`PIPELINE_BYTECODE_COLUMNS`], and the association specs the parser
+/// reads. Tables that format-1 records cannot populate (`state_objects`,
+/// `app_id`, raytracing, work graphs, …) are omitted on purpose.
+pub const SODB_WRITER_SCHEMA_SQL: &str = "
+CREATE TABLE shader_bytecode (
+    Key BLOB NOT NULL PRIMARY KEY,
+    Type TEXT,
+    Bytecode BLOB
+);
+CREATE TABLE root_signatures (
+    Key BLOB NOT NULL PRIMARY KEY,
+    value BLOB NOT NULL
+);
+CREATE TABLE depth_stencil_op_descs (
+    Key BLOB NOT NULL PRIMARY KEY,
+    StencilFailOp INTEGER NOT NULL,
+    StencilDepthFailOp INTEGER NOT NULL,
+    StencilPassOp INTEGER NOT NULL,
+    StencilFunc INTEGER NOT NULL,
+    StencilReadMask INTEGER NOT NULL,
+    StencilWriteMask INTEGER NOT NULL
+);
+CREATE TABLE depth_stencil_descs (
+    Key BLOB NOT NULL PRIMARY KEY,
+    DepthEnable INTEGER NOT NULL,
+    DepthWriteMask INTEGER NOT NULL,
+    DepthFunc INTEGER NOT NULL,
+    StencilEnable INTEGER NOT NULL,
+    FrontFace BLOB,
+    BackFace BLOB,
+    DepthBoundsTestEnable INTEGER NOT NULL
+);
+CREATE TABLE render_target_formats (
+    Key BLOB NOT NULL PRIMARY KEY,
+    RTFormat0 INTEGER NOT NULL,
+    RTFormat1 INTEGER NOT NULL,
+    RTFormat2 INTEGER NOT NULL,
+    RTFormat3 INTEGER NOT NULL,
+    RTFormat4 INTEGER NOT NULL,
+    RTFormat5 INTEGER NOT NULL,
+    RTFormat6 INTEGER NOT NULL,
+    RTFormat7 INTEGER NOT NULL,
+    NumRenderTargets INTEGER NOT NULL
+);
+CREATE TABLE render_target_blend_descs (
+    Key BLOB NOT NULL PRIMARY KEY,
+    BlendEnable INTEGER NOT NULL,
+    LogicOpEnable INTEGER NOT NULL,
+    SrcBlend INTEGER NOT NULL,
+    DestBlend INTEGER NOT NULL,
+    BlendOp INTEGER NOT NULL,
+    SrcBlendAlpha INTEGER NOT NULL,
+    DestBlendAlpha INTEGER NOT NULL,
+    BlendOpAlpha INTEGER NOT NULL,
+    LogicOp INTEGER NOT NULL,
+    RenderTargetWriteMask INTEGER NOT NULL
+);
+CREATE TABLE blend_descs (
+    Key BLOB NOT NULL PRIMARY KEY,
+    AlphaToCoverageEnable INTEGER NOT NULL,
+    IndependentBlendEnable INTEGER NOT NULL,
+    RenderTarget0 BLOB,
+    RenderTarget1 BLOB,
+    RenderTarget2 BLOB,
+    RenderTarget3 BLOB,
+    RenderTarget4 BLOB,
+    RenderTarget5 BLOB,
+    RenderTarget6 BLOB,
+    RenderTarget7 BLOB
+);
+CREATE TABLE rasterizer_descs (
+    Key BLOB NOT NULL PRIMARY KEY,
+    FillMode INTEGER NOT NULL,
+    CullMode INTEGER NOT NULL,
+    FrontCounterClockwise INTEGER NOT NULL,
+    DepthBias REAL NOT NULL,
+    DepthBiasClamp REAL NOT NULL,
+    SlopeScaledDepthBias REAL NOT NULL,
+    DepthClipEnable INTEGER NOT NULL,
+    LineRasterizationMode INTEGER NOT NULL,
+    ForcedSampleCount INTEGER NOT NULL,
+    ConservativeRaster INTEGER NOT NULL
+);
+CREATE TABLE view_instancing_descs (
+    Key BLOB NOT NULL PRIMARY KEY,
+    ViewInstanceCount INTEGER NOT NULL,
+    RenderFlags INTEGER NOT NULL,
+    ViewportArrayIndex0 INTEGER,
+    RenderTargetArrayIndex0 INTEGER,
+    ViewportArrayIndex1 INTEGER,
+    RenderTargetArrayIndex1 INTEGER,
+    ViewportArrayIndex2 INTEGER,
+    RenderTargetArrayIndex2 INTEGER,
+    ViewportArrayIndex3 INTEGER,
+    RenderTargetArrayIndex3 INTEGER
+);
+CREATE TABLE stream_out_descs (
+    Key BLOB NOT NULL PRIMARY KEY,
+    BufferStride0 INTEGER NOT NULL,
+    BufferStride1 INTEGER NOT NULL,
+    BufferStride2 INTEGER NOT NULL,
+    BufferStride3 INTEGER NOT NULL,
+    NumStrides INTEGER NOT NULL,
+    RasterizedStream INTEGER NOT NULL
+);
+CREATE TABLE so_declarations (
+    Key BLOB NOT NULL PRIMARY KEY,
+    Stream INTEGER NOT NULL,
+    SemanticName TEXT NOT NULL,
+    SemanticIndex INTEGER NOT NULL,
+    StartComponent INTEGER NOT NULL,
+    ComponentCount INTEGER NOT NULL,
+    OutputSlot INTEGER NOT NULL
+);
+CREATE TABLE input_element_descs (
+    Key BLOB NOT NULL PRIMARY KEY,
+    SemanticName TEXT NOT NULL,
+    SemanticIndex INTEGER NOT NULL,
+    Format INTEGER NOT NULL,
+    InputSlot INTEGER NOT NULL,
+    AlignedByteOffset INTEGER NOT NULL,
+    InputSlotClass INTEGER NOT NULL,
+    InstanceDataStepRate INTEGER NOT NULL
+);
+CREATE TABLE input_layout_to_input_element_associations (
+    InputLayoutKey BLOB NOT NULL,
+    InputElementKey BLOB NOT NULL
+);
+CREATE TABLE stream_output_desc_to_stream_output_decl_associations (
+    StreamOutDescKey BLOB NOT NULL,
+    StreamOutDeclKey BLOB NOT NULL
+);
+CREATE TABLE groups (
+    Key BLOB NOT NULL PRIMARY KEY,
+    Version INTEGER NOT NULL,
+    PSOKey BLOB,
+    SOKey BLOB
+);
+CREATE TABLE pipeline_states (
+    Key BLOB NOT NULL PRIMARY KEY,
+    RootSignature BLOB,
+    InputLayout BLOB,
+    ByteCode_VS BLOB,
+    ByteCode_PS BLOB,
+    ByteCode_HS BLOB,
+    ByteCode_DS BLOB,
+    ByteCode_GS BLOB,
+    ByteCode_AS BLOB,
+    ByteCode_MS BLOB,
+    ByteCode_CS BLOB,
+    DepthStencilDesc BLOB,
+    RenderTargetFormats BLOB,
+    BlendDesc BLOB,
+    RasterizerDesc BLOB,
+    ViewInstancingDesc BLOB,
+    StreamOutDesc BLOB,
+    SampleDesc_Count INTEGER,
+    SampleDesc_Quality INTEGER,
+    SampleMask INTEGER,
+    IBStripCutValue INTEGER,
+    PrimitiveTopology INTEGER,
+    DSVFormat INTEGER,
+    NodeMask INTEGER,
+    Flags INTEGER
+);
+";
+
 /// PSO-level keyed follows (same set as [`PSO_LIKE_DESCS`]).
 pub(crate) const PIPELINE_KEYED_FOLLOWS: &[KeyedFk] = PSO_LIKE_DESCS;
 

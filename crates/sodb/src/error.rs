@@ -144,6 +144,14 @@ pub enum Error {
     /// `SemanticName` was not a C-like identifier.
     #[error("semantic name is not a valid identifier")]
     InvalidSemanticName,
+
+    /// A `shader_bytecode` blob was missing or its length changed after the scan.
+    #[error("shader bytecode is missing or its length changed")]
+    BytecodeChanged,
+
+    /// A `shader_bytecode` blob's SHA-256 no longer matches the scanned hash.
+    #[error("shader bytecode hash mismatch")]
+    BytecodeHashMismatch,
 }
 
 impl Error {

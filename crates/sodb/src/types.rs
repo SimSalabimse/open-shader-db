@@ -58,6 +58,12 @@ impl AppKey {
         Self(bytes)
     }
 
+    /// Reconstruct a key from bytes stored by the local shader index.
+    #[must_use]
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
     /// Key bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
@@ -332,6 +338,18 @@ pub struct HashedObject {
 pub struct HashedBytecode {
     pub key: AppKey,
     pub bytecode_hash: Sha256Hash,
+}
+
+/// Location of a hashed `shader_bytecode` blob so a caller can reopen it.
+///
+/// `rowid` is `None` when the table is `WITHOUT ROWID` and the blob must be
+/// selected by key. The blob bytes are never stored here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BytecodeBlobRef {
+    pub key: AppKey,
+    pub hash: Sha256Hash,
+    pub rowid: Option<i64>,
+    pub len: u64,
 }
 
 /// SQLite header fields used to recognize an SODB without parsing tables.
