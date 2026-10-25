@@ -158,7 +158,9 @@ fn coverage_human_and_json() {
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("Match rate:"));
-    assert!(stdout.contains("unmatched hashes omitted"));
+    assert!(
+        stdout.contains("unmatched hash omitted") || stdout.contains("unmatched hashes omitted")
+    );
     assert!(stdout.contains(osdb_coverage::UNSIGNED_INDEX_LINE));
     assert!(!stdout.contains(sodb.path.to_string_lossy().as_ref()));
 

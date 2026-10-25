@@ -17,9 +17,7 @@ mod limits;
 mod report;
 
 pub use build::{BuildId, ExeHash, GameBuild, GameId, GameVersion};
-pub use compare::{
-    compare, compare_hashes, local_build_hint, local_description_hashes, LocalBuildHint,
-};
+pub use compare::{compare, compare_hashes, local_description_hashes};
 pub use error::Error;
 pub use hash::DescriptionHash;
 pub use index::{
@@ -27,7 +25,7 @@ pub use index::{
     UNSIGNED_INDEX_LINE, UNSIGNED_INDEX_NOTE,
 };
 pub use limits::Limits;
-pub use report::{CoverageReport, MatchRate};
+pub use report::{CoverageReport, MatchRate, BUILD_IDENTITY_NOT_COMPARED, BUILD_IDENTITY_REASON};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

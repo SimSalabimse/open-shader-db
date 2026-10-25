@@ -14,10 +14,13 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// 64 MiB file, 5 million hashes, nesting depth 8.
+    /// 64 MiB file, 1 million hashes, nesting depth 8.
+    ///
+    /// One million compact hex strings fit under 64 MiB. Larger hash counts
+    /// are library-only (`load_with_limits`).
     pub const DEFAULT: Self = Self {
         max_file_bytes: 64 * 1024 * 1024,
-        max_hashes: 5_000_000,
+        max_hashes: 1_000_000,
         max_json_nesting: 8,
     };
 }

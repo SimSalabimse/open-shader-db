@@ -49,13 +49,17 @@ pub enum Error {
     #[error("JSON nesting exceeds limit of {max}")]
     NestingTooDeep { max: u32 },
 
-    /// A build-id field was empty or contained a path separator.
+    /// A build-id field was empty, too long, or not a safe identifier.
     #[error("invalid build identifier")]
     InvalidBuildId,
 
-    /// `generated_at` was not a UTC ISO-8601 timestamp.
+    /// `generated_at` was not a valid UTC ISO-8601 timestamp.
     #[error("invalid generated_at timestamp")]
     InvalidTimestamp,
+
+    /// The file began with a UTF-8 byte-order mark.
+    #[error("coverage index begins with a UTF-8 byte order mark")]
+    ByteOrderMark,
 
     /// Filesystem error. The message never includes the path.
     #[error("I/O error")]

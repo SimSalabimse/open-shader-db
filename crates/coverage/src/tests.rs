@@ -4,7 +4,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 #[cfg(unix)]
 use std::time::Duration;
 
@@ -13,16 +12,16 @@ use rusqlite::Connection;
 use crate::build::{BuildId, ExeHash, GameId, GameVersion};
 use crate::hash::DescriptionHash;
 use crate::index::{
-    load, load_with_limits, CoverageIndex, GeneratedAt, IndexHashes, RedactedPath, FORMAT_VERSION,
+    load, load_with_limits, open_regular_nonblocking, read_capped, reset_read_reached,
+    take_read_reached, CoverageIndex, GeneratedAt, IndexHashes, RedactedPath, FORMAT_VERSION,
     UNSIGNED_INDEX_LINE, UNSIGNED_INDEX_NOTE,
 };
-use crate::report::MatchRate;
-use crate::{compare, compare_hashes, local_description_hashes, Error, Limits, LocalBuildHint};
+use crate::report::{MatchRate, BUILD_IDENTITY_NOT_COMPARED, BUILD_IDENTITY_REASON};
+use crate::{compare, compare_hashes, local_description_hashes, Error, Limits};
 
 use sodb::{SODB_APPLICATION_ID, SODB_USER_VERSION};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
-static RSS_MEASURE_LOCK: Mutex<()> = Mutex::new(());
 
 const ZERO_EXE: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -182,17 +181,6 @@ fn local_with_psos(name: &str, version: i64, flags: &[i64]) -> (TempFile, sodb::
     (file, summary)
 }
 
-fn rss_bytes() -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/self/status").ok()?;
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
-            return Some(kb.saturating_mul(1024));
-        }
-    }
-    None
-}
-
 #[test]
 fn full_match() {
     let (_sodb, summary) = local_with_psos("synthetic", 1, &[0, 1]);
@@ -207,7 +195,8 @@ fn full_match() {
     assert_eq!(report.unmatched_count, 0);
     assert_eq!(report.match_rate.percent_rounded, 100);
     assert!(report.unmatched_hashes.is_empty());
-    assert!(!report.build_id_mismatch);
+    assert_eq!(report.build_identity, BUILD_IDENTITY_NOT_COMPARED);
+    assert_eq!(report.build_identity_reason, BUILD_IDENTITY_REASON);
     assert!(report.index_unsigned);
     assert!(!report.index_verified);
     assert_eq!(report.index_note, UNSIGNED_INDEX_NOTE);
@@ -464,7 +453,7 @@ fn fifo_is_not_a_regular_file_without_hanging() {
 }
 
 #[test]
-fn build_id_mismatch_sets_warning() {
+fn build_identity_is_not_compared() {
     let (_sodb, summary) = local_with_psos("synthetic", 1, &[0]);
     let mut index = index_from_hex(&[]);
     index.build_id = BuildId::new(
@@ -473,22 +462,11 @@ fn build_id_mismatch_sets_warning() {
         ExeHash::parse_hex(ZERO_EXE).unwrap(),
     );
     let report = compare(&summary, &index, 100);
-    assert!(report.build_id_mismatch);
+    assert_eq!(report.build_identity, BUILD_IDENTITY_NOT_COMPARED);
     let human = report.format_human();
-    assert!(human.contains("does not match the local SODB build id"));
-}
-
-#[test]
-fn build_id_check_skipped_without_app_id() {
-    let file = create_sodb(|conn| {
-        create_core_tables(conn)?;
-        insert_pso(conn, b"pso-0", 0)?;
-        Ok(())
-    });
-    let summary = sodb::open(file.path()).unwrap();
-    let index = index_from_hex(&[]);
-    let report = compare(&summary, &index, 100);
-    assert!(!report.build_id_mismatch);
+    assert!(human.contains("Build identity: not_compared"));
+    assert!(human.contains(BUILD_IDENTITY_REASON));
+    assert!(!human.contains("does not match"));
 }
 
 #[test]
@@ -568,6 +546,8 @@ fn match_rate_uses_integer_rounding() {
     assert_eq!(MatchRate::from_counts(0, 0).percent_rounded, 100);
     assert_eq!(MatchRate::from_counts(0, 5).percent_rounded, 0);
     assert_eq!(MatchRate::from_counts(5, 5).percent_rounded, 100);
+    assert_eq!(MatchRate::from_counts(199, 200).percent_rounded, 99);
+    assert_eq!(MatchRate::from_counts(199, 200).numerator, 199);
     let one_third = MatchRate::from_counts(1, 3);
     assert_eq!(one_third.numerator, 1);
     assert_eq!(one_third.denominator, 3);
@@ -580,12 +560,14 @@ fn max_unmatched_cut_is_reported() {
         .map(|h| DescriptionHash::parse_hex(h).unwrap())
         .collect();
     let index = index_from_hex(&[]);
-    let report = compare_hashes(&hashes, None, &index, 1);
+    let report = compare_hashes(&hashes, &index, 1);
     assert_eq!(report.unmatched_hashes.len(), 1);
     assert_eq!(report.unmatched_omitted, 2);
     assert_eq!(report.unmatched_count, 3);
     let human = report.format_human();
     assert!(human.contains("2 unmatched hashes omitted"));
+    let one = compare_hashes(&hashes[..2], &index, 1);
+    assert!(one.format_human().contains("1 unmatched hash omitted"));
     assert!(human.contains(UNSIGNED_INDEX_LINE));
     assert!(human.contains(UNSIGNED_INDEX_NOTE));
 }
@@ -600,50 +582,218 @@ fn error_display_never_includes_path() {
 }
 
 #[test]
-fn five_million_hashes_stay_within_measured_bound() {
-    let _guard = RSS_MEASURE_LOCK.lock().unwrap();
-    const COUNT: usize = 5_000_000;
-    // Measured Linux debug RSS delta for this construction is written in
-    // crates/coverage/README.md after the first run of this test.
-    const BOUND: u64 = 384 * 1024 * 1024;
-    let before = rss_bytes();
-    let mut hashes = Vec::with_capacity(COUNT);
-    for i in 0..COUNT as u64 {
-        let mut bytes = [0_u8; 32];
-        bytes[..8].copy_from_slice(&i.to_le_bytes());
-        hashes.push(DescriptionHash::from_bytes(bytes));
-    }
-    let index_hashes = IndexHashes::from_unsorted(hashes, Limits::DEFAULT.max_hashes).unwrap();
-    assert_eq!(index_hashes.len(), COUNT);
-    std::hint::black_box(index_hashes.len());
-    let after = rss_bytes();
-    if let (Some(before), Some(after)) = (before, after) {
-        let delta = after.saturating_sub(before);
-        eprintln!(
-            "5M-hash IndexHashes RSS delta: {delta} bytes ({:.1} MiB)",
-            delta as f64 / (1024.0 * 1024.0)
+fn default_hash_cap_rejects_over_one_million_in_visitor() {
+    let limits = Limits {
+        max_hashes: 2,
+        ..Limits::DEFAULT
+    };
+    let json = format!(
+        r#"{{"format_version":1,"build_id":{{"game_id":"synthetic","version":"1","exe_hash":"{ZERO_EXE}"}},"hashes":["{HASH_A}","{HASH_B}","{HASH_C}"],"upload_count":1,"consensus_count":1,"generated_at":"2026-10-25T00:00:00Z"}}"#
+    );
+    let file = write_index_json(&json);
+    let err = load_with_limits(file.path(), limits).unwrap_err();
+    assert!(
+        matches!(err, Error::TooManyHashes { max: 2, got: 3 }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn load_rejects_invalid_build_ids_as_typed_errors() {
+    for game_id in [
+        "C:\\\\Games\\\\Title",
+        "has space",
+        "\\\\u0000nul",
+        "ä",
+        &"x".repeat(129),
+    ] {
+        let json = format!(
+            r#"{{"format_version":1,"build_id":{{"game_id":"{game_id}","version":"1","exe_hash":"{ZERO_EXE}"}},"hashes":[],"upload_count":1,"consensus_count":1,"generated_at":"2026-10-25T00:00:00Z"}}"#
         );
-        assert!(delta < BOUND, "RSS grew by {delta} bytes (limit {BOUND})");
+        let file = write_index_json(&json);
+        let err = load(file.path()).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidBuildId),
+            "game_id {game_id:?} -> {err:?}"
+        );
+        assert_eq!(err.to_string(), "invalid build identifier");
     }
 }
 
 #[test]
-fn load_rejects_path_like_game_id() {
+fn load_rejects_invalid_timestamps_as_typed_errors() {
+    for stamp in [
+        "2026-02-29T00:00:00Z",
+        "2026-13-01T00:00:00Z",
+        "2026-10-25T24:00:00Z",
+        "2026-10-25T00:00:00+00:00",
+        "2026-10-25T00:00:60Z",
+        "not-a-date",
+    ] {
+        let json = format!(
+            r#"{{"format_version":1,"build_id":{{"game_id":"synthetic","version":"1","exe_hash":"{ZERO_EXE}"}},"hashes":[],"upload_count":1,"consensus_count":1,"generated_at":"{stamp}"}}"#
+        );
+        let file = write_index_json(&json);
+        let err = load(file.path()).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidTimestamp),
+            "stamp {stamp} -> {err:?}"
+        );
+    }
+    let leap = format!(
+        r#"{{"format_version":1,"build_id":{{"game_id":"synthetic","version":"1","exe_hash":"{ZERO_EXE}"}},"hashes":[],"upload_count":1,"consensus_count":1,"generated_at":"2024-02-29T00:00:00Z"}}"#
+    );
+    let file = write_index_json(&leap);
+    load(file.path()).unwrap();
+}
+
+#[test]
+fn unicode_escapes_in_hashes_are_accepted() {
+    let escaped: String = HASH_A.bytes().map(|b| format!("\\u00{b:02x}")).collect();
     let json = format!(
-        r#"{{"format_version":1,"build_id":{{"game_id":"C:\\\\Games\\\\Title","version":"1","exe_hash":"{ZERO_EXE}"}},"hashes":[],"upload_count":1,"consensus_count":1,"generated_at":"2026-10-25T00:00:00Z"}}"#
+        r#"{{"format_version":1,"build_id":{{"game_id":"synthetic","version":"1","exe_hash":"{ZERO_EXE}"}},"hashes":["{escaped}"],"upload_count":1,"consensus_count":1,"generated_at":"2026-10-25T00:00:00Z"}}"#
+    );
+    let file = write_index_json(&json);
+    let index = load(file.path()).unwrap();
+    assert_eq!(index.hashes.as_slice()[0].to_hex(), HASH_A);
+}
+
+#[test]
+fn bom_is_rejected() {
+    let json = format!(
+        "\u{feff}{{\"format_version\":1,\"build_id\":{{\"game_id\":\"synthetic\",\"version\":\"1\",\"exe_hash\":\"{ZERO_EXE}\"}},\"hashes\":[],\"upload_count\":1,\"consensus_count\":1,\"generated_at\":\"2026-10-25T00:00:00Z\"}}"
     );
     let file = write_index_json(&json);
     let err = load(file.path()).unwrap_err();
-    assert!(matches!(err, Error::InvalidJson), "got {err:?}");
+    assert!(matches!(err, Error::ByteOrderMark), "got {err:?}");
 }
 
 #[test]
-fn hint_compare_uses_app_name_and_version() {
-    let hint = LocalBuildHint {
-        game_id: "synthetic".to_string(),
-        version: "1".to_string(),
+fn trailing_whitespace_is_allowed() {
+    let json = format!(
+        r#"{{"format_version":1,"build_id":{{"game_id":"synthetic","version":"1","exe_hash":"{ZERO_EXE}"}},"hashes":[],"upload_count":1,"consensus_count":1,"generated_at":"2026-10-25T00:00:00Z"}}
+"#
+    );
+    let file = write_index_json(&json);
+    load(file.path()).unwrap();
+}
+
+#[test]
+fn read_capped_stops_after_max_plus_one() {
+    let data = vec![b'x'; 100];
+    let mut cursor = std::io::Cursor::new(data);
+    let err = read_capped(&mut cursor, 10).unwrap_err();
+    assert!(
+        matches!(err, Error::FileTooLarge { max: 10, got: 11 }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn metadata_size_check_rejects_sparse_file_before_read() {
+    reset_read_reached();
+    let path = temp_path(".sparse");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(10 * 1024 * 1024).unwrap();
+    drop(file);
+    let limits = Limits {
+        max_file_bytes: 64,
+        ..Limits::DEFAULT
     };
-    let index = index_from_hex(&[]);
-    let report = compare_hashes(&[], Some(&hint), &index, 0);
-    assert!(!report.build_id_mismatch);
+    let err = load_with_limits(&path, limits).unwrap_err();
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        matches!(
+            err,
+            Error::FileTooLarge {
+                max: 64,
+                got: 10_485_760
+            }
+        ),
+        "got {err:?}"
+    );
+    assert!(
+        !take_read_reached(),
+        "metadata size check missed; read_capped ran"
+    );
+}
+
+#[test]
+fn library_rejects_65_character_hash() {
+    let mut long = HASH_A.to_string();
+    long.push('a');
+    let err = DescriptionHash::parse_hex(&long).unwrap_err();
+    assert!(
+        matches!(err, Error::WrongHexLength { got: 65 }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn local_duplicate_hashes_are_deduped() {
+    let same = DescriptionHash::from_bytes([0x11; 32]);
+    let deduped = crate::compare::unique_sorted(vec![same, same]);
+    assert_eq!(deduped.len(), 1, "hashes.dedup() missing");
+}
+
+#[cfg(unix)]
+#[test]
+fn opened_handle_and_nonblock_reject_fifo_without_hanging() {
+    let path = temp_path(".fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let path_for_thread = path.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let result = open_regular_nonblocking(&path_for_thread);
+        let _ = tx.send(result.map(|_| ()));
+    });
+    let received = rx.recv_timeout(Duration::from_secs(2));
+    let _ = std::fs::remove_file(&path);
+    let result = received.expect("FIFO open hung; O_NONBLOCK or is_file check regressed");
+    assert!(
+        matches!(result, Err(Error::NotARegularFile) | Err(Error::Io)),
+        "got {result:?}"
+    );
+    handle.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn growing_file_read_is_bounded() {
+    use std::io::Write;
+    let path = temp_path(".grow");
+    std::fs::write(&path, b"start").unwrap();
+    let writer_path = path.clone();
+    let writer = std::thread::spawn(move || {
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&writer_path) {
+            let buf = [0_u8; 65_536];
+            for _ in 0..2_000 {
+                if file.write_all(&buf).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    std::thread::sleep(Duration::from_millis(20));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader_path = path.clone();
+    let handle = std::thread::spawn(move || {
+        let mut file = std::fs::File::open(&reader_path).unwrap();
+        let result = read_capped(&mut file, 4_096);
+        let _ = tx.send(result);
+    });
+    let received = rx.recv_timeout(Duration::from_secs(2));
+    let result = received.expect("growing-file read hung");
+    match result {
+        Err(Error::FileTooLarge { max: 4_096, got }) => assert_eq!(got, 4_097),
+        Ok(bytes) => assert!(bytes.len() <= 4_096),
+        other => panic!("unexpected {other:?}"),
+    }
+    let _ = writer.join();
+    handle.join().unwrap();
+    let _ = std::fs::remove_file(&path);
 }

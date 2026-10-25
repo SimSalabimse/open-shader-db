@@ -2,6 +2,7 @@
 
 //! Coverage index types and hardened file loading.
 
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::File;
@@ -24,6 +25,16 @@ pub const UNSIGNED_INDEX_NOTE: &str = "unsigned index, not verified";
 /// Final line of human CLI output until M4 signing exists.
 pub const UNSIGNED_INDEX_LINE: &str =
     "Index: unsigned (signature verification arrives in a later milestone)";
+
+thread_local! {
+    static LOAD_LIMITS: Cell<Limits> = const { Cell::new(Limits::DEFAULT) };
+    static LAST_TYPED_ERROR: RefCell<Option<Error>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    static READ_REACHED: Cell<bool> = const { Cell::new(false) };
+}
 
 /// UTC timestamp from `generated_at` (`YYYY-MM-DDTHH:MM:SSZ`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -139,11 +150,8 @@ pub fn load(path: impl AsRef<Path>) -> Result<CoverageIndex, Error> {
 pub fn load_with_limits(path: impl AsRef<Path>, limits: Limits) -> Result<CoverageIndex, Error> {
     let path = path.as_ref();
     reject_symlink_or_non_file(path)?;
-    let mut file = open_index_file(path)?;
+    let mut file = open_regular_nonblocking(path)?;
     let opened = file.metadata().map_err(|_| Error::Io)?;
-    if !opened.is_file() {
-        return Err(Error::NotARegularFile);
-    }
     let got = opened.len();
     if got > limits.max_file_bytes {
         return Err(Error::FileTooLarge {
@@ -151,16 +159,49 @@ pub fn load_with_limits(path: impl AsRef<Path>, limits: Limits) -> Result<Covera
             got,
         });
     }
+    let bytes = read_capped(&mut file, limits.max_file_bytes)?;
+    parse_index_bytes(bytes, limits)
+}
+
+/// Open with `O_NONBLOCK` on Unix and require a regular file on the handle.
+pub(crate) fn open_regular_nonblocking(path: &Path) -> Result<File, Error> {
+    let file = open_index_file(path)?;
+    let opened = file.metadata().map_err(|_| Error::Io)?;
+    if !opened.is_file() {
+        return Err(Error::NotARegularFile);
+    }
+    Ok(file)
+}
+
+/// Read at most `max_file_bytes + 1` bytes, then reject if the cap is exceeded.
+pub(crate) fn read_capped(reader: &mut impl Read, max_file_bytes: u64) -> Result<Vec<u8>, Error> {
+    #[cfg(test)]
+    READ_REACHED.set(true);
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|_| Error::Io)?;
+    let limit = max_file_bytes.saturating_add(1);
+    reader
+        .by_ref()
+        .take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Error::Io)?;
     let got = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    if got > limits.max_file_bytes {
+    if got > max_file_bytes {
         return Err(Error::FileTooLarge {
-            max: limits.max_file_bytes,
+            max: max_file_bytes,
             got,
         });
     }
-    parse_index_bytes(&bytes, limits)
+    Ok(bytes)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_read_reached() {
+    READ_REACHED.set(false);
+}
+
+#[cfg(test)]
+pub(crate) fn take_read_reached() -> bool {
+    READ_REACHED.replace(false)
 }
 
 fn reject_symlink_or_non_file(path: &Path) -> Result<(), Error> {
@@ -187,45 +228,39 @@ fn open_index_file(path: &Path) -> Result<File, Error> {
     }
 }
 
-fn parse_index_bytes(bytes: &[u8], limits: Limits) -> Result<CoverageIndex, Error> {
-    let nesting = json_nesting_depth(bytes);
+fn parse_index_bytes(bytes: Vec<u8>, limits: Limits) -> Result<CoverageIndex, Error> {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return Err(Error::ByteOrderMark);
+    }
+    let nesting = json_nesting_depth(&bytes);
     if nesting > limits.max_json_nesting {
         return Err(Error::NestingTooDeep {
             max: limits.max_json_nesting,
         });
     }
-    let mut de = serde_json::Deserializer::from_slice(bytes);
-    let raw: RawIndex = serde::Deserialize::deserialize(&mut de).map_err(map_de_error)?;
-    de.end().map_err(|_| Error::TrailingGarbage)?;
+    LAST_TYPED_ERROR.with(|slot| slot.borrow_mut().take());
+    LOAD_LIMITS.set(limits);
+    let raw = {
+        let mut de = serde_json::Deserializer::from_slice(&bytes);
+        let raw: RawIndex = serde::Deserialize::deserialize(&mut de).map_err(take_typed_error)?;
+        de.end().map_err(|_| Error::TrailingGarbage)?;
+        raw
+    };
+    drop(bytes);
     raw.into_index(limits)
 }
 
-fn map_de_error(err: serde_json::Error) -> Error {
-    let msg = err.to_string();
-    if msg.contains("duplicate JSON key") {
-        Error::DuplicateKey
-    } else if msg.contains("unknown field") {
-        Error::UnknownField
-    } else if msg.contains("malformed hex") {
-        Error::MalformedHex
-    } else if msg.contains("hex value has length") {
-        Error::WrongHexLength {
-            got: extract_got_len(&msg).unwrap_or(0),
-        }
-    } else if msg.contains("recursion") || msg.contains("nested") {
-        Error::NestingTooDeep { max: 0 }
-    } else {
-        Error::InvalidJson
-    }
+fn take_typed_error(_err: serde_json::Error) -> Error {
+    LAST_TYPED_ERROR
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or(Error::InvalidJson)
 }
 
-fn extract_got_len(msg: &str) -> Option<usize> {
-    let after = msg.split("length ").nth(1)?;
-    after
-        .split(|c: char| !c.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()
+fn store_typed<E: de::Error>(err: Error) -> E {
+    LAST_TYPED_ERROR.with(|slot| {
+        *slot.borrow_mut() = Some(err);
+    });
+    E::custom("typed")
 }
 
 fn json_nesting_depth(bytes: &[u8]) -> u32 {
@@ -314,38 +349,31 @@ impl<'de> Visitor<'de> for RawIndexVisitor {
         let mut generated_at = None;
         while let Some(key) = map.next_key::<String>()? {
             if !seen.insert(key.clone()) {
-                return Err(de::Error::custom("duplicate JSON key"));
+                return Err(store_typed(Error::DuplicateKey));
             }
             match key.as_str() {
                 "format_version" => format_version = Some(map.next_value()?),
                 "build_id" => {
                     let raw: RawBuildId = map.next_value()?;
-                    build_id = Some(
-                        raw.into_build()
-                            .map_err(|e| de::Error::custom(e.to_string()))?,
-                    );
+                    build_id = Some(raw.into_build().map_err(store_typed)?);
                 }
                 "hashes" => hashes = Some(map.next_value::<RawHashes>()?.0),
                 "upload_count" => upload_count = Some(map.next_value()?),
                 "consensus_count" => consensus_count = Some(map.next_value()?),
                 "generated_at" => {
                     let text: String = map.next_value()?;
-                    generated_at = Some(
-                        GeneratedAt::parse(&text).map_err(|e| de::Error::custom(e.to_string()))?,
-                    );
+                    generated_at = Some(GeneratedAt::parse(&text).map_err(store_typed)?);
                 }
-                _ => return Err(de::Error::custom("unknown field")),
+                _ => return Err(store_typed(Error::UnknownField)),
             }
         }
         Ok(RawIndex {
-            format_version: format_version
-                .ok_or_else(|| de::Error::missing_field("format_version"))?,
-            build_id: build_id.ok_or_else(|| de::Error::missing_field("build_id"))?,
-            hashes: hashes.ok_or_else(|| de::Error::missing_field("hashes"))?,
-            upload_count: upload_count.ok_or_else(|| de::Error::missing_field("upload_count"))?,
-            consensus_count: consensus_count
-                .ok_or_else(|| de::Error::missing_field("consensus_count"))?,
-            generated_at: generated_at.ok_or_else(|| de::Error::missing_field("generated_at"))?,
+            format_version: format_version.ok_or_else(|| store_typed(Error::InvalidJson))?,
+            build_id: build_id.ok_or_else(|| store_typed(Error::InvalidJson))?,
+            hashes: hashes.ok_or_else(|| store_typed(Error::InvalidJson))?,
+            upload_count: upload_count.ok_or_else(|| store_typed(Error::InvalidJson))?,
+            consensus_count: consensus_count.ok_or_else(|| store_typed(Error::InvalidJson))?,
+            generated_at: generated_at.ok_or_else(|| store_typed(Error::InvalidJson))?,
         })
     }
 }
@@ -387,19 +415,19 @@ impl<'de> Visitor<'de> for RawBuildVisitor {
         let mut exe_hash = None;
         while let Some(key) = map.next_key::<String>()? {
             if !seen.insert(key.clone()) {
-                return Err(de::Error::custom("duplicate JSON key"));
+                return Err(store_typed(Error::DuplicateKey));
             }
             match key.as_str() {
                 "game_id" => game_id = Some(map.next_value()?),
                 "version" => version = Some(map.next_value()?),
                 "exe_hash" => exe_hash = Some(map.next_value()?),
-                _ => return Err(de::Error::custom("unknown field")),
+                _ => return Err(store_typed(Error::UnknownField)),
             }
         }
         Ok(RawBuildId {
-            game_id: game_id.ok_or_else(|| de::Error::missing_field("game_id"))?,
-            version: version.ok_or_else(|| de::Error::missing_field("version"))?,
-            exe_hash: exe_hash.ok_or_else(|| de::Error::missing_field("exe_hash"))?,
+            game_id: game_id.ok_or_else(|| store_typed(Error::InvalidJson))?,
+            version: version.ok_or_else(|| store_typed(Error::InvalidJson))?,
+            exe_hash: exe_hash.ok_or_else(|| store_typed(Error::InvalidJson))?,
         })
     }
 }
@@ -422,17 +450,21 @@ impl<'de> Visitor<'de> for RawHashesVisitor {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let max_hashes = LOAD_LIMITS.get().max_hashes;
         let mut hashes = Vec::new();
         if let Some(hint) = seq.size_hint() {
-            hashes.reserve(hint.min(1_048_576));
+            let cap = usize::try_from(max_hashes).unwrap_or(usize::MAX);
+            hashes.reserve(hint.min(cap));
         }
         while let Some(text) = seq.next_element::<String>()? {
-            let hash = DescriptionHash::parse_hex(&text).map_err(|e| match e {
-                Error::WrongHexLength { got } => {
-                    de::Error::custom(format!("hex value has length {got}, expected 64"))
-                }
-                _ => de::Error::custom("malformed hex"),
-            })?;
+            let got = u64::try_from(hashes.len().saturating_add(1)).unwrap_or(u64::MAX);
+            if got > max_hashes {
+                return Err(store_typed(Error::TooManyHashes {
+                    max: max_hashes,
+                    got,
+                }));
+            }
+            let hash = DescriptionHash::parse_hex(&text).map_err(store_typed)?;
             hashes.push(hash);
         }
         Ok(RawHashes(hashes))
@@ -444,24 +476,64 @@ fn is_utc_iso8601(text: &str) -> bool {
     if bytes.len() != 20 {
         return false;
     }
-    matches!(
-        bytes,
-        [y0, y1, y2, y3, b'-', m0, m1, b'-', d0, d1, b'T', h0, h1, b':', n0, n1, b':', s0, s1, b'Z']
-        if y0.is_ascii_digit()
-            && y1.is_ascii_digit()
-            && y2.is_ascii_digit()
-            && y3.is_ascii_digit()
-            && m0.is_ascii_digit()
-            && m1.is_ascii_digit()
-            && d0.is_ascii_digit()
-            && d1.is_ascii_digit()
-            && h0.is_ascii_digit()
-            && h1.is_ascii_digit()
-            && n0.is_ascii_digit()
-            && n1.is_ascii_digit()
-            && s0.is_ascii_digit()
-            && s1.is_ascii_digit()
-    )
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'Z'
+    {
+        return false;
+    }
+    let Some(year) = parse_digits(&bytes[0..4]) else {
+        return false;
+    };
+    let Some(month) = parse_digits(&bytes[5..7]) else {
+        return false;
+    };
+    let Some(day) = parse_digits(&bytes[8..10]) else {
+        return false;
+    };
+    let Some(hour) = parse_digits(&bytes[11..13]) else {
+        return false;
+    };
+    let Some(minute) = parse_digits(&bytes[14..16]) else {
+        return false;
+    };
+    let Some(second) = parse_digits(&bytes[17..19]) else {
+        return false;
+    };
+    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
+        return false;
+    }
+    day >= 1 && day <= days_in_month(year, month)
+}
+
+fn parse_digits(bytes: &[u8]) -> Option<u32> {
+    let mut value = 0_u32;
+    for &byte in bytes {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value
+            .saturating_mul(10)
+            .saturating_add(u32::from(byte - b'0'));
+    }
+    Some(value)
+}
+
+fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: u32) -> bool {
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
 }
 
 /// Path wrapper whose [`Debug`] output is always `<redacted>`.

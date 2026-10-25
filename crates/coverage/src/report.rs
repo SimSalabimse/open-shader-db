@@ -7,6 +7,12 @@ use serde::Serialize;
 use crate::hash::DescriptionHash;
 use crate::index::{UNSIGNED_INDEX_LINE, UNSIGNED_INDEX_NOTE};
 
+/// JSON / human value while SODB has no build identifier.
+pub const BUILD_IDENTITY_NOT_COMPARED: &str = "not_compared";
+
+/// Why [`BUILD_IDENTITY_NOT_COMPARED`] is reported.
+pub const BUILD_IDENTITY_REASON: &str = "SODB carries no build identifier yet";
+
 /// Exact match-rate fraction plus a rounded percentage (no floating point).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MatchRate {
@@ -19,13 +25,14 @@ impl MatchRate {
     /// `numerator / denominator`, rounded to the nearest percent.
     ///
     /// An empty local set is 0/0 and 100% (every local hash is present).
+    /// If any local hash is unmatched, the rounded value is at most 99.
     #[must_use]
     pub fn from_counts(matched: u64, total: u64) -> Self {
-        let percent_rounded = if total == 0 {
+        let percent_rounded = if total == 0 || matched >= total {
             100
         } else {
             let rounded = (u128::from(matched) * 100 + u128::from(total) / 2) / u128::from(total);
-            u8::try_from(rounded.min(100)).unwrap_or(100)
+            u8::try_from(rounded.min(99)).unwrap_or(99)
         };
         Self {
             numerator: matched,
@@ -55,7 +62,8 @@ pub struct CoverageReport {
     pub match_rate: MatchRate,
     pub unmatched_hashes: Vec<DescriptionHash>,
     pub unmatched_omitted: u64,
-    pub build_id_mismatch: bool,
+    pub build_identity: &'static str,
+    pub build_identity_reason: &'static str,
     pub upload_count: u64,
     pub consensus_count: u64,
     pub index_unsigned: bool,
@@ -91,21 +99,27 @@ impl CoverageReport {
                 out.push('\n');
             }
         }
-        out.push_str(&format!(
-            "{} unmatched hashes omitted\n",
-            self.unmatched_omitted
-        ));
-        if self.build_id_mismatch {
-            out.push_str(
-                "Warning: coverage index build id does not match the local SODB build id\n",
-            );
-        }
+        out.push_str(&omitted_line(self.unmatched_omitted));
+        out.push('\n');
+        out.push_str("Build identity: ");
+        out.push_str(self.build_identity);
+        out.push_str(" (");
+        out.push_str(self.build_identity_reason);
+        out.push_str(")\n");
         out.push_str("Index status: ");
         out.push_str(UNSIGNED_INDEX_NOTE);
         out.push('\n');
         out.push_str(UNSIGNED_INDEX_LINE);
         out.push('\n');
         out
+    }
+}
+
+fn omitted_line(omitted: u64) -> String {
+    if omitted == 1 {
+        String::from("1 unmatched hash omitted")
+    } else {
+        format!("{omitted} unmatched hashes omitted")
     }
 }
 

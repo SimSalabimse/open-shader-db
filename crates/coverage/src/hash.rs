@@ -77,12 +77,10 @@ pub(crate) fn parse_hex32(text: &str) -> Result<[u8; 32], Error> {
     if text.len() != 64 {
         return Err(Error::WrongHexLength { got: text.len() });
     }
-    let bytes = text.as_bytes();
     let mut out = [0_u8; 32];
-    for (i, slot) in out.iter_mut().enumerate() {
-        let hi = hex_nibble(bytes[i.saturating_mul(2)])?;
-        let lo = hex_nibble(bytes[i.saturating_mul(2).saturating_add(1)])?;
-        *slot = (hi << 4) | lo;
+    let (chunks, _) = text.as_bytes().as_chunks::<2>();
+    for (slot, chunk) in out.iter_mut().zip(chunks) {
+        *slot = (hex_nibble(chunk[0])? << 4) | hex_nibble(chunk[1])?;
     }
     Ok(out)
 }

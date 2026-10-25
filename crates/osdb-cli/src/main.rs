@@ -53,7 +53,7 @@ enum Command {
         /// Coverage index JSON file. Treated as untrusted and unsigned.
         #[arg(long)]
         index: PathBuf,
-        /// Print [`osdb_coverage::CoverageReport`] as JSON instead of text.
+        /// Print the coverage report as JSON instead of text.
         #[arg(long)]
         json: bool,
         /// Maximum unmatched hashes to list (the omitted count is always shown).

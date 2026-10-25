@@ -80,7 +80,7 @@ This document tracks the implementation status of planned features. Milestone na
 | CoverageIndex schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | format_version 1 JSON in docs/COVERAGE_INDEX_FORMAT.md; logical DescriptionHash objects still M3 |
 | PipelineStateRecord schema | 📋 Planned | Data model | M1 Pipeline-state records | Designed; implementation after legal clarity |
 | UploadManifest schema | 📋 Planned | Data model | M2 Upload preview and submission | Designed in ARCHITECTURE.md |
-| BuildId schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | On-disk game_id / version / exe_hash; SODB has no exe hash so local match is app_name + app_version only |
+| BuildId schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | On-disk game_id / version / exe_hash on the index. SODB has no build identifier yet; coverage reports `build_identity: not_compared` |
 
 ## Security and privacy
 
