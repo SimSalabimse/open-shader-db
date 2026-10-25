@@ -24,6 +24,43 @@ use crate::{
     ObjectVersion, Sha256Hash, SodbSummary, TableId,
 };
 
+/// Read `PRAGMA`-equivalent header fields without opening tables or hashing blobs.
+///
+/// This reads the 100-byte SQLite header only. It does not parse schema, load
+/// rows, or retain bytecode. Use [`is_sodb`] when the caller only needs a yes/no.
+#[must_use = "header probe result should be used"]
+pub fn probe(path: impl AsRef<Path>) -> Result<crate::SodbHeader, Error> {
+    let path = path.as_ref();
+    let mut file = open_read_file(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file() {
+        return Err(Error::NotARegularFile);
+    }
+    if opened.len() < 100 {
+        return Err(Error::NotAnSodb);
+    }
+    let mut header = [0_u8; 100];
+    file.read_exact(&mut header).map_err(|_| Error::NotAnSodb)?;
+    if header.get(..16) != Some(b"SQLite format 3\0") {
+        return Err(Error::NotAnSodb);
+    }
+    Ok(crate::SodbHeader {
+        user_version: i32::from_be_bytes([header[60], header[61], header[62], header[63]]),
+        application_id: i32::from_be_bytes([header[68], header[69], header[70], header[71]]),
+    })
+}
+
+/// `true` when `path` is a regular file whose SQLite header is SODB v2.
+#[must_use]
+pub fn is_sodb(path: impl AsRef<Path>) -> bool {
+    match probe(path) {
+        Ok(header) => {
+            header.user_version == SODB_USER_VERSION && header.application_id == SODB_APPLICATION_ID
+        }
+        Err(_) => false,
+    }
+}
+
 /// Open `path` with [`Limits::DEFAULT`].
 #[must_use = "parsed SODB summary should be used"]
 pub fn open(path: impl AsRef<Path>) -> Result<SodbSummary, Error> {
@@ -157,12 +194,39 @@ fn opened_path_for_wal(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn inspect_path(path: &Path, max_file_bytes: u64) -> Result<FileHeader, Error> {
-    let meta = std::fs::metadata(path)?;
-    if !meta.is_file() {
-        return Err(Error::NotARegularFile);
+/// Open for read. On Unix uses `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY` so a
+/// FIFO or symlink does not block or redirect. File type is taken from the
+/// opened handle.
+fn open_read_file(path: &Path) -> Result<File, Error> {
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(Error::NotARegularFile);
+        }
+        Ok(file)
     }
-    let file = File::open(path)?;
+    #[cfg(not(unix))]
+    {
+        let meta = std::fs::metadata(path)?;
+        if !meta.is_file() {
+            return Err(Error::NotARegularFile);
+        }
+        let file = File::open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(Error::NotARegularFile);
+        }
+        Ok(file)
+    }
+}
+
+fn inspect_path(path: &Path, max_file_bytes: u64) -> Result<FileHeader, Error> {
+    let file = open_read_file(path)?;
     let opened = file.metadata()?;
     if !opened.is_file() {
         return Err(Error::NotARegularFile);

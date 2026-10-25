@@ -334,6 +334,16 @@ pub struct HashedBytecode {
     pub bytecode_hash: Sha256Hash,
 }
 
+/// SQLite header fields used to recognize an SODB without parsing tables.
+///
+/// `user_version` and `application_id` are stored in the first 100 bytes of a
+/// SQLite database (big-endian). Reading them does not load bytecode or rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SodbHeader {
+    pub user_version: i32,
+    pub application_id: i32,
+}
+
 /// Parsed SODB summary. Contains hashes and keys only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SodbSummary {

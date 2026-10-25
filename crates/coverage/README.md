@@ -2,6 +2,8 @@
 
 Load an untrusted community coverage index and compare it to description
 hashes from a local SODB. Used by `osdb-cli coverage` (Simsalabim).
+The same binary also provides `inspect` (SODB hashes) and `discover`
+(Steam games, counts only in JSON).
 
 The crate is written from this repository's architecture notes. It does
 not reuse code from SCSKiller.

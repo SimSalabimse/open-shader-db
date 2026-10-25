@@ -32,6 +32,37 @@ fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_osdb-cli"))
 }
 
+#[test]
+fn help_lists_inspect_discover_and_coverage() {
+    let out = bin().arg("--help").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("inspect"));
+    assert!(stdout.contains("discover"));
+    assert!(stdout.contains("coverage"));
+}
+
+#[test]
+fn discover_json_runs_against_missing_root() {
+    let missing = temp_path("-no-steam");
+    let out = bin()
+        .arg("discover")
+        .arg("--steam-root")
+        .arg(&missing)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(value["games"].as_array().is_some());
+    assert!(!stdout.contains(missing.to_string_lossy().as_ref()));
+}
+
 fn create_sodb() -> TempFile {
     let path = temp_path(".sodb");
     let conn = Connection::open(&path).unwrap();

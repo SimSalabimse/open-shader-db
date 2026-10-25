@@ -24,7 +24,7 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 
 **Goal:** Ship foundations and index-only verification so a user can compare a local SODB against a community coverage index.
 
-**Status:** 🚧 In progress (coverage CLI present; Steam discovery and a published index are not)  
+**Status:** 🚧 In progress (Steam discovery and coverage CLI present; no published index yet)  
 **Ships:** Yes (first release)
 
 ### Deliverables
@@ -35,7 +35,7 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 - [x] Issue and PR templates
 - [x] Language choice for the client
 - [x] SODB SQLite parser
-- [ ] Steam game discovery
+- [ ] Steam game discovery (partial; temp-dir fixtures — see FEATURE_MAP)
 - [x] Coverage comparison CLI (local SODB vs community index; unsigned files; synthetic tests)
 
 ### Success criteria
