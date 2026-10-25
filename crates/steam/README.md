@@ -80,6 +80,7 @@ FIFOs and devices are opened non-blocking, then rejected.
 - `discover` — list Steam games and SODB counts (this crate)
 - `coverage --sodb <file> --index <file>` — compare local hashes to an
   unsigned coverage index
+- `records extract --sodb <file>` — local pipeline-state records (no bytecode)
 
 ## What is not verified
 

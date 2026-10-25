@@ -77,6 +77,8 @@ The `osdb-cli` crate exposes:
   `--show-paths` in human output; JSON never includes paths)
 - `coverage --sodb <file> --index <file>` — compare those hashes to an
   unsigned coverage index (hashes and counts only)
+- `records extract --sodb <file>` — pipeline-state records without
+  bytecode (see `osdb-records`)
 
 ## Security limits
 

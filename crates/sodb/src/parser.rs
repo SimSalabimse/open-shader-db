@@ -11,9 +11,16 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::limits::Limit;
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, DatabaseName, OpenFlags};
+use sha2::{Digest, Sha256};
 
-use crate::hash::{sha256, CanonicalHasher};
+use crate::extract::{
+    DescriptorBlob, ExtractedBlend, ExtractedDepthStencil, ExtractedDepthStencilOp,
+    ExtractedInputElement, ExtractedPipelineState, ExtractedRasterizer, ExtractedRenderTargetBlend,
+    ExtractedRenderTargetFormats, ExtractedSoDeclaration, ExtractedStageHashes, ExtractedStreamOut,
+    ExtractedViewInstancing,
+};
+use crate::hash::CanonicalHasher;
 use crate::schema::{
     keyed_spec, APP_ID_COLUMNS, ASSOC_SPECS, COL_BYTECODE, COL_DXIL_LIB_KEY, COL_KEY, COL_PSO_KEY,
     COL_SO_KEY, COL_VERSION, KEYED_SPECS, PIPELINE_BYTECODE_COLUMNS, PIPELINE_DESC_COLUMNS,
@@ -70,7 +77,40 @@ pub fn open(path: impl AsRef<Path>) -> Result<SodbSummary, Error> {
 /// Open `path` with caller-supplied resource caps.
 #[must_use = "parsed SODB summary should be used"]
 pub fn open_with_limits(path: impl AsRef<Path>, limits: Limits) -> Result<SodbSummary, Error> {
-    let path = path.as_ref();
+    let opened = open_db(path.as_ref(), limits)?;
+    summary_from_opened(opened, limits)
+}
+
+/// Extract pipeline-state descriptors and per-stage bytecode hashes.
+///
+/// Uses the same read-only open, size/row limits, cycle detection, and key
+/// intern as [`open`]. DXIL bytes are hashed incrementally and discarded.
+#[must_use = "extracted pipeline states should be used"]
+pub fn extract_pipeline_states(
+    path: impl AsRef<Path>,
+) -> Result<Vec<ExtractedPipelineState>, Error> {
+    extract_pipeline_states_with_limits(path, Limits::DEFAULT)
+}
+
+/// Extract pipeline states with caller-supplied resource caps.
+#[must_use = "extracted pipeline states should be used"]
+pub fn extract_pipeline_states_with_limits(
+    path: impl AsRef<Path>,
+    limits: Limits,
+) -> Result<Vec<ExtractedPipelineState>, Error> {
+    let opened = open_db(path.as_ref(), limits)?;
+    extract_from_opened(opened, limits)
+}
+
+struct OpenedSodb {
+    conn: Connection,
+    catalog: Catalog,
+    bytecode_by_key: BTreeMap<AppKey, Sha256Hash>,
+    wal_ignored: bool,
+    budget: Budget,
+}
+
+fn open_db(path: &Path, limits: Limits) -> Result<OpenedSodb, Error> {
     let header = inspect_path(path, limits.max_file_bytes)?;
 
     let conn = if header.wal {
@@ -122,6 +162,29 @@ pub fn open_with_limits(path: impl AsRef<Path>, limits: Limits) -> Result<SodbSu
     let mut budget = Budget::new(limits);
     let catalog = Catalog::load(&conn, &mut budget, limits)?;
 
+    let bytecode_by_key = if catalog.present.contains(&TableId::ShaderBytecode) {
+        read_shader_bytecode(&conn, &catalog, &mut budget, limits)?
+    } else {
+        BTreeMap::new()
+    };
+
+    Ok(OpenedSodb {
+        conn,
+        catalog,
+        bytecode_by_key,
+        wal_ignored: header.wal_ignored,
+        budget,
+    })
+}
+
+fn summary_from_opened(opened: OpenedSodb, limits: Limits) -> Result<SodbSummary, Error> {
+    let OpenedSodb {
+        conn,
+        catalog,
+        bytecode_by_key,
+        wal_ignored,
+        mut budget,
+    } = opened;
     let missing_tables = REPORTED_IF_MISSING
         .iter()
         .copied()
@@ -132,12 +195,6 @@ pub fn open_with_limits(path: impl AsRef<Path>, limits: Limits) -> Result<SodbSu
         read_app_id(&conn, &catalog, &mut budget, limits)?
     } else {
         Vec::new()
-    };
-
-    let bytecode_by_key = if catalog.present.contains(&TableId::ShaderBytecode) {
-        read_shader_bytecode(&conn, &catalog, &mut budget, limits)?
-    } else {
-        BTreeMap::new()
     };
 
     let pipeline_states = if catalog.present.contains(&TableId::PipelineStates) {
@@ -160,13 +217,30 @@ pub fn open_with_limits(path: impl AsRef<Path>, limits: Limits) -> Result<SodbSu
     Ok(SodbSummary {
         user_version: SODB_USER_VERSION,
         application_id: SODB_APPLICATION_ID,
-        wal_ignored: header.wal_ignored,
+        wal_ignored,
         app_id,
         missing_tables,
         pipeline_states,
         state_objects,
         shader_bytecode,
     })
+}
+
+fn extract_from_opened(
+    opened: OpenedSodb,
+    limits: Limits,
+) -> Result<Vec<ExtractedPipelineState>, Error> {
+    let OpenedSodb {
+        conn,
+        catalog,
+        bytecode_by_key,
+        wal_ignored: _,
+        mut budget,
+    } = opened;
+    if !catalog.present.contains(&TableId::PipelineStates) {
+        return Ok(Vec::new());
+    }
+    read_pipeline_extract(&conn, &catalog, &mut budget, &bytecode_by_key, limits)
 }
 
 struct FileHeader {
@@ -1083,6 +1157,34 @@ fn read_opt_text(
     }
 }
 
+fn read_opt_f64(
+    row: &rusqlite::Row<'_>,
+    col: &SelectedCol,
+    table: TableId,
+    limits: Limits,
+) -> Result<Option<f64>, Error> {
+    let (ty, len) = read_ty_len(row, col, table)?;
+    match ty.as_str() {
+        "null" => Ok(None),
+        "real" | "integer" => row
+            .get(col.val_idx)
+            .map_err(|source| Error::from_sqlite(table, source)),
+        "text" => {
+            enforce_len(table, &col.name, &ty, len, limits)?;
+            Err(Error::WrongColumnType {
+                table,
+                column: col.name.clone(),
+                got: String::from("text"),
+            })
+        }
+        other => Err(Error::WrongColumnType {
+            table,
+            column: col.name.clone(),
+            got: other.to_string(),
+        }),
+    }
+}
+
 fn read_opt_i64(
     row: &rusqlite::Row<'_>,
     col: &SelectedCol,
@@ -1530,7 +1632,20 @@ fn read_shader_bytecode(
     if let Some(name) = actual_column(&columns, COL_KEY) {
         select.push_key(name, max);
     }
-    let bytecode = actual_column(&columns, COL_BYTECODE).map(|name| select.push(name, max));
+    let bytecode_name = actual_column(&columns, COL_BYTECODE).map(str::to_string);
+    let mut bc_typeof_idx = None;
+    let mut bc_len_idx = None;
+    let mut bc_rowid_idx = None;
+    if let Some(name) = bytecode_name.as_deref() {
+        // Length + typeof only; the blob is hashed via incremental I/O.
+        let q = quote_ident(name);
+        bc_typeof_idx = Some(select.parts.len());
+        select.parts.push(format!("typeof({q})"));
+        bc_len_idx = Some(select.parts.len());
+        select.parts.push(format!("octet_length({q})"));
+        bc_rowid_idx = Some(select.parts.len());
+        select.parts.push(String::from("rowid"));
+    }
     let mut stmt = conn
         .prepare(&select.sql(table))
         .map_err(|source| Error::from_sqlite(table, source))?;
@@ -1547,17 +1662,61 @@ fn read_shader_bytecode(
         if !seen.insert(key.clone()) {
             return Err(Error::DuplicateKey { table });
         }
-        let Some(bc) = bytecode.as_ref() else {
+        let Some(name) = bytecode_name.as_deref() else {
             continue;
         };
-        let Some(bytes) = read_opt_blob(row, bc, table, limits)? else {
+        let (Some(ty_idx), Some(len_idx), Some(rowid_idx)) =
+            (bc_typeof_idx, bc_len_idx, bc_rowid_idx)
+        else {
             continue;
         };
-        let bytecode_hash = sha256(&bytes);
-        drop(bytes);
+        let ty = row
+            .get::<_, String>(ty_idx)
+            .map_err(|source| Error::from_sqlite(table, source))?;
+        let len = row
+            .get::<_, Option<i64>>(len_idx)
+            .map_err(|source| Error::from_sqlite(table, source))?;
+        match ty.as_str() {
+            "null" => continue,
+            "blob" => {}
+            other => {
+                return Err(Error::WrongColumnType {
+                    table,
+                    column: name.to_string(),
+                    got: other.to_string(),
+                });
+            }
+        }
+        enforce_len(table, name, &ty, len, limits)?;
+        let rowid = row
+            .get::<_, i64>(rowid_idx)
+            .map_err(|source| Error::from_sqlite(table, source))?;
+        let bytecode_hash = hash_bytecode_blob(conn, name, rowid, table)?;
         out.insert(key, bytecode_hash);
     }
     Ok(out)
+}
+
+/// SHA-256 of a `shader_bytecode.Bytecode` blob without retaining the bytes.
+fn hash_bytecode_blob(
+    conn: &Connection,
+    column: &str,
+    rowid: i64,
+    table: TableId,
+) -> Result<Sha256Hash, Error> {
+    let mut blob = conn
+        .blob_open(DatabaseName::Main, table.sql_name(), column, rowid, true)
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 8192];
+    loop {
+        let n = std::io::Read::read(&mut blob, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(Sha256Hash::from_bytes(hasher.finalize().into()))
 }
 
 fn hashes_for_keys(
@@ -1741,6 +1900,1150 @@ fn emit_state_objects(
         }
     }
     out.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(out)
+}
+
+fn require_i64(table: TableId, column: &str, value: Option<i64>) -> Result<i64, Error> {
+    value.ok_or(Error::InvalidValue {
+        table,
+        column: column.to_string(),
+        found: 0,
+    })
+}
+
+fn require_f64(table: TableId, column: &str, value: Option<f64>) -> Result<f64, Error> {
+    value.ok_or(Error::InvalidValue {
+        table,
+        column: column.to_string(),
+        found: 0,
+    })
+}
+
+fn require_text(table: TableId, column: &str, value: Option<AppText>) -> Result<String, Error> {
+    match value {
+        Some(text) => Ok(text.as_str().to_string()),
+        None => Err(Error::InvalidValue {
+            table,
+            column: column.to_string(),
+            found: 0,
+        }),
+    }
+}
+
+fn stage_hash(
+    bytecode_by_key: &BTreeMap<AppKey, Sha256Hash>,
+    key: Option<AppKey>,
+) -> Option<Sha256Hash> {
+    key.and_then(|k| bytecode_by_key.get(&k).copied())
+}
+
+fn read_pipeline_extract(
+    conn: &Connection,
+    catalog: &Catalog,
+    budget: &mut Budget,
+    bytecode_by_key: &BTreeMap<AppKey, Sha256Hash>,
+    limits: Limits,
+) -> Result<Vec<ExtractedPipelineState>, Error> {
+    let table = TableId::PipelineStates;
+    let count = row_count(conn, table)?;
+    budget.charge(table, count)?;
+    let columns = catalog.cols(table);
+    if !has_column(columns, COL_KEY) {
+        return Err(Error::MissingKeyColumn { table });
+    }
+
+    let root_sigs = load_root_signatures(conn, catalog, limits)?;
+    let input_elements = load_input_elements(conn, catalog, limits)?;
+    let layout_assocs = load_layout_assocs(conn, catalog, limits)?;
+    let ds_ops = load_depth_stencil_ops(conn, catalog, limits)?;
+    let depth_stencils = load_depth_stencils(conn, catalog, limits, &ds_ops)?;
+    let rt_blends = load_rt_blends(conn, catalog, limits)?;
+    let blends = load_blends(conn, catalog, limits, &rt_blends)?;
+    let rasters = load_rasters(conn, catalog, limits)?;
+    let rt_formats = load_rt_formats(conn, catalog, limits)?;
+    let views = load_view_instancing(conn, catalog, limits)?;
+    let so_decls = load_so_decls(conn, catalog, limits)?;
+    let stream_outs = load_stream_outs(conn, catalog, limits, &so_decls)?;
+
+    let mut select = SelectList::new();
+    let max = sql_cutoff(limits);
+    if let Some(name) = actual_column(columns, COL_KEY) {
+        select.push_key(name, max);
+    }
+    for wanted in PIPELINE_DESC_COLUMNS
+        .iter()
+        .chain(PIPELINE_BYTECODE_COLUMNS.iter())
+    {
+        if let Some(actual) = actual_column(columns, wanted) {
+            if select.find(actual).is_none() {
+                select.push(actual, max);
+            }
+        }
+    }
+    let mut stmt = conn
+        .prepare(&select.sql(table))
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    let mut out = Vec::new();
+    let mut seen_keys = HashSet::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|source| Error::from_sqlite(table, source))?
+    {
+        let key = read_selected_key(row, select.key_col(table)?, table, limits)?;
+        if !seen_keys.insert(key.clone()) {
+            return Err(Error::DuplicateKey { table });
+        }
+        let version = match catalog.intern.find(key.as_bytes())? {
+            Some(id) => catalog
+                .pso_version
+                .get(&id)
+                .copied()
+                .unwrap_or(ObjectVersion::new(0)),
+            None => ObjectVersion::new(0),
+        };
+        let mut vs = None;
+        let mut ps = None;
+        let mut hs = None;
+        let mut ds = None;
+        let mut gs = None;
+        let mut amplification = None;
+        let mut ms = None;
+        let mut cs = None;
+        for (col_name, dest) in [
+            ("ByteCode_VS", &mut vs),
+            ("ByteCode_PS", &mut ps),
+            ("ByteCode_HS", &mut hs),
+            ("ByteCode_DS", &mut ds),
+            ("ByteCode_GS", &mut gs),
+            ("ByteCode_AS", &mut amplification),
+            ("ByteCode_MS", &mut ms),
+            ("ByteCode_CS", &mut cs),
+        ] {
+            if let Some(col) = select.find(col_name) {
+                *dest = stage_hash(
+                    bytecode_by_key,
+                    read_opt_blob(row, col, table, limits)?.map(AppKey::new),
+                );
+            }
+        }
+        let root_signature = lookup_blob(
+            &root_sigs,
+            &opt_key(row, &select, table, limits, "RootSignature")?,
+        );
+        let input_layout = opt_key(row, &select, table, limits, "InputLayout")?.and_then(|k| {
+            layout_assocs.get(&k).map(|ids| {
+                let mut elems: Vec<ExtractedInputElement> = ids
+                    .iter()
+                    .filter_map(|id| input_elements.get(id).cloned())
+                    .collect();
+                elems.sort_by(|a, b| {
+                    a.semantic_name
+                        .cmp(&b.semantic_name)
+                        .then(a.semantic_index.cmp(&b.semantic_index))
+                });
+                elems
+            })
+        });
+        let depth_stencil = lookup_clone(
+            &depth_stencils,
+            &opt_key(row, &select, table, limits, "DepthStencilDesc")?,
+        );
+        let blend = lookup_clone(&blends, &opt_key(row, &select, table, limits, "BlendDesc")?);
+        let rasterizer = lookup_clone(
+            &rasters,
+            &opt_key(row, &select, table, limits, "RasterizerDesc")?,
+        );
+        let render_target_formats = lookup_clone(
+            &rt_formats,
+            &opt_key(row, &select, table, limits, "RenderTargetFormats")?,
+        );
+        let view_instancing = lookup_clone(
+            &views,
+            &opt_key(row, &select, table, limits, "ViewInstancingDesc")?,
+        );
+        let stream_out = lookup_clone(
+            &stream_outs,
+            &opt_key(row, &select, table, limits, "StreamOutDesc")?,
+        );
+        out.push(ExtractedPipelineState {
+            key,
+            version,
+            bytecode: ExtractedStageHashes {
+                vs,
+                ps,
+                hs,
+                ds,
+                gs,
+                amplification,
+                ms,
+                cs,
+            },
+            root_signature,
+            input_layout,
+            depth_stencil,
+            blend,
+            rasterizer,
+            render_target_formats,
+            view_instancing,
+            stream_out,
+            sample_count: opt_i64(row, &select, table, limits, "SampleDesc_Count")?,
+            sample_quality: opt_i64(row, &select, table, limits, "SampleDesc_Quality")?,
+            sample_mask: opt_i64(row, &select, table, limits, "SampleMask")?,
+            ib_strip_cut_value: opt_i64(row, &select, table, limits, "IBStripCutValue")?,
+            primitive_topology: opt_i64(row, &select, table, limits, "PrimitiveTopology")?,
+            dsv_format: opt_i64(row, &select, table, limits, "DSVFormat")?,
+            node_mask: opt_i64(row, &select, table, limits, "NodeMask")?,
+            flags: opt_i64(row, &select, table, limits, "Flags")?,
+        });
+    }
+    out.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(out)
+}
+
+fn opt_key(
+    row: &rusqlite::Row<'_>,
+    select: &SelectList,
+    table: TableId,
+    limits: Limits,
+    name: &str,
+) -> Result<Option<AppKey>, Error> {
+    match select.find(name) {
+        Some(col) => Ok(read_opt_blob(row, col, table, limits)?.map(AppKey::new)),
+        None => Ok(None),
+    }
+}
+
+fn opt_i64(
+    row: &rusqlite::Row<'_>,
+    select: &SelectList,
+    table: TableId,
+    limits: Limits,
+    name: &str,
+) -> Result<Option<i64>, Error> {
+    match select.find(name) {
+        Some(col) => read_opt_i64(row, col, table, limits),
+        None => Ok(None),
+    }
+}
+
+fn lookup_blob(
+    map: &HashMap<AppKey, DescriptorBlob>,
+    key: &Option<AppKey>,
+) -> Option<DescriptorBlob> {
+    key.as_ref().and_then(|k| map.get(k).cloned())
+}
+
+fn lookup_clone<T: Clone>(map: &HashMap<AppKey, T>, key: &Option<AppKey>) -> Option<T> {
+    key.as_ref().and_then(|k| map.get(k).cloned())
+}
+
+fn load_root_signatures(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+) -> Result<HashMap<AppKey, DescriptorBlob>, Error> {
+    let table = TableId::RootSignatures;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &["Key", "value"],
+        |key, row, select| {
+            let value = match select.find("value") {
+                Some(col) => read_opt_blob(row, col, table, limits)?,
+                None => None,
+            };
+            if let Some(bytes) = value {
+                out.insert(key, DescriptorBlob::new(bytes));
+            }
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn load_input_elements(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+) -> Result<HashMap<AppKey, ExtractedInputElement>, Error> {
+    let table = TableId::InputElementDescs;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &[
+            "Key",
+            "SemanticName",
+            "SemanticIndex",
+            "Format",
+            "InputSlot",
+            "AlignedByteOffset",
+            "InputSlotClass",
+            "InstanceDataStepRate",
+        ],
+        |key, row, select| {
+            out.insert(
+                key,
+                ExtractedInputElement {
+                    semantic_name: require_text(
+                        table,
+                        "SemanticName",
+                        opt_text(row, select, table, limits, "SemanticName")?,
+                    )?,
+                    semantic_index: require_i64(
+                        table,
+                        "SemanticIndex",
+                        opt_i64(row, select, table, limits, "SemanticIndex")?,
+                    )?,
+                    format: require_i64(
+                        table,
+                        "Format",
+                        opt_i64(row, select, table, limits, "Format")?,
+                    )?,
+                    input_slot: require_i64(
+                        table,
+                        "InputSlot",
+                        opt_i64(row, select, table, limits, "InputSlot")?,
+                    )?,
+                    aligned_byte_offset: require_i64(
+                        table,
+                        "AlignedByteOffset",
+                        opt_i64(row, select, table, limits, "AlignedByteOffset")?,
+                    )?,
+                    input_slot_class: require_i64(
+                        table,
+                        "InputSlotClass",
+                        opt_i64(row, select, table, limits, "InputSlotClass")?,
+                    )?,
+                    instance_data_step_rate: require_i64(
+                        table,
+                        "InstanceDataStepRate",
+                        opt_i64(row, select, table, limits, "InstanceDataStepRate")?,
+                    )?,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn opt_text(
+    row: &rusqlite::Row<'_>,
+    select: &SelectList,
+    table: TableId,
+    limits: Limits,
+    name: &str,
+) -> Result<Option<AppText>, Error> {
+    match select.find(name) {
+        Some(col) => read_opt_text(row, col, table, limits),
+        None => Ok(None),
+    }
+}
+
+fn load_layout_assocs(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+) -> Result<HashMap<AppKey, Vec<AppKey>>, Error> {
+    let table = TableId::InputLayoutToInputElementAssociations;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    assoc_pairs(
+        conn,
+        catalog,
+        table,
+        limits,
+        "InputLayoutKey",
+        "InputElementKey",
+    )
+}
+
+fn load_depth_stencil_ops(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+) -> Result<HashMap<AppKey, ExtractedDepthStencilOp>, Error> {
+    let table = TableId::DepthStencilOpDescs;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &[
+            "Key",
+            "StencilFailOp",
+            "StencilDepthFailOp",
+            "StencilPassOp",
+            "StencilFunc",
+            "StencilReadMask",
+            "StencilWriteMask",
+        ],
+        |key, row, select| {
+            out.insert(
+                key,
+                ExtractedDepthStencilOp {
+                    stencil_fail_op: require_i64(
+                        table,
+                        "StencilFailOp",
+                        opt_i64(row, select, table, limits, "StencilFailOp")?,
+                    )?,
+                    stencil_depth_fail_op: require_i64(
+                        table,
+                        "StencilDepthFailOp",
+                        opt_i64(row, select, table, limits, "StencilDepthFailOp")?,
+                    )?,
+                    stencil_pass_op: require_i64(
+                        table,
+                        "StencilPassOp",
+                        opt_i64(row, select, table, limits, "StencilPassOp")?,
+                    )?,
+                    stencil_func: require_i64(
+                        table,
+                        "StencilFunc",
+                        opt_i64(row, select, table, limits, "StencilFunc")?,
+                    )?,
+                    stencil_read_mask: require_i64(
+                        table,
+                        "StencilReadMask",
+                        opt_i64(row, select, table, limits, "StencilReadMask")?,
+                    )?,
+                    stencil_write_mask: require_i64(
+                        table,
+                        "StencilWriteMask",
+                        opt_i64(row, select, table, limits, "StencilWriteMask")?,
+                    )?,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn load_depth_stencils(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+    ops: &HashMap<AppKey, ExtractedDepthStencilOp>,
+) -> Result<HashMap<AppKey, ExtractedDepthStencil>, Error> {
+    let table = TableId::DepthStencilDescs;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &[
+            "Key",
+            "DepthEnable",
+            "DepthWriteMask",
+            "DepthFunc",
+            "StencilEnable",
+            "FrontFace",
+            "BackFace",
+            "DepthBoundsTestEnable",
+        ],
+        |key, row, select| {
+            out.insert(
+                key,
+                ExtractedDepthStencil {
+                    depth_enable: require_i64(
+                        table,
+                        "DepthEnable",
+                        opt_i64(row, select, table, limits, "DepthEnable")?,
+                    )?,
+                    depth_write_mask: require_i64(
+                        table,
+                        "DepthWriteMask",
+                        opt_i64(row, select, table, limits, "DepthWriteMask")?,
+                    )?,
+                    depth_func: require_i64(
+                        table,
+                        "DepthFunc",
+                        opt_i64(row, select, table, limits, "DepthFunc")?,
+                    )?,
+                    stencil_enable: require_i64(
+                        table,
+                        "StencilEnable",
+                        opt_i64(row, select, table, limits, "StencilEnable")?,
+                    )?,
+                    front_face: lookup_clone(
+                        ops,
+                        &opt_key(row, select, table, limits, "FrontFace")?,
+                    ),
+                    back_face: lookup_clone(ops, &opt_key(row, select, table, limits, "BackFace")?),
+                    depth_bounds_test_enable: require_i64(
+                        table,
+                        "DepthBoundsTestEnable",
+                        opt_i64(row, select, table, limits, "DepthBoundsTestEnable")?,
+                    )?,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn load_rt_blends(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+) -> Result<HashMap<AppKey, ExtractedRenderTargetBlend>, Error> {
+    let table = TableId::RenderTargetBlendDescs;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &[
+            "Key",
+            "BlendEnable",
+            "LogicOpEnable",
+            "SrcBlend",
+            "DestBlend",
+            "BlendOp",
+            "SrcBlendAlpha",
+            "DestBlendAlpha",
+            "BlendOpAlpha",
+            "LogicOp",
+            "RenderTargetWriteMask",
+        ],
+        |key, row, select| {
+            out.insert(
+                key,
+                ExtractedRenderTargetBlend {
+                    blend_enable: require_i64(
+                        table,
+                        "BlendEnable",
+                        opt_i64(row, select, table, limits, "BlendEnable")?,
+                    )?,
+                    logic_op_enable: require_i64(
+                        table,
+                        "LogicOpEnable",
+                        opt_i64(row, select, table, limits, "LogicOpEnable")?,
+                    )?,
+                    src_blend: require_i64(
+                        table,
+                        "SrcBlend",
+                        opt_i64(row, select, table, limits, "SrcBlend")?,
+                    )?,
+                    dest_blend: require_i64(
+                        table,
+                        "DestBlend",
+                        opt_i64(row, select, table, limits, "DestBlend")?,
+                    )?,
+                    blend_op: require_i64(
+                        table,
+                        "BlendOp",
+                        opt_i64(row, select, table, limits, "BlendOp")?,
+                    )?,
+                    src_blend_alpha: require_i64(
+                        table,
+                        "SrcBlendAlpha",
+                        opt_i64(row, select, table, limits, "SrcBlendAlpha")?,
+                    )?,
+                    dest_blend_alpha: require_i64(
+                        table,
+                        "DestBlendAlpha",
+                        opt_i64(row, select, table, limits, "DestBlendAlpha")?,
+                    )?,
+                    blend_op_alpha: require_i64(
+                        table,
+                        "BlendOpAlpha",
+                        opt_i64(row, select, table, limits, "BlendOpAlpha")?,
+                    )?,
+                    logic_op: require_i64(
+                        table,
+                        "LogicOp",
+                        opt_i64(row, select, table, limits, "LogicOp")?,
+                    )?,
+                    render_target_write_mask: require_i64(
+                        table,
+                        "RenderTargetWriteMask",
+                        opt_i64(row, select, table, limits, "RenderTargetWriteMask")?,
+                    )?,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn load_blends(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+    rts: &HashMap<AppKey, ExtractedRenderTargetBlend>,
+) -> Result<HashMap<AppKey, ExtractedBlend>, Error> {
+    let table = TableId::BlendDescs;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &[
+            "Key",
+            "AlphaToCoverageEnable",
+            "IndependentBlendEnable",
+            "RenderTarget0",
+            "RenderTarget1",
+            "RenderTarget2",
+            "RenderTarget3",
+            "RenderTarget4",
+            "RenderTarget5",
+            "RenderTarget6",
+            "RenderTarget7",
+        ],
+        |key, row, select| {
+            let mut render_targets = [None, None, None, None, None, None, None, None];
+            for (i, name) in [
+                "RenderTarget0",
+                "RenderTarget1",
+                "RenderTarget2",
+                "RenderTarget3",
+                "RenderTarget4",
+                "RenderTarget5",
+                "RenderTarget6",
+                "RenderTarget7",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                render_targets[i] = lookup_clone(rts, &opt_key(row, select, table, limits, name)?);
+            }
+            out.insert(
+                key,
+                ExtractedBlend {
+                    alpha_to_coverage_enable: require_i64(
+                        table,
+                        "AlphaToCoverageEnable",
+                        opt_i64(row, select, table, limits, "AlphaToCoverageEnable")?,
+                    )?,
+                    independent_blend_enable: require_i64(
+                        table,
+                        "IndependentBlendEnable",
+                        opt_i64(row, select, table, limits, "IndependentBlendEnable")?,
+                    )?,
+                    render_targets,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn load_rasters(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+) -> Result<HashMap<AppKey, ExtractedRasterizer>, Error> {
+    let table = TableId::RasterizerDescs;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &[
+            "Key",
+            "FillMode",
+            "CullMode",
+            "FrontCounterClockwise",
+            "DepthBias",
+            "DepthBiasClamp",
+            "SlopeScaledDepthBias",
+            "DepthClipEnable",
+            "LineRasterizationMode",
+            "ForcedSampleCount",
+            "ConservativeRaster",
+        ],
+        |key, row, select| {
+            out.insert(
+                key,
+                ExtractedRasterizer {
+                    fill_mode: require_i64(
+                        table,
+                        "FillMode",
+                        opt_i64(row, select, table, limits, "FillMode")?,
+                    )?,
+                    cull_mode: require_i64(
+                        table,
+                        "CullMode",
+                        opt_i64(row, select, table, limits, "CullMode")?,
+                    )?,
+                    front_counter_clockwise: require_i64(
+                        table,
+                        "FrontCounterClockwise",
+                        opt_i64(row, select, table, limits, "FrontCounterClockwise")?,
+                    )?,
+                    depth_bias: require_f64(
+                        table,
+                        "DepthBias",
+                        opt_f64(row, select, table, limits, "DepthBias")?,
+                    )?,
+                    depth_bias_clamp: require_f64(
+                        table,
+                        "DepthBiasClamp",
+                        opt_f64(row, select, table, limits, "DepthBiasClamp")?,
+                    )?,
+                    slope_scaled_depth_bias: require_f64(
+                        table,
+                        "SlopeScaledDepthBias",
+                        opt_f64(row, select, table, limits, "SlopeScaledDepthBias")?,
+                    )?,
+                    depth_clip_enable: require_i64(
+                        table,
+                        "DepthClipEnable",
+                        opt_i64(row, select, table, limits, "DepthClipEnable")?,
+                    )?,
+                    line_rasterization_mode: require_i64(
+                        table,
+                        "LineRasterizationMode",
+                        opt_i64(row, select, table, limits, "LineRasterizationMode")?,
+                    )?,
+                    forced_sample_count: require_i64(
+                        table,
+                        "ForcedSampleCount",
+                        opt_i64(row, select, table, limits, "ForcedSampleCount")?,
+                    )?,
+                    conservative_raster: require_i64(
+                        table,
+                        "ConservativeRaster",
+                        opt_i64(row, select, table, limits, "ConservativeRaster")?,
+                    )?,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn opt_f64(
+    row: &rusqlite::Row<'_>,
+    select: &SelectList,
+    table: TableId,
+    limits: Limits,
+    name: &str,
+) -> Result<Option<f64>, Error> {
+    match select.find(name) {
+        Some(col) => read_opt_f64(row, col, table, limits),
+        None => Ok(None),
+    }
+}
+
+fn load_rt_formats(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+) -> Result<HashMap<AppKey, ExtractedRenderTargetFormats>, Error> {
+    let table = TableId::RenderTargetFormats;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &[
+            "Key",
+            "RTFormat0",
+            "RTFormat1",
+            "RTFormat2",
+            "RTFormat3",
+            "RTFormat4",
+            "RTFormat5",
+            "RTFormat6",
+            "RTFormat7",
+            "NumRenderTargets",
+        ],
+        |key, row, select| {
+            let mut rt_formats = [0_i64; 8];
+            for (i, name) in [
+                "RTFormat0",
+                "RTFormat1",
+                "RTFormat2",
+                "RTFormat3",
+                "RTFormat4",
+                "RTFormat5",
+                "RTFormat6",
+                "RTFormat7",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                rt_formats[i] =
+                    require_i64(table, name, opt_i64(row, select, table, limits, name)?)?;
+            }
+            out.insert(
+                key,
+                ExtractedRenderTargetFormats {
+                    rt_formats,
+                    num_render_targets: require_i64(
+                        table,
+                        "NumRenderTargets",
+                        opt_i64(row, select, table, limits, "NumRenderTargets")?,
+                    )?,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn load_view_instancing(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+) -> Result<HashMap<AppKey, ExtractedViewInstancing>, Error> {
+    let table = TableId::ViewInstancingDescs;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &[
+            "Key",
+            "ViewInstanceCount",
+            "RenderFlags",
+            "ViewportArrayIndex0",
+            "RenderTargetArrayIndex0",
+            "ViewportArrayIndex1",
+            "RenderTargetArrayIndex1",
+            "ViewportArrayIndex2",
+            "RenderTargetArrayIndex2",
+            "ViewportArrayIndex3",
+            "RenderTargetArrayIndex3",
+        ],
+        |key, row, select| {
+            out.insert(
+                key,
+                ExtractedViewInstancing {
+                    view_instance_count: require_i64(
+                        table,
+                        "ViewInstanceCount",
+                        opt_i64(row, select, table, limits, "ViewInstanceCount")?,
+                    )?,
+                    render_flags: require_i64(
+                        table,
+                        "RenderFlags",
+                        opt_i64(row, select, table, limits, "RenderFlags")?,
+                    )?,
+                    viewport_array_index: [
+                        opt_i64(row, select, table, limits, "ViewportArrayIndex0")?,
+                        opt_i64(row, select, table, limits, "ViewportArrayIndex1")?,
+                        opt_i64(row, select, table, limits, "ViewportArrayIndex2")?,
+                        opt_i64(row, select, table, limits, "ViewportArrayIndex3")?,
+                    ],
+                    render_target_array_index: [
+                        opt_i64(row, select, table, limits, "RenderTargetArrayIndex0")?,
+                        opt_i64(row, select, table, limits, "RenderTargetArrayIndex1")?,
+                        opt_i64(row, select, table, limits, "RenderTargetArrayIndex2")?,
+                        opt_i64(row, select, table, limits, "RenderTargetArrayIndex3")?,
+                    ],
+                },
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn load_so_decls(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+) -> Result<HashMap<AppKey, ExtractedSoDeclaration>, Error> {
+    let table = TableId::SoDeclarations;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &[
+            "Key",
+            "Stream",
+            "SemanticName",
+            "SemanticIndex",
+            "StartComponent",
+            "ComponentCount",
+            "OutputSlot",
+        ],
+        |key, row, select| {
+            out.insert(
+                key,
+                ExtractedSoDeclaration {
+                    stream: require_i64(
+                        table,
+                        "Stream",
+                        opt_i64(row, select, table, limits, "Stream")?,
+                    )?,
+                    semantic_name: require_text(
+                        table,
+                        "SemanticName",
+                        opt_text(row, select, table, limits, "SemanticName")?,
+                    )?,
+                    semantic_index: require_i64(
+                        table,
+                        "SemanticIndex",
+                        opt_i64(row, select, table, limits, "SemanticIndex")?,
+                    )?,
+                    start_component: require_i64(
+                        table,
+                        "StartComponent",
+                        opt_i64(row, select, table, limits, "StartComponent")?,
+                    )?,
+                    component_count: require_i64(
+                        table,
+                        "ComponentCount",
+                        opt_i64(row, select, table, limits, "ComponentCount")?,
+                    )?,
+                    output_slot: require_i64(
+                        table,
+                        "OutputSlot",
+                        opt_i64(row, select, table, limits, "OutputSlot")?,
+                    )?,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn load_stream_outs(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+    decls: &HashMap<AppKey, ExtractedSoDeclaration>,
+) -> Result<HashMap<AppKey, ExtractedStreamOut>, Error> {
+    let table = TableId::StreamOutDescs;
+    if !catalog.present.contains(&table) {
+        return Ok(HashMap::new());
+    }
+    let pairs = if catalog
+        .present
+        .contains(&TableId::StreamOutputDescToDeclAssociations)
+    {
+        assoc_pairs(
+            conn,
+            catalog,
+            TableId::StreamOutputDescToDeclAssociations,
+            limits,
+            "StreamOutDescKey",
+            "StreamOutDeclKey",
+        )?
+    } else {
+        HashMap::new()
+    };
+    let mut out = HashMap::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &[
+            "Key",
+            "BufferStride0",
+            "BufferStride1",
+            "BufferStride2",
+            "BufferStride3",
+            "NumStrides",
+            "RasterizedStream",
+        ],
+        |key, row, select| {
+            let mut declarations: Vec<ExtractedSoDeclaration> = pairs
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| decls.get(id).cloned())
+                .collect();
+            declarations.sort_by(|a, b| {
+                a.stream
+                    .cmp(&b.stream)
+                    .then(a.semantic_name.cmp(&b.semantic_name))
+                    .then(a.semantic_index.cmp(&b.semantic_index))
+            });
+            out.insert(
+                key,
+                ExtractedStreamOut {
+                    buffer_stride: [
+                        require_i64(
+                            table,
+                            "BufferStride0",
+                            opt_i64(row, select, table, limits, "BufferStride0")?,
+                        )?,
+                        require_i64(
+                            table,
+                            "BufferStride1",
+                            opt_i64(row, select, table, limits, "BufferStride1")?,
+                        )?,
+                        require_i64(
+                            table,
+                            "BufferStride2",
+                            opt_i64(row, select, table, limits, "BufferStride2")?,
+                        )?,
+                        require_i64(
+                            table,
+                            "BufferStride3",
+                            opt_i64(row, select, table, limits, "BufferStride3")?,
+                        )?,
+                    ],
+                    num_strides: require_i64(
+                        table,
+                        "NumStrides",
+                        opt_i64(row, select, table, limits, "NumStrides")?,
+                    )?,
+                    rasterized_stream: require_i64(
+                        table,
+                        "RasterizedStream",
+                        opt_i64(row, select, table, limits, "RasterizedStream")?,
+                    )?,
+                    declarations,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    Ok(out)
+}
+
+fn keyed_scan(
+    conn: &Connection,
+    catalog: &Catalog,
+    table: TableId,
+    limits: Limits,
+    wanted: &[&str],
+    mut on_row: impl FnMut(AppKey, &rusqlite::Row<'_>, &SelectList) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let columns = catalog.cols(table);
+    if !has_column(columns, COL_KEY) {
+        return Err(Error::MissingKeyColumn { table });
+    }
+    let mut select = SelectList::new();
+    let max = sql_cutoff(limits);
+    if let Some(name) = actual_column(columns, COL_KEY) {
+        select.push_key(name, max);
+    }
+    for col in wanted {
+        if col.eq_ignore_ascii_case(COL_KEY) {
+            continue;
+        }
+        if let Some(name) = actual_column(columns, col) {
+            if select.find(name).is_none() {
+                select.push(name, max);
+            }
+        }
+    }
+    let mut stmt = conn
+        .prepare(&select.sql(table))
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|source| Error::from_sqlite(table, source))?
+    {
+        let key = read_selected_key(row, select.key_col(table)?, table, limits)?;
+        on_row(key, row, &select)?;
+    }
+    Ok(())
+}
+
+fn assoc_pairs(
+    conn: &Connection,
+    catalog: &Catalog,
+    table: TableId,
+    limits: Limits,
+    owner_col: &str,
+    child_col: &str,
+) -> Result<HashMap<AppKey, Vec<AppKey>>, Error> {
+    let columns = catalog.cols(table);
+    if !has_column(columns, owner_col) || !has_column(columns, child_col) {
+        return Ok(HashMap::new());
+    }
+    let mut select = SelectList::new();
+    let max = sql_cutoff(limits);
+    if let Some(name) = actual_column(columns, owner_col) {
+        select.push(name, max);
+    }
+    if let Some(name) = actual_column(columns, child_col) {
+        select.push(name, max);
+    }
+    let mut stmt = conn
+        .prepare(&select.sql(table))
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    let mut out: HashMap<AppKey, Vec<AppKey>> = HashMap::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|source| Error::from_sqlite(table, source))?
+    {
+        let owner = match select.find(owner_col) {
+            Some(col) => read_opt_blob(row, col, table, limits)?,
+            None => None,
+        };
+        let child = match select.find(child_col) {
+            Some(col) => read_opt_blob(row, col, table, limits)?,
+            None => None,
+        };
+        if let (Some(owner), Some(child)) = (owner, child) {
+            out.entry(AppKey::new(owner))
+                .or_default()
+                .push(AppKey::new(child));
+        }
+    }
     Ok(out)
 }
 

@@ -33,13 +33,14 @@ fn bin() -> Command {
 }
 
 #[test]
-fn help_lists_inspect_discover_and_coverage() {
+fn help_lists_inspect_discover_coverage_and_records() {
     let out = bin().arg("--help").output().unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("inspect"));
     assert!(stdout.contains("discover"));
     assert!(stdout.contains("coverage"));
+    assert!(stdout.contains("records"));
 }
 
 #[test]
@@ -178,6 +179,38 @@ fn coverage_human_and_json() {
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(value["index_verified"], false);
     assert_eq!(value["index_unsigned"], true);
+}
+
+#[test]
+fn records_extract_writes_json_without_bytecode_or_paths() {
+    let sodb = create_sodb();
+    let out_path = TempFile {
+        path: temp_path(".json"),
+    };
+    let result = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&out_path.path)
+        .arg("--game-id")
+        .arg("synthetic")
+        .arg("--version")
+        .arg("1")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let text = std::fs::read_to_string(&out_path.path).unwrap();
+    assert!(text.contains("\"format_version\": 1"));
+    assert!(text.contains("bytecode_hashes"));
+    assert!(!text.contains("FAKE"));
+    assert!(!text.contains(sodb.path.to_string_lossy().as_ref()));
+    assert!(!String::from_utf8_lossy(&result.stderr).contains(sodb.path.to_string_lossy().as_ref()));
 }
 
 #[test]

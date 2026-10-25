@@ -310,7 +310,7 @@ interface CoverageIndex {
 
 ### M1 Pipeline-state records (without bytecode)
 
-These types support publishing full state records that clients combine with locally extracted shaders. Legal review is required before implementation.
+These types support publishing full state records that clients combine with locally extracted shaders. Legal review is still required before **publishing** or any network path. A local-only extractor (`osdb-cli records extract`) can write format_version 1 JSON from a SODB the user already has: DXIL blobs are hashed (SHA-256) and discarded. See [docs/RECORD_FORMAT.md](docs/RECORD_FORMAT.md).
 
 ```typescript
 // Verified from SODB spec: these are direct fields from pipeline_states table
@@ -359,9 +359,9 @@ interface PipelineStateRecord {
 
 The following aspects require further research or testing:
 
-- **Shader extraction:** How to reliably extract DXIL bytecode from installed game files (format varies by engine)
-- **Matching mechanism:** Whether bytecode hash alone is sufficient, or if additional metadata (entry points, shader models) is needed
-- **Root signature format:** Whether serialized root signatures can be shared or must be reconstructed from descriptors
+- **Shader extraction from game files:** How to reliably extract DXIL bytecode from installed game files (format varies by engine). Local extraction from an already-present SODB is implemented; game-file extraction is not.
+- **Matching mechanism:** Whether bytecode hash alone is sufficient, or if additional metadata (entry points, shader models) is needed. The local matcher only compares SHA-256 sets.
+- **Root signature format:** Whether serialized root signatures can be shared or must be reconstructed from descriptors. Format 1 stores `root_signatures.value` as lowercase hex of the SQL BLOB.
 
 ### UploadManifest
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sodb", "crates/coverage", "crates/steam", "crates/osdb-cli"]
+members = ["crates/sodb", "crates/coverage", "crates/steam", "crates/records", "crates/osdb-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,7 +11,7 @@ repository = "https://github.com/SimSalabimse/open-shader-db"
 homepage = "https://github.com/SimSalabimse/open-shader-db"
 
 [workspace.dependencies]
-rusqlite = { version = "0.32", features = ["bundled", "limits"] }
+rusqlite = { version = "0.32", features = ["bundled", "limits", "blob"] }
 sha2 = "0.10"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

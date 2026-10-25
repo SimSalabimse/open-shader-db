@@ -275,6 +275,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "osdb-coverage",
+ "osdb-records",
  "osdb-steam",
  "rusqlite",
  "serde_json",
@@ -289,6 +290,19 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sodb",
+ "thiserror",
+]
+
+[[package]]
+name = "osdb-records"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
  "sodb",
  "thiserror",
 ]

@@ -18,8 +18,8 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    is_sodb, open, open_with_limits, probe, Error, Limits, ObjectKind, TableId,
-    SODB_APPLICATION_ID, SODB_USER_VERSION,
+    extract_pipeline_states, is_sodb, open, open_with_limits, probe, Error, Limits, ObjectKind,
+    TableId, SODB_APPLICATION_ID, SODB_USER_VERSION,
 };
 
 const FAKE_VS: &[u8] = b"FAKE_VS_BLOB";
@@ -309,6 +309,20 @@ fn valid_file_reads_keys_and_hashes_only() {
 
     let again = open(fixture.path()).unwrap();
     assert_eq!(again.pipeline_states[0].desc_hash, pso.desc_hash);
+
+    let extracted = extract_pipeline_states(fixture.path()).unwrap();
+    assert_eq!(extracted.len(), 1);
+    assert_eq!(extracted[0].key.as_bytes(), b"pso-key-1");
+    assert_eq!(extracted[0].version.get(), 3);
+    assert_eq!(extracted[0].bytecode.vs.unwrap().to_hex(), vs_hash);
+    assert_eq!(extracted[0].bytecode.ps.unwrap().to_hex(), ps_hash);
+    assert_eq!(
+        extracted[0].root_signature.as_ref().unwrap().to_hex(),
+        hex_digits(b"FAKE_ROOT_SIG")
+    );
+    assert_eq!(extracted[0].rasterizer.as_ref().unwrap().fill_mode, 3);
+    assert_eq!(extracted[0].sample_count, Some(1));
+    assert_eq!(extracted[0].sample_mask, Some(4_294_967_295));
 }
 
 #[test]
