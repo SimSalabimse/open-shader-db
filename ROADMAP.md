@@ -10,7 +10,7 @@ This document outlines the development milestones and planned features for open-
 | Milestone | Status | Target | Description |
 |-----------|--------|--------|-------------|
 | [M0 Index and coverage reports](#m0-index-and-coverage-reports) | 📋 Planned | First ship | Foundations (docs, licence, CI, templates) plus index-only verification |
-| [M1 Pipeline-state records](#m1-pipeline-state-records) | 📋 Planned | After legal clarity | State records without bytecode and client rebuild |
+| [M1 Pipeline-state records](#m1-pipeline-state-records) | 📋 Planned | After M0; proceed with safeguards | State records without bytecode and client rebuild |
 | [M2 Upload preview and submission](#m2-upload-preview-and-submission) | 📋 Planned | After M0 client | Client upload preview/submit plus Cloudflare ingest Worker |
 | [M3 Consensus and publishing](#m3-consensus-and-publishing) | 📋 Planned | After ingest | Consensus, proof-of-ownership checks, review queue, publishing |
 | [M4 Signed releases](#m4-signed-releases) | 📋 Planned | After consensus | Minisign signing, GitHub Releases, client verification |
@@ -53,13 +53,13 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 **Goal:** Publish pipeline-state records without DXIL bytecode, and rebuild a usable SODB on the user's machine from those records plus shaders from the installed game.
 
 **Status:** 📋 Planned  
-**Ships:** After legal clarity
+**Ships:** After M0, with the safeguards in [docs/LEGAL_RISK_NOTES.md](docs/LEGAL_RISK_NOTES.md)
 
-**Legal review is required before implementation.** See [ARCHITECTURE.md](ARCHITECTURE.md#legal-and-tos-doubts).
+**Legal review is not a blocker.** On 2026-10-25, Simsalabim accepted the residual risks and chose to proceed with safeguards. See [docs/LEGAL_RISK_NOTES.md](docs/LEGAL_RISK_NOTES.md) and [ARCHITECTURE.md](ARCHITECTURE.md#legal-and-tos-doubts).
 
 ### Deliverables
 
-- [ ] Legal review or documented risk acceptance
+- [x] Legal review or documented risk acceptance
 - [ ] Shader bytecode extraction and hashing from installed game files
 - [ ] Pipeline-state record schema (state, root signature, formats; no DXIL)
 - [ ] Client rebuild: published records + local shaders
@@ -70,7 +70,7 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 - [ ] Client extracts DXIL from at least one installed game without modifying game files
 - [ ] Client matches bytecode hashes to published records
 - [ ] Client rebuilds a valid SODB locally
-- [ ] Legal doubts in ARCHITECTURE.md are addressed or explicitly accepted
+- [x] Legal doubts in ARCHITECTURE.md are addressed or explicitly accepted
 
 ---
 

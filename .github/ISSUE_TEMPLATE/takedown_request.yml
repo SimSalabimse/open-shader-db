@@ -1,0 +1,64 @@
+name: Takedown request
+description: Ask us to remove a published record from future releases.
+title: "takedown: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form if you represent a rights holder and want a published record removed.
+        Do not attach shader bytecode, game files, archives, or install paths.
+        Identify the record by game, build, and hash only.
+        We will remove the record from future releases promptly and review the request in good faith.
+        Provide only the information you choose to share. We do not ask for personal data beyond that.
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      description: Name of the game the record relates to.
+      placeholder: Example Game
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: Build, version, or other build identifier if you know it.
+      placeholder: 1.2.3 or exe hash prefix
+    validations:
+      required: true
+  - type: textarea
+    id: record
+    attributes:
+      label: Record or hash
+      description: Identify the published record by hash or other public identifier. Do not paste bytecode or attach game files.
+      placeholder: SHA-256 of the shader, or the public record id
+    validations:
+      required: true
+  - type: input
+    id: rights_holder
+    attributes:
+      label: Rights holder
+      description: Name of the rights holder you represent (publisher, studio, or other rights owner).
+      placeholder: Example Studio
+    validations:
+      required: true
+  - type: checkboxes
+    id: representation
+    attributes:
+      label: Representation
+      options:
+        - label: I represent the rights holder named above and I am authorized to make this request.
+          required: true
+  - type: textarea
+    id: action
+    attributes:
+      label: Requested action
+      description: What should we do? Typical request is to drop the named record from future releases.
+      placeholder: Remove this record from future releases.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Optional notes
+      description: Anything else you choose to add. Do not include personal data unless you want it on the public issue.

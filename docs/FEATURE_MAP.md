@@ -29,8 +29,8 @@ This document tracks the implementation status of planned features. Milestone na
 | SODB file parsing | ✅ Complete | crates/sodb | M0 Index and coverage reports | SQLite `user_version=2`; hashes only |
 | Description hash generation | ⚠️ Partial | crates/sodb | M0 Index and coverage reports | SHA-256 of descriptors and followed tables; `string_associations` is not hashed (see crates/sodb/README.md) |
 | Coverage comparison CLI | ⚠️ Partial | crates/coverage, crates/osdb-cli | M0 Index and coverage reports | `osdb-cli coverage` vs unsigned local index; synthetic tests only. **Untested:** real game SODBs, real community indexes, signed indexes (M4), network download |
-| Shader extraction and matching | ⚠️ Partial | crates/records (osdb-records), crates/osdb-cli | M1 Pipeline-state records | Local SODB extract + hash matching only. No network. **Untested:** real game SODBs, non-SODB engines, extracting DXIL from installed game files, whether bytecode hash alone is enough to match those files |
-| SODB rebuild from records + local shaders | 📋 Planned | Client | M1 Pipeline-state records | Needs legal clarity first |
+| Shader extraction and matching | ⚠️ Partial | crates/records (osdb-records), crates/osdb-cli | M1 Pipeline-state records | Local SODB extract + hash matching only. No network. Legal review done (see docs/LEGAL_RISK_NOTES.md); proceed with safeguards. **Untested:** real game SODBs, non-SODB engines, extracting DXIL from installed game files, whether bytecode hash alone is enough to match those files |
+| SODB rebuild from records + local shaders | 📋 Planned | Client | M1 Pipeline-state records | Legal review done (see docs/LEGAL_RISK_NOTES.md); proceed with safeguards |
 | Upload manifest generation | 📋 Planned | Client | M2 Upload preview and submission | Anonymized JSON |
 | Upload preview | 📋 Planned | Client | M2 Upload preview and submission | Show payload before send |
 | Proof of ownership (client) | 📋 Planned | Client | M2 Upload preview and submission | Challenge-response with exe |
@@ -78,7 +78,7 @@ This document tracks the implementation status of planned features. Milestone na
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
 | CoverageIndex schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | format_version 1 JSON in docs/COVERAGE_INDEX_FORMAT.md; logical DescriptionHash objects still M3 |
-| PipelineStateRecord schema | ⚠️ Partial | crates/records | M1 Pipeline-state records | format_version 1 JSON in docs/RECORD_FORMAT.md (local files). State objects not included. **Untested:** real game SODBs, rebuild fidelity, non-SODB engines |
+| PipelineStateRecord schema | ⚠️ Partial | crates/records | M1 Pipeline-state records | format_version 1 JSON in docs/RECORD_FORMAT.md (local files). Legal review done (see docs/LEGAL_RISK_NOTES.md). State objects not included. **Untested:** real game SODBs, rebuild fidelity, non-SODB engines |
 | UploadManifest schema | 📋 Planned | Data model | M2 Upload preview and submission | Designed in ARCHITECTURE.md |
 | BuildId schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | On-disk game_id / version / exe_hash on the index. SODB has no build identifier yet; coverage reports `build_identity: not_compared` |
 
@@ -99,7 +99,7 @@ This document tracks the implementation status of planned features. Milestone na
 |---------|--------|--------------|-----------|-------|
 | README, ARCHITECTURE, ROADMAP | ✅ Complete | Docs | M0 Index and coverage reports | In-tree project docs |
 | CI/CD pipeline | ✅ Complete | Operations | M0 Index and coverage reports | Markdown/YAML plus Rust fmt/clippy/test (`--locked`) |
-| Issue and PR templates | ✅ Complete | Docs | M0 Index and coverage reports | Bug, feature, question, and PR templates |
+| Issue and PR templates | ✅ Complete | Docs | M0 Index and coverage reports | Bug, feature, question, takedown, and PR templates |
 | User guide and FAQ | 💭 Proposed | Docs | Later / unscheduled | |
 
 ---
