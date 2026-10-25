@@ -33,10 +33,10 @@ Microsoft's State Object Database (SODB) is a SQLite database (`user_version=2`,
 - **DXIL shader bytecode:** Compiled shader code (copyrighted by game publishers)
 
 **Our approach:** We publish **pipeline state records WITHOUT shader bytecode**, keyed by shader content hash plus game build. These records contain only the state descriptors, root signatures, and format configurations. The client rebuilds complete SODBs locally by:
-1. Extracting shader bytecode from the user's installed game files
+1. Scanning shaders the user points at: an already-present SODB, and/or a directory of loose DXBC files (read-only; no packed-archive carving, no game-process access)
 2. Matching them by content hash to our published records
 3. Combining state descriptors + user's shaders
-4. Compiling locally into a functional SODB
+4. Writing a local SODB (acceptance by a real runtime is UNVERIFIED)
 
 **Milestone plan** (names match GitHub exactly):
 - **M0 Index and coverage reports** (ships first): foundations plus index-only verification
@@ -359,7 +359,7 @@ interface PipelineStateRecord {
 
 The following aspects require further research or testing:
 
-- **Shader extraction from game files:** How to reliably extract DXIL bytecode from installed game files (format varies by engine). Local extraction from an already-present SODB is implemented; game-file extraction is not.
+- **Shader extraction from game files:** Local scan of a user-pointed SODB and of a directory of loose DXBC files is implemented (`crates/shaders`). Carving DXBC out of packed engine archives, and whether a bytecode hash alone matches those archives, remain **UNVERIFIED**. The tool never attaches to a game process.
 - **Matching mechanism:** Whether bytecode hash alone is sufficient, or if additional metadata (entry points, shader models) is needed. The local matcher only compares SHA-256 sets.
 - **Root signature format:** Whether serialized root signatures can be shared or must be reconstructed from descriptors. Format 1 stores sanitized root-signature bytes once in a file-level table keyed by SHA-256 (RTS0 payload from a DXBC container, or a size-capped raw blob whose leading version is 1..=3). DXIL and other DXBC parts are rejected.
 

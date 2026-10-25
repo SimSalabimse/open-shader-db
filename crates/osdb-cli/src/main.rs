@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Thin CLI: inspect a local SODB, discover Steam games, compare coverage, or extract records.
+//! Thin CLI: inspect, discover, coverage, records, local shader scan, and rebuild.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
@@ -67,6 +67,34 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_MAX_UNMATCHED)]
         max_unmatched: usize,
     },
+    /// Scan local shaders (SODB or loose DXBC). Report is counts only.
+    Shaders {
+        #[command(subcommand)]
+        command: ShadersCommand,
+    },
+    /// Rebuild a local SODB from records plus local shaders.
+    ///
+    /// The output contains game bytecode and is for local use only.
+    Rebuild {
+        /// Record file (hashes and descriptors only).
+        #[arg(long)]
+        records: PathBuf,
+        /// Directory tree of loose DXBC files (repeatable).
+        #[arg(long)]
+        dir: Vec<PathBuf>,
+        /// SODB file the user already has (repeatable).
+        #[arg(long)]
+        sodb: Vec<PathBuf>,
+        /// Destination `.sodb`. Must not be an input or inside a scan root.
+        #[arg(long)]
+        out: PathBuf,
+        /// Overwrite `--out` if it already exists as a regular file.
+        #[arg(long)]
+        force: bool,
+        /// Print the rebuild report as JSON on stdout (counts only).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl fmt::Debug for Cli {
@@ -118,8 +146,62 @@ impl fmt::Debug for Cli {
                     .field("hash_app_keys", hash_app_keys)
                     .finish(),
             },
+            Command::Shaders { command } => match command {
+                ShadersCommand::Scan {
+                    dir: _,
+                    sodb: _,
+                    json,
+                    out: _,
+                    force,
+                } => f
+                    .debug_struct("ShadersScan")
+                    .field("dir", &"<redacted>")
+                    .field("sodb", &"<redacted>")
+                    .field("json", json)
+                    .field("out", &"<redacted>")
+                    .field("force", force)
+                    .finish(),
+            },
+            Command::Rebuild {
+                records: _,
+                dir: _,
+                sodb: _,
+                out: _,
+                force,
+                json,
+            } => f
+                .debug_struct("Rebuild")
+                .field("records", &"<redacted>")
+                .field("dir", &"<redacted>")
+                .field("sodb", &"<redacted>")
+                .field("out", &"<redacted>")
+                .field("force", force)
+                .field("json", json)
+                .finish(),
         }
     }
+}
+
+#[derive(Subcommand)]
+enum ShadersCommand {
+    /// Hash local shaders. Report is counts only; never prints paths or bytecode.
+    Scan {
+        /// Directory tree of loose files that start with DXBC.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// SODB file the user already has.
+        #[arg(long)]
+        sodb: Option<PathBuf>,
+        /// Print the scan report as JSON (counts only).
+        #[arg(long)]
+        json: bool,
+        /// Write the report to a file (atomic; refuse overwrite without `--force`).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Overwrite `--out` if it already exists as a regular file.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -239,6 +321,81 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 writeln!(out)?;
             } else {
                 write!(out, "{}", report.format_human())?;
+            }
+        }
+        Command::Shaders {
+            command:
+                ShadersCommand::Scan {
+                    dir,
+                    sodb,
+                    json,
+                    out,
+                    force,
+                },
+        } => {
+            let input = match (dir, sodb) {
+                (Some(dir), None) => osdb_shaders::ScanInput::Directory(dir),
+                (None, Some(sodb)) => osdb_shaders::ScanInput::Sodb(sodb),
+                _ => {
+                    return Err("shaders scan requires exactly one of --dir or --sodb".into());
+                }
+            };
+            let input_path = match &input {
+                osdb_shaders::ScanInput::Directory(p) | osdb_shaders::ScanInput::Sodb(p) => {
+                    p.clone()
+                }
+            };
+            let (_index, report) = osdb_shaders::scan(&[input], osdb_shaders::Limits::DEFAULT)?;
+            let body = if json {
+                let mut bytes = serde_json::to_vec_pretty(&report)?;
+                bytes.push(b'\n');
+                bytes
+            } else {
+                report.format_human().into_bytes()
+            };
+            match out {
+                Some(path) => output::write_atomic(&path, &input_path, force, |dest| {
+                    dest.write_all(&body).map_err(Into::into)
+                })?,
+                None => {
+                    let mut stdout = std::io::stdout().lock();
+                    stdout.write_all(&body)?;
+                }
+            }
+        }
+        Command::Rebuild {
+            records,
+            dir,
+            sodb,
+            out,
+            force,
+            json,
+        } => {
+            if dir.is_empty() && sodb.is_empty() {
+                return Err("rebuild requires at least one --dir or --sodb".into());
+            }
+            let loaded = osdb_records::load(&records)?;
+            let mut inputs = Vec::new();
+            for path in dir {
+                inputs.push(osdb_shaders::ScanInput::Directory(path));
+            }
+            for path in sodb {
+                inputs.push(osdb_shaders::ScanInput::Sodb(path));
+            }
+            let (index, _) = osdb_shaders::scan(&inputs, osdb_shaders::Limits::DEFAULT)?;
+            let opts = osdb_rebuild::RebuildOptions {
+                force,
+                max_output_bytes: osdb_rebuild::RebuildOptions::default().max_output_bytes,
+                record_input: Some(records),
+            };
+            let report = osdb_rebuild::rebuild_sodb(&loaded, &index, &out, opts)?;
+            eprintln!("{}", osdb_rebuild::LOCAL_USE_NOTICE);
+            if json {
+                let mut stdout = std::io::stdout().lock();
+                serde_json::to_writer_pretty(&mut stdout, &report)?;
+                writeln!(stdout)?;
+            } else {
+                eprint!("{}", report.format_human());
             }
         }
     }
@@ -387,5 +544,35 @@ mod tests {
         assert!(text.contains("<redacted>"));
         assert!(!text.contains("os-user"));
         assert!(text.contains("synthetic"));
+
+        let shaders = Cli {
+            command: Command::Shaders {
+                command: ShadersCommand::Scan {
+                    dir: Some(PathBuf::from("/home/os-user/shaders")),
+                    sodb: None,
+                    json: true,
+                    out: Some(PathBuf::from("/tmp/os-user-scan.json")),
+                    force: false,
+                },
+            },
+        };
+        let text = format!("{shaders:?}");
+        assert!(text.contains("<redacted>"));
+        assert!(!text.contains("os-user"));
+
+        let rebuild = Cli {
+            command: Command::Rebuild {
+                records: PathBuf::from("/home/os-user/records.json"),
+                dir: vec![PathBuf::from("/home/os-user/game")],
+                sodb: Vec::new(),
+                out: PathBuf::from("/tmp/os-user-out.sodb"),
+                force: true,
+                json: false,
+            },
+        };
+        let text = format!("{rebuild:?}");
+        assert!(text.contains("<redacted>"));
+        assert!(!text.contains("os-user"));
+        assert!(text.contains("force: true"));
     }
 }

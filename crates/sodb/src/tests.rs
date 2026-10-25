@@ -2103,3 +2103,35 @@ fn referenced_malformed_root_signature_is_skipped() {
     assert!(!debug.contains("DXIL_MARKER"));
     assert!(!debug.contains("9f3a"));
 }
+
+#[test]
+fn shader_container_hash_matches_streaming_reader() {
+    let bytes = b"DXBC-container-bytes-for-shared-hash";
+    let from_slice = crate::hash_shader_container(bytes);
+    let from_reader = crate::hash_shader_reader(&mut std::io::Cursor::new(bytes)).unwrap();
+    assert_eq!(from_slice, from_reader);
+}
+
+#[test]
+fn writer_schema_lists_parser_columns() {
+    let sql = crate::SODB_WRITER_SCHEMA_SQL.to_ascii_lowercase();
+    for col in [
+        "key",
+        "bytecode",
+        "value",
+        "rootsignature",
+        "bytecode_vs",
+        "bytecode_cs",
+        "sampledesc_count",
+        "semanticname",
+        "inputlayoutkey",
+        "psokey",
+        "version",
+    ] {
+        assert!(sql.contains(col), "writer schema missing {col}");
+    }
+    assert!(!sql.to_ascii_uppercase().contains("WITHOUT ROWID"));
+    assert!(!sql.contains("rowid"));
+    assert!(!sql.contains("state_objects"));
+    assert!(!sql.contains("app_id"));
+}

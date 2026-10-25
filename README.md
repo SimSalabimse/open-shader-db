@@ -65,7 +65,7 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 ## Project status
 
 This project is in **early design phase**. The local `osdb-cli` binary
-already has four commands (synthetic / fixture tested; not a full
+already has these commands (synthetic / fixture tested; not a full
 product):
 
 - `inspect <file.sodb>` — print SODB hashes as JSON
@@ -74,6 +74,10 @@ product):
   unsigned coverage index (hashes and counts only)
 - `records extract --sodb <file>` — write local pipeline-state records
   (hashes only, never bytecode; no network)
+- `shaders scan --dir <path> | --sodb <file>` — hash local shaders
+  (counts only; SODB or loose DXBC)
+- `rebuild --records <file> (--dir|--sodb)... --out <file.sodb>` —
+  rebuild a local SODB (contains bytecode; local use only)
 
 See [ROADMAP.md](ROADMAP.md) for planned milestones and [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) for current feature status.
 

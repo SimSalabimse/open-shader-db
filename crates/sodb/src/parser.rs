@@ -10,11 +10,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rusqlite::limits::Limit;
-use rusqlite::types::ValueRef;
-use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension};
-use sha2::{Digest, Sha256};
-
 use crate::dxbc::{sanitize_root_signature, RootSignatureSkipReason, SanitizedRootSignature};
 use crate::extract::{
     validate_semantic_name, DescriptorBlob, ExtractedBlend, ExtractedDepthStencil,
@@ -33,6 +28,9 @@ use crate::{
     AppIdentity, AppKey, AppText, Error, HashedBytecode, HashedObject, Limits, ObjectKind,
     ObjectVersion, Sha256Hash, SodbSummary, TableId,
 };
+use rusqlite::limits::Limit;
+use rusqlite::types::ValueRef;
+use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension};
 
 /// Read `PRAGMA`-equivalent header fields without opening tables or hashing blobs.
 ///
@@ -103,10 +101,132 @@ pub fn extract_pipeline_states_with_limits(
     extract_from_opened(opened, limits)
 }
 
+/// List `shader_bytecode` blobs (hash, rowid, length). Bytes are not retained.
+#[must_use = "bytecode locations should be used"]
+pub fn list_bytecode_blobs(path: impl AsRef<Path>) -> Result<Vec<crate::BytecodeBlobRef>, Error> {
+    list_bytecode_blobs_with_limits(path, Limits::DEFAULT)
+}
+
+/// List `shader_bytecode` blobs with caller-supplied resource caps.
+#[must_use = "bytecode locations should be used"]
+pub fn list_bytecode_blobs_with_limits(
+    path: impl AsRef<Path>,
+    limits: Limits,
+) -> Result<Vec<crate::BytecodeBlobRef>, Error> {
+    let opened = open_db(path.as_ref(), limits)?;
+    Ok(opened.bytecode_refs)
+}
+
+/// Re-read one `shader_bytecode` blob and verify its SHA-256 and length.
+///
+/// Used by the local shader index so a file that changed after the scan is
+/// never silently used. The returned `Vec` holds the blob only for the caller
+/// that asked to rebuild a local SODB.
+pub fn read_bytecode_blob(
+    path: impl AsRef<Path>,
+    rowid: i64,
+    expected: Sha256Hash,
+    expected_len: u64,
+    limits: Limits,
+) -> Result<Vec<u8>, Error> {
+    let opened = open_db(path.as_ref(), limits)?;
+    read_bytecode_blob_from_conn(&opened.conn, rowid, expected, expected_len, limits)
+}
+
+/// Re-read a `WITHOUT ROWID` blob by application key and verify its hash.
+pub fn read_bytecode_blob_by_key(
+    path: impl AsRef<Path>,
+    key: &AppKey,
+    expected: Sha256Hash,
+    expected_len: u64,
+    limits: Limits,
+) -> Result<Vec<u8>, Error> {
+    let opened = open_db(path.as_ref(), limits)?;
+    let table = TableId::ShaderBytecode;
+    if expected_len > limits.max_blob_bytes as u64 {
+        return Err(Error::BlobTooLarge {
+            table,
+            max: limits.max_blob_bytes as u64,
+            got: expected_len,
+        });
+    }
+    let bytes: Option<Vec<u8>> = opened
+        .conn
+        .query_row(
+            "SELECT Bytecode FROM shader_bytecode WHERE Key = ?1",
+            [key.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    let bytes = bytes.ok_or(Error::BytecodeChanged)?;
+    if bytes.len() as u64 != expected_len {
+        return Err(Error::BytecodeChanged);
+    }
+    let hash = crate::hash::hash_shader_container(&bytes);
+    if hash != expected {
+        return Err(Error::BytecodeHashMismatch);
+    }
+    Ok(bytes)
+}
+
+fn read_bytecode_blob_from_conn(
+    conn: &Connection,
+    rowid: i64,
+    expected: Sha256Hash,
+    expected_len: u64,
+    limits: Limits,
+) -> Result<Vec<u8>, Error> {
+    let table = TableId::ShaderBytecode;
+    if expected_len > limits.max_blob_bytes as u64 {
+        return Err(Error::BlobTooLarge {
+            table,
+            max: limits.max_blob_bytes as u64,
+            got: expected_len,
+        });
+    }
+    let mut blob = conn
+        .blob_open(
+            DatabaseName::Main,
+            table.sql_name(),
+            COL_BYTECODE,
+            rowid,
+            true,
+        )
+        .map_err(|_| Error::BytecodeChanged)?;
+    let got_len = blob.size() as u64;
+    if got_len != expected_len {
+        return Err(Error::BytecodeChanged);
+    }
+    let mut bytes = Vec::new();
+    let mut hasher = crate::hash::StreamingShaderHasher::new();
+    let mut buf = [0_u8; crate::hash::SHADER_HASH_BUFFER];
+    loop {
+        let n = std::io::Read::read(&mut blob, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        bytes.extend_from_slice(&buf[..n]);
+        if bytes.len() as u64 > expected_len {
+            return Err(Error::BytecodeChanged);
+        }
+    }
+    if bytes.len() as u64 != expected_len {
+        return Err(Error::BytecodeChanged);
+    }
+    let hash = hasher.finish();
+    if hash != expected {
+        return Err(Error::BytecodeHashMismatch);
+    }
+    Ok(bytes)
+}
+
 struct OpenedSodb {
     conn: Connection,
     catalog: Catalog,
     bytecode_by_key: BTreeMap<AppKey, Sha256Hash>,
+    bytecode_refs: Vec<crate::BytecodeBlobRef>,
     wal_ignored: bool,
     budget: Budget,
 }
@@ -163,16 +283,17 @@ fn open_db(path: &Path, limits: Limits) -> Result<OpenedSodb, Error> {
     let mut budget = Budget::new(limits);
     let catalog = Catalog::load(&conn, &mut budget, limits)?;
 
-    let bytecode_by_key = if catalog.present.contains(&TableId::ShaderBytecode) {
+    let (bytecode_by_key, bytecode_refs) = if catalog.present.contains(&TableId::ShaderBytecode) {
         read_shader_bytecode(&conn, &catalog, &mut budget, limits)?
     } else {
-        BTreeMap::new()
+        (BTreeMap::new(), Vec::new())
     };
 
     Ok(OpenedSodb {
         conn,
         catalog,
         bytecode_by_key,
+        bytecode_refs,
         wal_ignored: header.wal_ignored,
         budget,
     })
@@ -183,6 +304,7 @@ fn summary_from_opened(opened: OpenedSodb, limits: Limits) -> Result<SodbSummary
         conn,
         catalog,
         bytecode_by_key,
+        bytecode_refs: _,
         wal_ignored,
         mut budget,
     } = opened;
@@ -232,6 +354,7 @@ fn extract_from_opened(opened: OpenedSodb, limits: Limits) -> Result<ExtractedSo
         conn,
         catalog,
         bytecode_by_key,
+        bytecode_refs: _,
         wal_ignored: _,
         mut budget,
     } = opened;
@@ -1636,7 +1759,7 @@ fn read_shader_bytecode(
     catalog: &Catalog,
     budget: &mut Budget,
     limits: Limits,
-) -> Result<BTreeMap<AppKey, Sha256Hash>, Error> {
+) -> Result<(BTreeMap<AppKey, Sha256Hash>, Vec<crate::BytecodeBlobRef>), Error> {
     let table = TableId::ShaderBytecode;
     let count = row_count(conn, table)?;
     budget.charge(table, count)?;
@@ -1685,6 +1808,7 @@ fn read_shader_bytecode(
         .query([])
         .map_err(|source| Error::from_sqlite(table, source))?;
     let mut out = BTreeMap::new();
+    let mut refs = Vec::new();
     let mut seen = HashSet::new();
     while let Some(row) = rows
         .next()
@@ -1718,7 +1842,8 @@ fn read_shader_bytecode(
             }
         }
         enforce_len(table, name, &ty, len, limits)?;
-        let bytecode_hash = match use_rowid {
+        let blob_len = len.unwrap_or(0) as u64;
+        let (bytecode_hash, rowid) = match use_rowid {
             BytecodeRowPlan::UseRowid => {
                 let Some(rowid_idx) = bc_rowid_idx else {
                     continue;
@@ -1726,7 +1851,7 @@ fn read_shader_bytecode(
                 let rowid = row
                     .get::<_, i64>(rowid_idx)
                     .map_err(|source| Error::from_sqlite(table, source))?;
-                hash_bytecode_blob(conn, name, rowid, table)?
+                (hash_bytecode_blob(conn, name, rowid, table)?, Some(rowid))
             }
             BytecodeRowPlan::FallbackSelect => {
                 let Some(val_idx) = bc_val_idx else {
@@ -1735,12 +1860,19 @@ fn read_shader_bytecode(
                 let bytes: Vec<u8> = row
                     .get(val_idx)
                     .map_err(|source| Error::from_sqlite(table, source))?;
-                crate::hash::sha256(&bytes)
+                (crate::hash::sha256(&bytes), None)
             }
         };
+        refs.push(crate::BytecodeBlobRef {
+            key: key.clone(),
+            hash: bytecode_hash,
+            rowid,
+            len: blob_len,
+        });
         out.insert(key, bytecode_hash);
     }
-    Ok(out)
+    refs.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok((out, refs))
 }
 
 enum BytecodeRowPlan {
@@ -1889,16 +2021,7 @@ fn hash_bytecode_blob(
     let mut blob = conn
         .blob_open(DatabaseName::Main, table.sql_name(), column, rowid, true)
         .map_err(|source| Error::from_sqlite(table, source))?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0_u8; 8192];
-    loop {
-        let n = std::io::Read::read(&mut blob, &mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(Sha256Hash::from_bytes(hasher.finalize().into()))
+    crate::hash::hash_shader_reader(&mut blob).map_err(Error::from)
 }
 
 fn hashes_for_keys(

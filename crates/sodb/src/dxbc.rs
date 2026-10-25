@@ -10,9 +10,46 @@ use crate::Error;
 /// Maximum emitted root-signature bytes (canonical serialized form).
 pub const MAX_ROOT_SIGNATURE_BYTES: usize = 1024 * 1024;
 
-const DXBC_MAGIC: &[u8; 4] = b"DXBC";
+/// DXBC container magic (`DXBC`).
+pub const DXBC_MAGIC: [u8; 4] = *b"DXBC";
 const RTS0: &[u8; 4] = b"RTS0";
-const HEADER_LEN: usize = 32;
+/// Size of the DXBC container header (magic, digest, version, size, part count).
+pub const DXBC_HEADER_LEN: usize = 32;
+const HEADER_LEN: usize = DXBC_HEADER_LEN;
+
+/// Parsed DXBC container header. Only the declared size is used by the scanner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DxbcHeader {
+    /// Little-endian `FileSize` at offset 24. This is the container length.
+    pub declared_size: u32,
+}
+
+/// Why a DXBC header could not be used as a shader container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DxbcHeaderError {
+    /// Fewer than [`DXBC_HEADER_LEN`] bytes, or the first four bytes are not `DXBC`.
+    TruncatedHeader,
+    /// `FileSize` is smaller than the header.
+    SizeBelowHeader,
+}
+
+/// Parse the 32-byte DXBC header. Does not walk parts or retain bytecode.
+pub fn parse_dxbc_header(bytes: &[u8]) -> Result<DxbcHeader, DxbcHeaderError> {
+    if bytes.len() < DXBC_HEADER_LEN || !bytes.starts_with(&DXBC_MAGIC) {
+        return Err(DxbcHeaderError::TruncatedHeader);
+    }
+    let declared_size = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
+    if declared_size < DXBC_HEADER_LEN as u32 {
+        return Err(DxbcHeaderError::SizeBelowHeader);
+    }
+    Ok(DxbcHeader { declared_size })
+}
+
+/// `true` when `bytes` begins with the DXBC magic.
+#[must_use]
+pub fn starts_with_dxbc(bytes: &[u8]) -> bool {
+    bytes.starts_with(&DXBC_MAGIC)
+}
 
 /// Why a referenced root signature was not copied into the record file.
 ///
@@ -70,7 +107,7 @@ pub enum SanitizedRootSignature {
 /// parts is invalid. Version 1.2 (`Version = 3`) is
 /// `unsupported_version` — DXC does not serialize that layout.
 pub fn sanitize_root_signature(bytes: &[u8], max_bytes: usize) -> SanitizedRootSignature {
-    if bytes.len() >= 4 && bytes.starts_with(DXBC_MAGIC) {
+    if bytes.len() >= 4 && bytes.starts_with(&DXBC_MAGIC) {
         return extract_rts0_only(bytes, max_bytes);
     }
     canonicalize_root_signature(bytes, max_bytes)

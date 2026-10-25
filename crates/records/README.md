@@ -16,7 +16,9 @@ and a normal file never contains such a payload, but an adversarial
 file can fill those fields. Any consumer that accepts records from
 others (upload server, consensus builder, signing) MUST re-validate
 with the same parser and treat records as untrusted. Matching
-compares bytecode hashes to a `HashSet` of local hashes. There is no
+compares bytecode hashes to a `HashSet` of local hashes
+(`osdb_shaders::match_records` uses the same rules against a scanned
+index). There is no
 upload, download, hosting, or signing. Version 1.2
 (`D3D12_ROOT_SIGNATURE_DESC2`) is skipped as `unsupported_version`
 because DXC does not serialize that layout.

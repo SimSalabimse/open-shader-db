@@ -60,16 +60,16 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 ### Deliverables
 
 - [x] Legal review or documented risk acceptance
-- [ ] Shader bytecode extraction and hashing from installed game files
-- [ ] Pipeline-state record schema (state, root signature, formats; no DXIL)
-- [ ] Client rebuild: published records + local shaders
+- [x] Shader bytecode hashing from a user-pointed SODB and loose DXBC files (packed archives UNVERIFIED)
+- [x] Pipeline-state record schema (state, root signature, formats; no DXIL)
+- [x] Client rebuild: records + local shaders (synthetic fixtures)
 - [ ] Write a rebuilt SODB and test it with a game
 
 ### Success criteria
 
-- [ ] Client extracts DXIL from at least one installed game without modifying game files
-- [ ] Client matches bytecode hashes to published records
-- [ ] Client rebuilds a valid SODB locally
+- [x] Client hashes DXIL from a user-pointed SODB or loose DXBC tree without modifying game files (real installed games UNVERIFIED)
+- [x] Client matches bytecode hashes to local records
+- [x] Client rebuilds a valid SODB locally (synthetic fixtures; real runtime UNVERIFIED)
 - [x] Legal doubts in ARCHITECTURE.md are addressed or explicitly accepted
 
 ---

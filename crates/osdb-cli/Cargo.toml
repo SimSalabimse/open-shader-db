@@ -12,7 +12,9 @@ publish = false
 [dependencies]
 clap.workspace = true
 osdb-coverage = { path = "../coverage" }
+osdb-rebuild = { path = "../rebuild" }
 osdb-records = { path = "../records" }
+osdb-shaders = { path = "../shaders" }
 osdb-steam = { path = "../steam" }
 same-file.workspace = true
 serde_json.workspace = true
