@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use osdb_records::{
     BlendDesc, DepthStencilDesc, DepthStencilOpDesc, HexBytes, InputElementDesc, RecordFile,
@@ -60,10 +61,7 @@ pub fn rebuild_sodb(
             got,
         });
     }
-    let file = File::open(&tmp).map_err(|_| Error::Io)?;
-    file.sync_all().map_err(|_| Error::Io)?;
-    drop(file);
-    fs::rename(&tmp, out).map_err(|_| Error::Io)?;
+    persist_temp_db(&tmp, out, opts.force)?;
     guard.persist = true;
     Ok(report)
 }
@@ -556,13 +554,14 @@ fn write_database(
         )?;
     }
 
+    conn.pragma_update(None, "synchronous", "FULL")?;
     conn.execute_batch("VACUUM;")?;
     conn.pragma_update(None, "user_version", SODB_USER_VERSION)?;
     conn.pragma_update(None, "application_id", SODB_APPLICATION_ID)?;
     let _ = conn
         .query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0))
         .optional()?;
-    drop(conn);
+    conn.close().map_err(|(_, _)| Error::Sqlite)?;
     Ok(())
 }
 
@@ -672,6 +671,61 @@ fn path_is_under(dest: &Path, root: &Path) -> Result<bool, Error> {
         }
     };
     Ok(dest_abs.starts_with(&root))
+}
+
+/// Close-and-publish the temp SQLite file. Windows can refuse to rename a
+/// database that was just closed, so this retries and falls back to copy.
+fn persist_temp_db(tmp: &Path, dest: &Path, force: bool) -> Result<(), Error> {
+    sync_path(tmp)?;
+    if force {
+        match fs::symlink_metadata(dest) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+                    return Err(Error::NotRegular);
+                }
+                retry_io(|| fs::remove_file(dest))?;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(Error::Io),
+        }
+    }
+    if retry_io(|| fs::rename(tmp, dest)).is_ok() {
+        return Ok(());
+    }
+    let staged = temp_sibling(dest);
+    let mut staged_guard = TempGuard {
+        path: staged.clone(),
+        persist: false,
+    };
+    retry_io(|| fs::copy(tmp, &staged).map(|_| ()))?;
+    sync_path(&staged)?;
+    retry_io(|| fs::rename(&staged, dest))?;
+    staged_guard.persist = true;
+    let _ = fs::remove_file(tmp);
+    Ok(())
+}
+
+fn sync_path(path: &Path) -> Result<(), Error> {
+    let file = retry_io(|| File::open(path))?;
+    file.sync_all().map_err(|_| Error::Io)?;
+    Ok(())
+}
+
+fn retry_io<T>(mut op: impl FnMut() -> std::io::Result<T>) -> Result<T, Error> {
+    let attempts = if cfg!(windows) { 12 } else { 1 };
+    let mut last = Error::Io;
+    for attempt in 0..attempts {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(_) => {
+                last = Error::Io;
+                if attempt + 1 < attempts {
+                    std::thread::sleep(Duration::from_millis(15));
+                }
+            }
+        }
+    }
+    Err(last)
 }
 
 fn temp_sibling(dest: &Path) -> PathBuf {
