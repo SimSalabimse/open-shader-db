@@ -1,2 +1,6 @@
 # Keep schema files byte-stable across Windows and Linux checkouts.
 schemas/*.json text eol=lf
+schemas/**/*.json text eol=lf
+worker/**/*.ts text eol=lf
+worker/**/*.json text eol=lf
+worker/**/*.toml text eol=lf

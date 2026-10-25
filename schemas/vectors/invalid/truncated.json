@@ -1,0 +1,5 @@
+{
+  "verdict": "reject",
+  "error_code": "INVALID_JSON",
+  "body_text": "{\"build_id\":{\"exe_hash\":\"000000000000000"
+}
