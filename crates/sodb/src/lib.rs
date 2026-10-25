@@ -17,11 +17,11 @@ mod types;
 
 pub use error::Error;
 pub use limits::Limits;
-pub use parser::{open, open_with_limits};
+pub use parser::{is_sodb, open, open_with_limits, probe};
 pub use schema::{SODB_APPLICATION_ID, SODB_USER_VERSION};
 pub use types::{
     AppIdentity, AppKey, AppText, HashedBytecode, HashedObject, ObjectKind, ObjectVersion,
-    Sha256Hash, SodbSummary, TableId,
+    Sha256Hash, SodbHeader, SodbSummary, TableId,
 };
 
 #[cfg(test)]
