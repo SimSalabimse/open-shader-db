@@ -68,10 +68,23 @@ const MIP_LOD_BIAS_MAX: f32 = 15.99;
 /// `RootSignatureVerifier::AddRegisterRange`.
 const RESERVED_SPACE_START: u32 = 0xFFFF_FFF0;
 
+/// Per-range free numeric fields: `NumDescriptors`, base register,
+/// register space, offset (4 × 4 B).
+const LOOSE_BYTES_PER_RANGE: usize = 16;
+/// Leftover CBV/constants free fields: shader register + space (2 × 4 B).
+const LOOSE_BYTES_PER_ROOT_PARAM: usize = 8;
+/// Per-sampler free fields: register + space + three floats +
+/// `ComparisonFunc` when the filter is not `COMPARISON_*` (6 × 4 B).
+const LOOSE_BYTES_PER_SAMPLER: usize = 24;
+const MAX_TABLES_AT_RANGE_CAP: usize = MAX_RANGES / MAX_RANGES_PER_TABLE;
+const LEFTOVER_PARAMETERS: usize = MAX_PARAMETERS - MAX_TABLES_AT_RANGE_CAP;
+
 /// Worst-case loosely constrained numeric bytes: 4 tables × 1024 ranges
-/// (16 B) + 60 leftover root parameters (8 B) + 2048 samplers
-/// (register/space 8 B + three floats 12 B).
-pub const WORST_CASE_LOOSE_NUMERIC_BYTES: usize = 106_976;
+/// (16 B) + 60 leftover root parameters (8 B) + 2048 samplers (24 B,
+/// including `ComparisonFunc` for non-comparison filters).
+pub const WORST_CASE_LOOSE_NUMERIC_BYTES: usize = MAX_RANGES * LOOSE_BYTES_PER_RANGE
+    + LEFTOVER_PARAMETERS * LOOSE_BYTES_PER_ROOT_PARAM
+    + MAX_SAMPLERS * LOOSE_BYTES_PER_SAMPLER;
 
 const FILTERS: &[u32] = &[
     0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15, 0x54, 0x55, 0x80, 0x81, 0x84, 0x85, 0x90, 0x91,
@@ -451,9 +464,6 @@ fn parse_range(bytes: &[u8], off: usize, v11: bool) -> Result<DescriptorRange, E
     } else {
         (0, u32_at(bytes, off + 16)?)
     };
-    if offset != OFFSET_APPEND && offset > i32::MAX as u32 {
-        return Err(Error::RootSignatureMalformed);
-    }
     Ok(DescriptorRange {
         range_type,
         num_descriptors,
@@ -767,13 +777,7 @@ fn add_register_range(
 /// Documented worst-case loosely constrained numeric capacity.
 #[must_use]
 pub fn worst_case_loose_numeric_bytes() -> usize {
-    let range_bytes = MAX_RANGES.saturating_mul(16);
-    let leftover_params = MAX_PARAMETERS.saturating_sub(MAX_RANGES / MAX_RANGES_PER_TABLE);
-    let param_bytes = leftover_params.saturating_mul(8);
-    let sampler_bytes = MAX_SAMPLERS.saturating_mul(20);
-    range_bytes
-        .saturating_add(param_bytes)
-        .saturating_add(sampler_bytes)
+    WORST_CASE_LOOSE_NUMERIC_BYTES
 }
 
 struct Coverage {
@@ -1419,6 +1423,22 @@ mod tests {
     }
 
     #[test]
+    fn negative_zero_min_and_max_lod_are_canonicalised() {
+        let mut min_lod = one_sampler_border4_v1_0();
+        min_lod[24 + 32..24 + 36].copy_from_slice(&(-0.0_f32).to_bits().to_le_bytes());
+        assert_eq!(
+            parse_root_signature(&min_lod).unwrap().serialize(),
+            one_sampler_border4_v1_0()
+        );
+        let mut max_lod = one_sampler_border4_v1_0();
+        max_lod[24 + 36..24 + 40].copy_from_slice(&(-0.0_f32).to_bits().to_le_bytes());
+        assert_eq!(
+            parse_root_signature(&max_lod).unwrap().serialize(),
+            one_sampler_border4_v1_0()
+        );
+    }
+
+    #[test]
     fn version_3_is_rejected() {
         let mut bytes = empty_root_signature_v1_0();
         bytes[0..4].copy_from_slice(&3_u32.to_le_bytes());
@@ -1444,10 +1464,24 @@ mod tests {
         let mut aniso = one_sampler_border4_v1_0();
         aniso[24 + 20..24 + 24].copy_from_slice(&17_u32.to_le_bytes());
         reject(&aniso);
+    }
 
-        let mut offset = table_three_ranges_v1_0();
-        offset[60..64].copy_from_slice(&(i32::MAX as u32 + 1).to_le_bytes());
-        reject(&offset);
+    #[test]
+    fn high_explicit_range_offsets_are_accepted() {
+        for offset in [0x8000_0000_u32, 0xFFFF_FFFE] {
+            let bytes = table(
+                VERSION_1_0,
+                vec![DescriptorRange {
+                    range_type: 2,
+                    num_descriptors: 1,
+                    base_shader_register: 0,
+                    register_space: 0,
+                    flags: 0,
+                    offset,
+                }],
+            );
+            round_trip(&bytes);
+        }
     }
 
     #[test]
@@ -1517,6 +1551,18 @@ mod tests {
         let mut bytes = one_table_root_signature_v1_1();
         bytes[48..52].copy_from_slice(&0_u32.to_le_bytes());
         reject(&bytes);
+        let unbounded = table(
+            VERSION_1_0,
+            vec![DescriptorRange {
+                range_type: 2,
+                num_descriptors: u32::MAX,
+                base_shader_register: 0,
+                register_space: 0,
+                flags: 0,
+                offset: 0,
+            }],
+        );
+        round_trip(&unbounded);
     }
 
     #[test]
@@ -1568,7 +1614,100 @@ mod tests {
             worst_case_loose_numeric_bytes(),
             WORST_CASE_LOOSE_NUMERIC_BYTES
         );
-        assert_eq!(WORST_CASE_LOOSE_NUMERIC_BYTES, 106_976);
+        assert_eq!(WORST_CASE_LOOSE_NUMERIC_BYTES, 115_168);
+        let sig = max_capacity_signature();
+        assert_eq!(loose_bytes_carried(&sig), WORST_CASE_LOOSE_NUMERIC_BYTES);
+        let bytes = sig.serialize();
+        round_trip(&bytes);
+    }
+
+    fn max_capacity_signature() -> CanonicalRootSignature {
+        let mut parameters = Vec::new();
+        let mut space = 0_u32;
+        for _ in 0..MAX_TABLES_AT_RANGE_CAP {
+            let mut ranges = Vec::with_capacity(MAX_RANGES_PER_TABLE);
+            for _ in 0..MAX_RANGES_PER_TABLE {
+                ranges.push(DescriptorRange {
+                    range_type: 2,
+                    num_descriptors: 2,
+                    base_shader_register: 3,
+                    register_space: space,
+                    flags: 0,
+                    offset: 0x8000_0000,
+                });
+                space += 1;
+            }
+            parameters.push(Parameter::Table {
+                visibility: 0,
+                ranges,
+            });
+        }
+        for _ in 0..LEFTOVER_PARAMETERS {
+            parameters.push(Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 1,
+                shader_register: 7,
+                register_space: space,
+                flags: 0,
+            });
+            space += 1;
+        }
+        let mut samplers = Vec::with_capacity(MAX_SAMPLERS);
+        for _ in 0..MAX_SAMPLERS {
+            samplers.push(StaticSampler {
+                filter: 0,
+                address_u: 1,
+                address_v: 1,
+                address_w: 1,
+                mip_lod_bias: 1.0_f32.to_bits(),
+                max_anisotropy: 0,
+                comparison_func: 0xA5A5_A5A5,
+                border_color: 0,
+                min_lod: 2.0_f32.to_bits(),
+                max_lod: 3.0_f32.to_bits(),
+                shader_register: 9,
+                register_space: space,
+                visibility: 2,
+            });
+            space += 1;
+        }
+        CanonicalRootSignature {
+            version: VERSION_1_0,
+            flags: 0,
+            parameters,
+            samplers,
+        }
+    }
+
+    fn loose_bytes_carried(sig: &CanonicalRootSignature) -> usize {
+        let mut n = 0_usize;
+        for param in &sig.parameters {
+            match param {
+                Parameter::Table { ranges, .. } => {
+                    for _ in ranges {
+                        n += 4; // NumDescriptors
+                        n += 4; // BaseShaderRegister
+                        n += 4; // RegisterSpace
+                        n += 4; // OffsetInDescriptorsFromTableStart
+                    }
+                }
+                Parameter::Constants { .. } | Parameter::Descriptor { .. } => {
+                    n += 4; // ShaderRegister
+                    n += 4; // RegisterSpace
+                }
+            }
+        }
+        for s in &sig.samplers {
+            n += 4; // ShaderRegister
+            n += 4; // RegisterSpace
+            n += 4; // MipLODBias
+            n += 4; // MinLOD
+            n += 4; // MaxLOD
+            if !COMPARISON_FILTERS.contains(&s.filter) {
+                n += 4; // ComparisonFunc (unchecked for non-comparison filters)
+            }
+        }
+        n
     }
 
     #[test]
@@ -1597,5 +1736,209 @@ mod tests {
             .serialize();
             round_trip(&bytes);
         }
+    }
+
+    fn range(
+        range_type: u32,
+        num: u32,
+        base: u32,
+        space: u32,
+        offset: u32,
+        flags: u32,
+    ) -> DescriptorRange {
+        DescriptorRange {
+            range_type,
+            num_descriptors: num,
+            base_shader_register: base,
+            register_space: space,
+            flags,
+            offset,
+        }
+    }
+
+    fn sig(parameters: Vec<Parameter>) -> Vec<u8> {
+        CanonicalRootSignature {
+            version: VERSION_1_1,
+            flags: 0,
+            parameters,
+            samplers: Vec::new(),
+        }
+        .serialize()
+    }
+
+    #[test]
+    fn numdesc0_rejects_zero_and_accepts_unbounded() {
+        reject(&table(VERSION_1_0, vec![range(2, 0, 0, 0, 0, 0)]));
+        round_trip(&table(VERSION_1_0, vec![range(2, u32::MAX, 0, 0, 0, 0)]));
+    }
+
+    #[test]
+    fn rdesc_combo_rejects_two_data_flags() {
+        reject(&sig(vec![Parameter::Descriptor {
+            kind: PARAM_CBV,
+            visibility: 0,
+            shader_register: 0,
+            register_space: 0,
+            flags: 0x2 | 0x4,
+        }]));
+        round_trip(&sig(vec![Parameter::Descriptor {
+            kind: PARAM_CBV,
+            visibility: 0,
+            shader_register: 0,
+            register_space: 0,
+            flags: 0x2,
+        }]));
+    }
+
+    #[test]
+    fn mix_samp_rejects_sampler_and_resource_in_one_table() {
+        reject(&table(
+            VERSION_1_0,
+            vec![range(0, 1, 0, 0, 0, 0), range(3, 1, 0, 1, 0, 0)],
+        ));
+        let split = CanonicalRootSignature {
+            version: VERSION_1_0,
+            flags: 0,
+            parameters: vec![
+                Parameter::Table {
+                    visibility: 0,
+                    ranges: vec![range(0, 1, 0, 0, 0, 0)],
+                },
+                Parameter::Table {
+                    visibility: 0,
+                    ranges: vec![range(3, 1, 0, 1, 0, 0)],
+                },
+            ],
+            samplers: Vec::new(),
+        }
+        .serialize();
+        round_trip(&split);
+    }
+
+    #[test]
+    fn append_unb_rejects_append_after_unbounded() {
+        reject(&table(
+            VERSION_1_0,
+            vec![
+                range(2, u32::MAX, 0, 0, 0, 0),
+                range(2, 1, 0, 1, OFFSET_APPEND, 0),
+            ],
+        ));
+        round_trip(&table(
+            VERSION_1_0,
+            vec![range(2, u32::MAX, 0, 0, 0, 0), range(2, 1, 0, 1, 0, 0)],
+        ));
+    }
+
+    #[test]
+    fn desc_overflow_rejects_offset_plus_count() {
+        reject(&table(VERSION_1_0, vec![range(2, 3, 0, 0, 0xFFFF_FFFE, 0)]));
+        round_trip(&table(VERSION_1_0, vec![range(2, 2, 0, 0, 0xFFFF_FFFE, 0)]));
+    }
+
+    #[test]
+    fn rflag_combo_rejects_static_with_volatile() {
+        reject(&table(VERSION_1_1, vec![range(2, 1, 0, 0, 0, 0x8 | 0x1)]));
+        round_trip(&table(VERSION_1_1, vec![range(2, 1, 0, 0, 0, 0x8)]));
+    }
+
+    #[test]
+    fn ovl_all_rejects_all_after_specific_or_other_all() {
+        reject(&sig(vec![
+            Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 1,
+                shader_register: 0,
+                register_space: 0,
+                flags: 0,
+            },
+            Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 0,
+                shader_register: 0,
+                register_space: 0,
+                flags: 0,
+            },
+        ]));
+        reject(&sig(vec![
+            Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 0,
+                shader_register: 0,
+                register_space: 0,
+                flags: 0,
+            },
+            Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 0,
+                shader_register: 0,
+                register_space: 0,
+                flags: 0,
+            },
+        ]));
+        round_trip(&sig(vec![
+            Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 1,
+                shader_register: 0,
+                register_space: 0,
+                flags: 0,
+            },
+            Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 0,
+                shader_register: 1,
+                register_space: 0,
+                flags: 0,
+            },
+        ]));
+    }
+
+    #[test]
+    fn ovl_same_rejects_same_visibility_overlap() {
+        reject(&sig(vec![
+            Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 1,
+                shader_register: 0,
+                register_space: 0,
+                flags: 0,
+            },
+            Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 1,
+                shader_register: 0,
+                register_space: 0,
+                flags: 0,
+            },
+        ]));
+        round_trip(&sig(vec![
+            Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 1,
+                shader_register: 0,
+                register_space: 0,
+                flags: 0,
+            },
+            Parameter::Descriptor {
+                kind: PARAM_CBV,
+                visibility: 2,
+                shader_register: 0,
+                register_space: 0,
+                flags: 0,
+            },
+        ]));
+    }
+
+    #[test]
+    fn vis_param_rejects_empty_table_visibility_above_7() {
+        reject(&sig(vec![Parameter::Table {
+            visibility: 8,
+            ranges: Vec::new(),
+        }]));
+        round_trip(&sig(vec![Parameter::Table {
+            visibility: 7,
+            ranges: Vec::new(),
+        }]));
     }
 }

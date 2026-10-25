@@ -21,7 +21,9 @@ const HEADER_LEN: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RootSignatureSkipReason {
-    /// Version field is not D3D12 1.0 or 1.1 (includes 1.2 / `Version = 3`).
+    /// Well-formed 24-byte header whose `Version` is not 1.0 or 1.1
+    /// (includes 1.2 / `Version = 3`). A truncated or garbage version
+    /// field is [`Self::Invalid`].
     UnsupportedVersion,
     /// Structurally invalid, over cap, or a container with no usable RTS0.
     Invalid,
@@ -77,9 +79,6 @@ pub fn sanitize_root_signature(bytes: &[u8], max_bytes: usize) -> SanitizedRootS
 fn canonicalize_root_signature(bytes: &[u8], max_bytes: usize) -> SanitizedRootSignature {
     if bytes.len() as u64 > max_bytes as u64 {
         return SanitizedRootSignature::Skipped(RootSignatureSkipReason::Invalid);
-    }
-    if bytes.len() < 4 {
-        return SanitizedRootSignature::Skipped(RootSignatureSkipReason::UnsupportedVersion);
     }
     match parse_root_signature(bytes) {
         Ok(parsed) => {
@@ -269,13 +268,49 @@ mod tests {
     }
 
     #[test]
-    fn rts0_v99_is_unsupported_version() {
+    fn rts0_v99_header_is_unsupported_version() {
         let mut payload = vec![99, 0, 0, 0];
         payload.extend_from_slice(MARKER);
         let blob = dxbc_with_parts(&[(b"RTS0", &payload)]);
         let reason = skip_reason(sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES));
         assert_eq!(reason, RootSignatureSkipReason::UnsupportedVersion);
         assert_no_marker(reason);
+    }
+
+    #[test]
+    fn rts0_truncated_payload_is_invalid() {
+        let blob = dxbc_with_parts(&[(b"RTS0", &[99, 0, 0, 0])]);
+        let reason = skip_reason(sanitize_root_signature(&blob, MAX_ROOT_SIGNATURE_BYTES));
+        assert_eq!(reason, RootSignatureSkipReason::Invalid);
+        assert_no_marker(reason);
+    }
+
+    #[test]
+    fn well_formed_unknown_version_is_unsupported_version() {
+        let mut bytes = empty_root_signature_v1_0();
+        bytes[0..4].copy_from_slice(&99_u32.to_le_bytes());
+        assert_eq!(
+            skip_reason(sanitize_root_signature(&bytes, MAX_ROOT_SIGNATURE_BYTES)),
+            RootSignatureSkipReason::UnsupportedVersion
+        );
+    }
+
+    #[test]
+    fn truncated_raw_version_is_invalid() {
+        assert_eq!(
+            skip_reason(sanitize_root_signature(
+                &[1, 0, 0],
+                MAX_ROOT_SIGNATURE_BYTES
+            )),
+            RootSignatureSkipReason::Invalid
+        );
+        assert_eq!(
+            skip_reason(sanitize_root_signature(
+                &[3, 0, 0, 0],
+                MAX_ROOT_SIGNATURE_BYTES
+            )),
+            RootSignatureSkipReason::Invalid
+        );
     }
 
     #[test]

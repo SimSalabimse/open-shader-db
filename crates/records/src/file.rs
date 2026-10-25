@@ -652,14 +652,13 @@ impl<'de> Visitor<'de> for RawRecordVisitor {
                 "unresolved_stages" => unresolved_stages = Some(map.next_value()?),
                 "root_signature" => root_signature = map.next_value()?,
                 "root_signature_skip" => {
-                    let text: Option<String> = map.next_value()?;
-                    root_signature_skip = match text {
-                        None => None,
-                        Some(code) => Some(
-                            sodb::RootSignatureSkipReason::parse(&code)
-                                .ok_or_else(|| store_typed(Error::UnknownRootSignatureSkip))?,
-                        ),
-                    };
+                    let text: String = map
+                        .next_value()
+                        .map_err(|_| store_typed(Error::InvalidJson))?;
+                    root_signature_skip = Some(
+                        sodb::RootSignatureSkipReason::parse(&text)
+                            .ok_or_else(|| store_typed(Error::UnknownRootSignatureSkip))?,
+                    );
                 }
                 "input_layout" => input_layout = map.next_value()?,
                 "depth_stencil" => depth_stencil = map.next_value()?,

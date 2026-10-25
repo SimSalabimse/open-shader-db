@@ -21,7 +21,8 @@ pub use build::{BuildIdentity, ExeHash, GameId, GameVersion};
 pub use error::Error;
 pub use extract::{
     encode_record_file, encode_record_file_to_writer, extract, extract_with_options,
-    extract_with_sodb_limits,
+    extract_with_report, extract_with_sodb_limits, skipped_root_signatures_message,
+    ExtractedRecordFile,
 };
 pub use file::{load, load_with_limits, RecordFile, RedactedPath, FORMAT_VERSION};
 pub use hash::Sha256;

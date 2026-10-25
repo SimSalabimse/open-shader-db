@@ -217,8 +217,7 @@ fn records_extract_writes_json_without_bytecode_or_paths() {
     assert!(!String::from_utf8_lossy(&result.stderr).contains(sodb.path.to_string_lossy().as_ref()));
 }
 
-#[test]
-fn records_extract_prints_skipped_root_signature_count() {
+fn create_sodb_with_skipped_root_sig() -> TempFile {
     let path = temp_path(".sodb");
     let conn = Connection::open(&path).unwrap();
     conn.pragma_update(None, "journal_mode", "OFF").unwrap();
@@ -239,7 +238,12 @@ fn records_extract_prints_skipped_root_signature_count() {
     )
     .unwrap();
     drop(conn);
-    let sodb = TempFile { path };
+    TempFile { path }
+}
+
+#[test]
+fn records_extract_prints_skipped_root_signature_count() {
+    let sodb = create_sodb_with_skipped_root_sig();
     let out_path = TempFile {
         path: temp_path(".json"),
     };
@@ -266,6 +270,31 @@ fn records_extract_prints_skipped_root_signature_count() {
     assert!(text.contains("\"root_signature_skip\": \"invalid\""));
     assert!(text.contains("\"app_key\": \"02\""));
     assert!(!text.contains("DEAD"));
+}
+
+#[test]
+fn records_extract_refused_out_does_not_print_skip_count() {
+    let sodb = create_sodb_with_skipped_root_sig();
+    let dest = TempFile {
+        path: temp_path(".json"),
+    };
+    std::fs::write(&dest.path, b"keep-me").unwrap();
+    let out = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&dest.path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        !stderr.contains("skipped"),
+        "skip count must print only after a successful write, got {stderr:?}"
+    );
+    assert_eq!(std::fs::read(&dest.path).unwrap(), b"keep-me");
 }
 
 #[test]

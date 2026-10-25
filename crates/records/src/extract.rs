@@ -22,9 +22,15 @@ use crate::types::{
 };
 use crate::{Error, Limits, RecordFile, FORMAT_VERSION};
 
+/// Extracted record file plus the unique skipped-root-signature count.
+pub struct ExtractedRecordFile {
+    pub file: RecordFile,
+    pub skipped_root_signatures: u64,
+}
+
 /// Extract records from `path` using SODB default limits.
 pub fn extract(path: impl AsRef<Path>, build: BuildIdentity) -> Result<RecordFile, Error> {
-    extract_with_options(path, build, sodb::Limits::DEFAULT, false)
+    Ok(extract_with_report(path, build, sodb::Limits::DEFAULT, false)?.file)
 }
 
 /// Extract records using caller-supplied SODB resource caps.
@@ -33,7 +39,7 @@ pub fn extract_with_sodb_limits(
     build: BuildIdentity,
     limits: sodb::Limits,
 ) -> Result<RecordFile, Error> {
-    extract_with_options(path, build, limits, false)
+    Ok(extract_with_report(path, build, limits, false)?.file)
 }
 
 /// Extract records, optionally replacing each `app_key` with SHA-256 of the key.
@@ -43,6 +49,17 @@ pub fn extract_with_options(
     limits: sodb::Limits,
     hash_app_keys: bool,
 ) -> Result<RecordFile, Error> {
+    Ok(extract_with_report(path, build, limits, hash_app_keys)?.file)
+}
+
+/// Extract records without printing. The caller prints the skip count
+/// only after a successful write.
+pub fn extract_with_report(
+    path: impl AsRef<Path>,
+    build: BuildIdentity,
+    limits: sodb::Limits,
+    hash_app_keys: bool,
+) -> Result<ExtractedRecordFile, Error> {
     let extracted = extract_pipeline_states_with_limits(path, limits)?;
     let mut root_signatures = BTreeMap::new();
     let mut input_layouts = BTreeMap::new();
@@ -63,25 +80,31 @@ pub fn extract_with_options(
         }
         records.sort_by(|a, b| a.app_key.cmp(&b.app_key));
     }
-    if extracted.skipped_root_signatures > 0 {
-        eprintln!(
-            "skipped {} root signature{}",
-            extracted.skipped_root_signatures,
-            if extracted.skipped_root_signatures == 1 {
-                ""
-            } else {
-                "s"
-            }
-        );
-    }
-    Ok(RecordFile {
-        format_version: FORMAT_VERSION,
-        build,
-        root_signatures,
-        input_layouts,
-        stream_outputs,
-        records,
+    Ok(ExtractedRecordFile {
+        file: RecordFile {
+            format_version: FORMAT_VERSION,
+            build,
+            root_signatures,
+            input_layouts,
+            stream_outputs,
+            records,
+        },
+        skipped_root_signatures: extracted.skipped_root_signatures,
     })
+}
+
+/// Stderr line printed after a successful extract write.
+#[must_use]
+pub fn skipped_root_signatures_message(count: u64) -> Option<String> {
+    if count == 0 {
+        None
+    } else {
+        Some(format!(
+            "skipped {} root signature{}",
+            count,
+            if count == 1 { "" } else { "s" }
+        ))
+    }
 }
 
 /// Deterministic pretty JSON written only after a successful in-memory encode.

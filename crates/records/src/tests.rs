@@ -1236,11 +1236,23 @@ fn rts0_smuggle_is_skipped_and_marker_absent() {
 }
 
 #[test]
-fn rts0_v99_is_skipped_and_marker_absent() {
+fn rts0_v99_header_is_skipped_as_unsupported_version() {
     let mut payload = vec![99, 0, 0, 0];
     payload.extend_from_slice(MARKER);
     let blob = dxbc_with_parts(&[(b"RTS0", &payload)]);
     extract_skips_root_sig(&blob, RootSignatureSkipReason::UnsupportedVersion);
+}
+
+#[test]
+fn rts0_truncated_payload_is_skipped_as_invalid() {
+    let blob = dxbc_with_parts(&[(b"RTS0", &[99, 0, 0, 0])]);
+    extract_skips_root_sig(&blob, RootSignatureSkipReason::Invalid);
+}
+
+#[test]
+fn truncated_raw_version_is_skipped_as_invalid() {
+    extract_skips_root_sig(&[3, 0, 0, 0], RootSignatureSkipReason::Invalid);
+    extract_skips_root_sig(&[1, 0], RootSignatureSkipReason::Invalid);
 }
 
 #[test]
@@ -1753,6 +1765,14 @@ fn loader_accepts_documented_root_signature_skip_reasons() {
         assert_eq!(loaded.records[0].root_signature, None);
         assert_eq!(loaded.records[0].root_signature_skip, Some(reason));
     }
+}
+
+#[test]
+fn loader_rejects_null_root_signature_skip() {
+    let json = r#"{"format_version":1,"build":{},"records":[{"app_key":"01","version":0,"bytecode_hashes":{},"root_signature":null,"root_signature_skip":null}]}"#;
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::InvalidJson), "{err:?}");
 }
 
 #[test]

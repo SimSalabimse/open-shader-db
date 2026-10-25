@@ -345,8 +345,8 @@ pub struct PipelineStateRecord {
     /// Why `root_signature` is null when a referenced blob was skipped.
     ///
     /// Documented codes: `unsupported_version`, `invalid`,
-    /// `unsupported_container`. Omitted when the record has a hash or
-    /// never referenced a root signature.
+    /// `unsupported_container`. Omitted when there is no skip. JSON
+    /// `null` is rejected. Must not be set together with a hash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_signature_skip: Option<sodb::RootSignatureSkipReason>,
     pub input_layout: Option<Sha256>,

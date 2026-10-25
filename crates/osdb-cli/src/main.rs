@@ -202,7 +202,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 },
         } => {
             let build = parse_build(game_id.as_deref(), version.as_deref(), exe_hash.as_deref())?;
-            let file = osdb_records::extract_with_options(
+            let report = osdb_records::extract_with_report(
                 &sodb,
                 build,
                 sodb::Limits::DEFAULT,
@@ -210,12 +210,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             match out {
                 Some(path) => output::write_atomic(&path, &sodb, force, |dest| {
-                    osdb_records::encode_record_file_to_writer(&file, dest).map_err(Into::into)
+                    osdb_records::encode_record_file_to_writer(&report.file, dest)
+                        .map_err(Into::into)
                 })?,
                 None => {
                     let mut stdout = std::io::stdout().lock();
-                    osdb_records::encode_record_file_to_writer(&file, &mut stdout)?;
+                    osdb_records::encode_record_file_to_writer(&report.file, &mut stdout)?;
                 }
+            }
+            if let Some(msg) =
+                osdb_records::skipped_root_signatures_message(report.skipped_root_signatures)
+            {
+                eprintln!("{msg}");
             }
         }
         Command::Coverage {
