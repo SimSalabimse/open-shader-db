@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Thin CLI: inspect, discover, coverage, records, local shader scan, and rebuild.
+//! Thin CLI: inspect, discover, coverage, records, local shader scan, rebuild, and upload preview.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
@@ -71,6 +71,11 @@ enum Command {
     Shaders {
         #[command(subcommand)]
         command: ShadersCommand,
+    },
+    /// Build an anonymized upload manifest and show a preview. Nothing is sent.
+    Upload {
+        #[command(subcommand)]
+        command: UploadCommand,
     },
     /// Rebuild a local SODB from records plus local shaders.
     ///
@@ -183,6 +188,26 @@ impl fmt::Debug for Cli {
                 .field("json", json)
                 .field("max_output_bytes", max_output_bytes)
                 .finish(),
+            Command::Upload { command } => match command {
+                UploadCommand::Prepare {
+                    records: _,
+                    build_id,
+                    version,
+                    exe_hash,
+                    out: _,
+                    force,
+                    yes_i_reviewed,
+                } => f
+                    .debug_struct("UploadPrepare")
+                    .field("records", &"<redacted>")
+                    .field("build_id", build_id)
+                    .field("version", version)
+                    .field("exe_hash", exe_hash)
+                    .field("out", &"<redacted>")
+                    .field("force", force)
+                    .field("yes_i_reviewed", yes_i_reviewed)
+                    .finish(),
+            },
         }
     }
 }
@@ -206,6 +231,34 @@ enum ShadersCommand {
         /// Overwrite `--out` if it already exists as a regular file.
         #[arg(long)]
         force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum UploadCommand {
+    /// Build a local preview of the upload payload. Nothing is sent.
+    Prepare {
+        /// Record file from `records extract`.
+        #[arg(long)]
+        records: PathBuf,
+        /// Game id written into `build_id.game_id`.
+        #[arg(long)]
+        build_id: String,
+        /// Optional version override (otherwise taken from the record file).
+        #[arg(long)]
+        version: Option<String>,
+        /// Optional exe SHA-256 override (64 lowercase hex characters).
+        #[arg(long)]
+        exe_hash: Option<String>,
+        /// Write the canonical manifest bytes. Requires `--yes-i-reviewed`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Overwrite `--out` if it already exists as a regular file.
+        #[arg(long)]
+        force: bool,
+        /// Required with `--out`. Confirms the preview was reviewed.
+        #[arg(long)]
+        yes_i_reviewed: bool,
     },
 }
 
@@ -326,6 +379,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 writeln!(out)?;
             } else {
                 write!(out, "{}", report.format_human())?;
+            }
+        }
+        Command::Upload {
+            command:
+                UploadCommand::Prepare {
+                    records,
+                    build_id,
+                    version,
+                    exe_hash,
+                    out,
+                    force,
+                    yes_i_reviewed,
+                },
+        } => {
+            let loaded = osdb_records::load(&records)?;
+            let mut builder = osdb_upload::ManifestBuilder::new(&loaded)
+                .game_id(osdb_upload::GameId::parse(&build_id)?);
+            if let Some(text) = version {
+                builder = builder.version(osdb_upload::GameVersion::parse(&text)?);
+            }
+            if let Some(text) = exe_hash {
+                builder = builder.exe_hash(osdb_upload::ExeHash::parse(&text)?);
+            }
+            let manifest = builder.build()?;
+            let preview = osdb_upload::UploadPreview::from_manifest(&manifest)?;
+            let mut stdout = std::io::stdout().lock();
+            write!(stdout, "{}", preview.as_text())?;
+            if let Some(path) = out {
+                if !yes_i_reviewed {
+                    return Err(
+                        "pass --yes-i-reviewed after reviewing the preview; nothing was written"
+                            .into(),
+                    );
+                }
+                let bytes = preview.canonical_bytes().to_vec();
+                output::write_atomic(&path, &records, force, |dest| {
+                    dest.write_all(&bytes).map_err(Into::into)
+                })?;
             }
         }
         Command::Shaders {
@@ -583,5 +674,24 @@ mod tests {
         assert!(text.contains("<redacted>"));
         assert!(!text.contains("os-user"));
         assert!(text.contains("force: true"));
+
+        let upload = Cli {
+            command: Command::Upload {
+                command: UploadCommand::Prepare {
+                    records: PathBuf::from("/home/os-user/records.json"),
+                    build_id: String::from("synthetic"),
+                    version: Some(String::from("1")),
+                    exe_hash: None,
+                    out: Some(PathBuf::from("/tmp/os-user-manifest.json")),
+                    force: false,
+                    yes_i_reviewed: true,
+                },
+            },
+        };
+        let text = format!("{upload:?}");
+        assert!(text.contains("<redacted>"));
+        assert!(!text.contains("os-user"));
+        assert!(text.contains("synthetic"));
+        assert!(text.contains("yes_i_reviewed: true"));
     }
 }

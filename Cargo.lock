@@ -279,6 +279,7 @@ dependencies = [
  "osdb-records",
  "osdb-shaders",
  "osdb-steam",
+ "osdb-upload",
  "rusqlite",
  "same-file",
  "serde_json",
@@ -348,6 +349,17 @@ dependencies = [
  "sodb",
  "thiserror",
  "winreg",
+]
+
+[[package]]
+name = "osdb-upload"
+version = "0.1.0"
+dependencies = [
+ "osdb-records",
+ "osdb-steam",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

@@ -21,7 +21,7 @@ pub(crate) enum OutputError {
 impl std::fmt::Display for OutputError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SameAsInput => f.write_str("output path is the same file as the input SODB"),
+            Self::SameAsInput => f.write_str("output path is the same file as the input"),
             Self::AlreadyExists => {
                 f.write_str("output file already exists (pass --force to overwrite)")
             }

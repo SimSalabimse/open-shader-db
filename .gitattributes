@@ -1,0 +1,2 @@
+# Keep schema files byte-stable across Windows and Linux checkouts.
+schemas/*.json text eol=lf

@@ -1,0 +1,21 @@
+[package]
+name = "osdb-upload"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Anonymized upload manifest types and local preview (no network)"
+readme = "README.md"
+publish = false
+
+[dependencies]
+osdb-records = { path = "../records" }
+osdb-steam = { path = "../steam" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

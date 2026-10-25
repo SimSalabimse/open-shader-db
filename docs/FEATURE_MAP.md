@@ -31,9 +31,9 @@ This document tracks the implementation status of planned features. Milestone na
 | Coverage comparison CLI | ⚠️ Partial | crates/coverage, crates/osdb-cli | M0 Index and coverage reports | `osdb-cli coverage` vs unsigned local index; synthetic tests only. **Untested:** real game SODBs, real community indexes, signed indexes (M4), network download |
 | Shader extraction and matching | ⚠️ Partial | crates/shaders (osdb-shaders), crates/records, crates/osdb-cli | M1 Pipeline-state records | SODB scan + loose DXBC directory scan + `match_records`. No network, no process attach. Legal review done (see docs/LEGAL_RISK_NOTES.md). **UNVERIFIED:** real games, packed archives, hash-only match of those files |
 | SODB rebuild from records + local shaders | ⚠️ Partial | crates/rebuild (osdb-rebuild), crates/osdb-cli | M1 Pipeline-state records | Local rebuild from records + scanned shaders. Synthetic round-trip tested. **UNVERIFIED:** real Microsoft runtime acceptance, real game SODBs |
-| Upload manifest generation | 📋 Planned | Client | M2 Upload preview and submission | Anonymized JSON |
-| Upload preview | 📋 Planned | Client | M2 Upload preview and submission | Show payload before send |
-| Proof of ownership (client) | 📋 Planned | Client | M2 Upload preview and submission | Challenge-response with exe |
+| Upload manifest generation | ⚠️ Partial | crates/upload (osdb-upload), crates/osdb-cli | M2 Upload preview and submission | Local `upload prepare` only. Schema in schemas/upload_manifest.v1.json. No network. Description hashes are record descriptor keys, not SODB CanonicalHasher hashes (UNVERIFIED for consensus) |
+| Upload preview | ⚠️ Partial | crates/upload, crates/osdb-cli | M2 Upload preview and submission | CLI preview from the same canonical bytes as `--out`. No GUI |
+| Proof of ownership (client) | ⚠️ Partial | crates/upload | M2 Upload preview and submission | `OwnershipProof::Unchallenged` only. `exe_binding_v1` is in the schema and is UNVERIFIED |
 | Upload submission | 📋 Planned | Client | M2 Upload preview and submission | HTTPS POST to Worker |
 | Index download | 📋 Planned | Client | M4 Signed releases | Fetch signed files |
 | Signature verification | 📋 Planned | Client | M4 Signed releases | Minisign only |
@@ -46,7 +46,7 @@ This document tracks the implementation status of planned features. Milestone na
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
 | Ingest Worker (Cloudflare) | 📋 Planned | Ingest | M2 Upload preview and submission | HTTP POST |
-| Schema validation | 📋 Planned | Ingest | M2 Upload preview and submission | UploadManifest JSON |
+| Schema validation | ⚠️ Partial | crates/upload, schemas/ | M2 Upload preview and submission | JSON Schema + Rust parse/deny_unknown_fields. Worker not implemented |
 | Staging storage (R2 or reviewed PRs) | 📋 Planned | Ingest | M2 Upload preview and submission | Expire staging after 90 days |
 | Rate limiting | 📋 Planned | Ingest | M2 Upload preview and submission | Cloudflare edge + Turnstile; no stored IPs |
 | No IP logging | 📋 Planned | Ingest | M2 Upload preview and submission | Logpush without ClientIP |
@@ -79,7 +79,7 @@ This document tracks the implementation status of planned features. Milestone na
 |---------|--------|--------------|-----------|-------|
 | CoverageIndex schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | format_version 1 JSON in docs/COVERAGE_INDEX_FORMAT.md; logical DescriptionHash objects still M3 |
 | PipelineStateRecord schema | ⚠️ Partial | crates/records | M1 Pipeline-state records | format_version 1 JSON in docs/RECORD_FORMAT.md (local files). Legal review done (see docs/LEGAL_RISK_NOTES.md). State objects not included. **Untested:** real game SODBs, rebuild fidelity, non-SODB engines |
-| UploadManifest schema | 📋 Planned | Data model | M2 Upload preview and submission | Designed in ARCHITECTURE.md |
+| UploadManifest schema | ⚠️ Partial | crates/upload | M2 Upload preview and submission | schema_version 1 in docs/UPLOAD_MANIFEST.md and schemas/upload_manifest.v1.json. Drift-tested against Rust types |
 | BuildId schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | On-disk game_id / version / exe_hash on the index. SODB has no build identifier yet; coverage reports `build_identity: not_compared` |
 
 ## Security and privacy
@@ -87,8 +87,8 @@ This document tracks the implementation status of planned features. Milestone na
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
 | No user accounts | 📋 Planned | Privacy | M0 Index and coverage reports | Design decision |
-| Upload preview | 📋 Planned | Privacy | M2 Upload preview and submission | |
-| No game paths collected | 📋 Planned | Privacy | M2 Upload preview and submission | |
+| Upload preview | ⚠️ Partial | crates/upload, crates/osdb-cli | M2 Upload preview and submission | Local preview; canary tests. No send |
+| No game paths collected | ⚠️ Partial | crates/upload, crates/osdb-cli | M2 Upload preview and submission | Manifest, preview, errors, and Debug omit paths (tested). Worker not implemented |
 | Multi-upload consensus | 📋 Planned | Security | M3 Consensus and publishing | |
 | Signed releases (Minisign) | 📋 Planned | Security | M4 Signed releases | Approved |
 | Compile validation | 💭 Proposed | Security | M5 Windows validation | Deferred |
