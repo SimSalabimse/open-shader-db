@@ -11,9 +11,18 @@ account_id = "00000000000000000000000000000000"
 
 [vars]
 TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+# Empty: siteverify hostname/action are not checked. Set these only when
+# deploying a real site; this repository has no hostname to commit.
+TURNSTILE_EXPECTED_HOSTNAME = ""
+TURNSTILE_EXPECTED_ACTION = ""
 PER_BUILD_UPLOAD_CAP = "64"
 
 # Secrets (set with wrangler secret; never committed): TURNSTILE_SECRET
+
+# Workers Logs capture request data (headers, cf) when enabled.
+# Leave this off so this Worker does not store request bodies or headers.
+[observability]
+enabled = false
 
 [[r2_buckets]]
 binding = "STAGING_BUCKET"

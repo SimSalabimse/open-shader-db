@@ -34,7 +34,7 @@ export function objectKey(
 }
 
 export function isSafeIdent(text: string): boolean {
-  if (text.length < 1 || text.length > 128) {
+  if (text.length < 1 || text.length > 128 || text === "." || text === "..") {
     return false;
   }
   for (let i = 0; i < text.length; i += 1) {

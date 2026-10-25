@@ -68,7 +68,8 @@ interface ErrorBody {
 }
 
 interface StagingStore {
-  get(key: string): Promise<Uint8Array | null>
+  head(key: string): Promise<boolean>
+  put(key: string, bytes: Uint8Array): Promise<void>
   putIfAbsent(key: string, bytes: Uint8Array): Promise<"created" | "exists">
   countPrefix(prefix: string, limit: number): Promise<number>
 }
@@ -82,7 +83,7 @@ interface RateGate {
 }
 
 interface InjectedFetch {
-  (input: string, init: { method: string; headers: Record<string, string>; body: string }): Promise<{
+  (input: string, init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal }): Promise<{
     ok: boolean
     json(): Promise<unknown>
   }>
@@ -107,10 +108,10 @@ Pinned in `schemas/limits.v1.json`, `crates/upload` `Limits`, and
 | Per-build upload objects | 64 | Worker staging prefix only |
 
 64 MiB stays the local cap so a full record file can still be previewed.
-An 8 MiB Worker isolate budget cannot parse a 53-64 MiB document
-(128 MB isolate; see [Memory](#memory)). A full 150 000 + 400 000 hash
-payload does not fit on the wire; those contributors use the reviewed-PR
-path.
+The Worker **wire cap** is 8 MiB (not an isolate-size budget). A 53-64
+MiB document is refused before parse; see [Memory](#memory) for measured
+peaks under that wire cap. A full 150 000 + 400 000 hash payload does
+not fit on the wire; those contributors use the reviewed-PR path.
 
 ## Module layout
 
@@ -145,25 +146,37 @@ emitted JS.
    Other paths: `NOT_FOUND`.
 2. `RateGate.allow()` with the constant key `v1-upload`. Denial: `RATE_LIMITED`.
    No request-derived key.
-3. Read the Turnstile token from header `X-Turnstile-Token`. Missing:
-   `TURNSTILE_MISSING`. Verify via injected fetch. Failure: `TURNSTILE_FAILED`.
+3. Require `Content-Type: application/json` (optional `charset`). Other
+   types: `UNSUPPORTED_MEDIA_TYPE` (415).
+4. If `Content-Length` is a valid non-negative integer and is greater
+   than 8 MiB, reject (`BODY_TOO_LARGE`) without calling siteverify and
+   without reading the body.
+5. Read the Turnstile token from header `X-Turnstile-Token`. Missing:
+   `TURNSTILE_MISSING`. Tokens longer than 2048 characters, siteverify
+   failure, timeout, or a non-`success: true` body: `TURNSTILE_FAILED`.
    The token is dropped after the call. `remoteip` is omitted.
-4. Enforce the 8 MiB wire cap **before** parse:
-   - If `Content-Length` is a valid non-negative integer and is greater
-     than 8 MiB, reject (`BODY_TOO_LARGE`) without reading the body.
-   - Stream the body through a byte counter. Crossing 8 MiB rejects even
-     when `Content-Length` is missing, non-numeric, or too small.
-5. Parse bytes: BOM, nesting, UTF-8, JSON, deny unknown fields, typed
-   fields, sorted unique hashes, hour-rounded real calendar timestamp,
-   identifier rules, ownership shape. Same rules as `crates/upload`.
-6. Re-encode canonical bytes (compact, sorted keys). SHA-256 those bytes.
-7. Build object key (see [Staging](#staging)). Re-check key components.
-8. `get(key)`: if the object exists, return a receipt with
-   `idempotent: true`. No second put. No cap increment.
-9. `countPrefix(game_id/build_id/, cap)`. If the count is already `cap`,
-   reject (`BUILD_CAP_EXCEEDED`). The count is approximate under races;
-   that is acceptable (see below).
-10. `putIfAbsent` the **canonical** bytes only. Receipt fields are
+   `hostname` and `action` are checked only when
+   `TURNSTILE_EXPECTED_HOSTNAME` / `TURNSTILE_EXPECTED_ACTION` are
+   non-empty (this repository has no site hostname to commit).
+6. Stream the body through a byte counter. Crossing 8 MiB rejects even
+   when `Content-Length` is missing, non-numeric, or too small.
+7. Parse bytes with a schema-directed walk: reject at the first unknown
+   key, wrong type, depth over 8, list over its cap, string over its
+   max length, or duplicate key. Same rules as `crates/upload`.
+8. SHA-256 the stored bytes. If the request was already compact
+   canonical JSON, those bytes are the original buffer (no
+   re-serialize).
+9. Build object key (see [Staging](#staging)). Re-check key components.
+10. `head(key)` once: if the object exists, return a receipt with
+    `idempotent: true`. No second existence check. No cap increment.
+11. `countPrefix(game_id/build_id/, cap)`. If the count is already `cap`,
+    reject (`BUILD_CAP_EXCEEDED`). The count is approximate under races;
+    that is acceptable (see below). Anyone can fill the 64 slots under
+    one prefix (for example by varying `client_version`) and block
+    other contributors on that build for 90 days. That is a known
+    tradeoff; mitigations are a later step. New `exe_hash` values are
+    unbounded except by the rate gate.
+12. `put` the stored canonical bytes only. Receipt fields are
     manifest-derived plus `idempotent` and `ownership_state: "UNVERIFIED"`.
 
 The Worker never verifies `exe_binding_v1` and never claims that
@@ -180,7 +193,8 @@ header values, IPs, paths, or any request substring.
 | `NOT_FOUND` | 404 | path is not `/v1/upload` |
 | `RATE_LIMITED` | 429 | edge / binding gate denied |
 | `TURNSTILE_MISSING` | 403 | token header absent |
-| `TURNSTILE_FAILED` | 403 | siteverify returned unsuccessful |
+| `TURNSTILE_FAILED` | 403 | siteverify unsuccessful, timeout, or oversized token |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | `Content-Type` is not `application/json` |
 | `BODY_TOO_LARGE` | 413 | wire cap (Content-Length or stream) |
 | `MANIFEST_TOO_LARGE` | 413 | parser JSON byte cap |
 | `BYTE_ORDER_MARK` | 400 | UTF-8 BOM |
@@ -219,9 +233,10 @@ lowercase hex, so the last `--` plus 64 hex digits is unambiguous even
 if `version` contains `--`.
 
 Every component is re-checked before use: non-empty, at most 128 bytes
-for identifiers, no `/`, `\`, `:`, NUL, whitespace, `.`, `..`, or a
-leading dash-dot mix that could traverse. A hostile `game_id` or
-`BuildId` cannot escape its prefix or collide with another prefix.
+for identifiers, no `/`, `\`, `:`, NUL, whitespace, `.`, or `..`. A
+hostile `game_id` or `BuildId` cannot escape its prefix or collide
+with another prefix. `.` and `..` are rejected by both language
+validators.
 
 Stored bytes are the validated canonical manifest only. No request
 headers, no server clock, no IP, no Turnstile token.
@@ -235,7 +250,8 @@ A test asserts the committed rule is 90 days.
 - Maintainers with the Cloudflare account can read for review
 - No public bucket listing
 - No public unauthenticated read URL
-- Logpush and analytics must omit `ClientIP` (see [Privacy](#privacy))
+- Logpush, if enabled later, must use the exact field allowlist in
+  `worker/config/logpush-fields.json` (see [Privacy](#privacy))
 
 **Per-build cap:** count objects under `<game_id>/<build_id>/` and refuse
 a new key when the count is already 64. Two concurrent first-time puts
@@ -261,12 +277,16 @@ actually deployed.
 - `wrangler.toml` `[[ratelimits]]` binding `UPLOAD_RATE_LIMITER`
   (30 events / 60 seconds, namespace id placeholder)
 - Worker calls `limit({ key: "v1-upload" })` — a constant, never an IP
+- Cloudflare documents this binding as **approximate and counted per
+  location**. Bursts can exceed 30/60s. The single global key means
+  one client can use the whole budget for everyone at that location.
 
-**Configured only in a future Cloudflare dashboard (not in this repo):**
+**Not in this repository (operator deployment choices):**
 
-- A zone-level rate-limit or WAF rule in front of the Worker
 - Turnstile sitekey and secret (secret binding `TURNSTILE_SECRET`)
+- Optional `TURNSTILE_EXPECTED_HOSTNAME` / `TURNSTILE_EXPECTED_ACTION`
 - R2 bucket name, account id, Logpush destination
+- A paid Workers plan or a lower wire cap (see [CPU time](#cpu-time))
 
 **Not configured, and must not be added:**
 
@@ -282,7 +302,10 @@ The Worker source must not read:
 - `request.cf` or any `cf.*` request property
 - Geo or ASN fields
 
-A lint-style test fails if `worker/src/` mentions those tokens.
+A TypeScript-compiler lint fails on those reads, on any `.cf` access,
+on `headers.get` / header iteration outside the allowlist
+(`Content-Length`, `Content-Type`, `X-Turnstile-Token`), and on
+`console.*` calls that receive `request`, `headers`, or `token`.
 
 The stored object is canonical manifest bytes. The HTTP response is
 `UploadReceipt` or `ErrorBody`. A runtime test asserts both contain
@@ -293,38 +316,70 @@ Logging: outcome code, hash-list counts, object-key **prefix**
 (`game_id/build_id/`), and `idempotent`. No request body, no headers,
 no token, no IP.
 
-**Logpush:** `worker/config/logpush-fields.json` lists Worker trace
-fields **without** `ClientIP`. A test or script check fails if that
-name appears. Operators who later enable Logpush must use this field
-list.
+**Logpush:** `worker/config/logpush-fields.json` is an **exact**
+allowlist: `EventType`, `Outcome`, `ScriptName`, `Logs`, `CPUTimeMs`,
+`WallTimeMs`, `EventTimestampMs`. It does not include `Event` or
+`Exceptions`. `workers_trace_events` has no `ClientIP` field;
+omitting that name proves nothing. `Event` would carry request
+headers (including `X-Turnstile-Token` in cleartext) and Cloudflare
+`cf` data (country, ASN, TLS). A test pins this allowlist.
+
+`[observability] enabled = false` in `wrangler.toml` so Workers Logs
+do not store request data.
+
+Cloudflare itself may still log request metadata at the edge (access
+logs, bot scores, and similar platform logs). That is outside this
+repository's control.
 
 Turnstile: POST to the public siteverify endpoint with `secret` and
 `response` only. Do not send `remoteip`. Do not log the token or the
-raw siteverify body.
+raw siteverify body. Abort after a few seconds. Cap the token at 2048
+characters.
 
 ## Memory
 
-A Cloudflare Worker isolate has 128 MB. The wire cap is 8 MiB so
-parsing stays well below that:
+A Cloudflare Worker isolate has 128 MB. The **wire cap is 8 MiB**;
+that is not an isolate budget. The parser is schema-directed and
+fails at the first violation, so hostile 8 MiB bodies do not build a
+generic JSON tree.
 
-- Request buffer: 8 MiB
-- UTF-8 string copy: 8 MiB
-- `JSON.parse` object graph for hex-heavy JSON: about 2-3× the source
-  (string data plus array pointers), so about 16-24 MiB
-- Canonical re-encode: 8 MiB
-- SHA-256 and key strings: small
+Measured Node 22 on the handler path (`--max-old-space-size=96
+--max-semi-space-size=1`). `heapUsed` is V8 old-space; ArrayBuffers
+for the 8 MiB body sit beside it (`heapUsed + arrayBuffers`):
 
-Worst case around 50 MiB plus isolate overhead, leaving a margin under
-128 MB. A 64 MiB local preview document would not be safe to parse here
-(64 × 3 is already over 128 MB), which is why the wire cap is separate.
+| 8 MiB input | Peak heapUsed | heapUsed + ArrayBuffers |
+| --- | ---: | ---: |
+| maximal valid manifest (62 599 + 62 599 hashes) | 7.1 MB | 37.7 MB |
+| many small objects | 7.2 MB | 61.7 MB |
+| many empty arrays | 6.8 MB | 61.3 MB |
+| deep nesting | 6.8 MB | 61.4 MB |
+| one huge string | 6.7 MB | 38.8 MB |
+| number arrays | 6.7 MB | 46.8 MB |
+
+CI runs these six cases in a child process under the 96 MB old-space
+limit. The previous "worst case around 50 MiB" claim was wrong: the
+generic tree plus character-by-character strings peaked at 229 MB on
+the maximal valid manifest and 650-820 MB on hostile shapes.
+
+A 64 MiB local preview document is still not parsed here, which is
+why the wire cap is separate.
+
+## CPU time
+
+An 8 MiB parse takes about 150-1000 ms of CPU in Node on this
+handler path. The Workers Free plan allows 10 ms of CPU per request.
+A deployment therefore needs a paid plan or smaller caps. That is a
+deployment-time decision for Simsalabim; this repository does not
+pick one.
 
 ## Shared golden vectors
 
 `schemas/vectors/` holds valid and invalid fixtures. Each file has a
 `verdict` (`accept` or `reject`) and an `error_code` (or `null`).
-`crates/upload` tests and Worker tests both load every file. Valid
-bodies are produced by the Rust crate (canonical bytes). Invalid
-bodies are hand-written hostile cases.
+`crates/upload` tests and Worker tests both load every file and
+require `index.json` to list each path, verdict, and error code.
+Deleting a vector fails. Valid bodies are produced by the Rust crate
+(canonical bytes). Invalid bodies are hand-written hostile cases.
 
 The JSON Schema in `schemas/upload_manifest.v1.json` is looser than
 these checks (no sort order, no real calendar dates, no byte/nesting

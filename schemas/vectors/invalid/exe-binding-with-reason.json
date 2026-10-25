@@ -1,0 +1,22 @@
+{
+  "verdict": "reject",
+  "error_code": "UNKNOWN_FIELD",
+  "body": {
+    "bytecode_hashes": [],
+    "build_id": {
+      "exe_hash": "00000000000000000000000000000000000000000000000000000000000000ee",
+      "game_id": "synthetic",
+      "version": "1.0.0"
+    },
+    "client_version": "0.1.0",
+    "collected_hour": "2026-10-25T14:00:00Z",
+    "description_hashes": [],
+    "ownership": {
+      "challenge": "000000000000000000000000000000000000000000000000000000000000000a",
+      "kind": "exe_binding_v1",
+      "reason": "no_server_challenge",
+      "response": "000000000000000000000000000000000000000000000000000000000000000b"
+    },
+    "schema_version": 1
+  }
+}

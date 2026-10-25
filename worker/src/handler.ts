@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 
-import { readBodyCapped } from "./body.js";
-import { canonicalize, sha256Hex } from "./canonical.js";
+import { declaredBodyTooLarge, readBodyCapped } from "./body.js";
+import { sha256Hex } from "./canonical.js";
 import { errorBody, httpStatus, type ErrorCode } from "./errors.js";
 import { objectKey } from "./keys.js";
-import { WIRE_MAX_JSON_BYTES } from "./limits.js";
+import { TURNSTILE_TOKEN_MAX_CHARS, WIRE_MAX_JSON_BYTES } from "./limits.js";
 import { parseManifest } from "./parse.js";
-import { readAllowedHeader } from "./privacy.js";
+import { isJsonContentType, readAllowedHeader } from "./privacy.js";
 import type { HandlerDeps, UploadManifest, UploadReceipt } from "./types.js";
 
 const UPLOAD_PATH = "/v1/upload";
@@ -25,9 +25,18 @@ export async function handleUpload(
   if (!(await deps.rate.allow())) {
     return errorResponse("RATE_LIMITED");
   }
+  if (!isJsonContentType(readAllowedHeader(request.headers, "Content-Type"))) {
+    return errorResponse("UNSUPPORTED_MEDIA_TYPE");
+  }
+  if (declaredBodyTooLarge(request, deps.wireMaxBytes)) {
+    return errorResponse("BODY_TOO_LARGE");
+  }
   const token = readAllowedHeader(request.headers, "X-Turnstile-Token");
   if (token === null || token.length === 0) {
     return errorResponse("TURNSTILE_MISSING");
+  }
+  if (token.length > TURNSTILE_TOKEN_MAX_CHARS) {
+    return errorResponse("TURNSTILE_FAILED");
   }
   const verified = await deps.turnstile.verify(token);
   if (!verified) {
@@ -41,37 +50,49 @@ export async function handleUpload(
   if (!parsed.ok) {
     return errorResponse(parsed.code);
   }
-  return storeManifest(parsed.manifest, deps);
+  return storeManifest(
+    parsed.manifest,
+    parsed.storedBytes,
+    parsed.descriptionHashCount,
+    parsed.bytecodeHashCount,
+    deps,
+  );
 }
 
 async function storeManifest(
   manifest: UploadManifest,
+  storedBytes: Uint8Array,
+  descriptionHashCount: number,
+  bytecodeHashCount: number,
   deps: HandlerDeps,
 ): Promise<Response> {
-  const canonical = canonicalize(manifest);
-  const digest = await sha256Hex(canonical);
+  const digest = await sha256Hex(storedBytes);
   const key = objectKey(manifest, digest);
   if (!key.ok) {
     return errorResponse(key.code);
   }
-  const existing = await deps.store.get(key.key);
-  if (existing !== null) {
+  if (await deps.store.head(key.key)) {
     logOutcome("accepted", { prefix: key.prefix, idempotent: true });
-    return jsonResponse(200, receipt(manifest, digest, key.key, true));
+    return jsonResponse(
+      200,
+      receipt(manifest, digest, key.key, true, descriptionHashCount, bytecodeHashCount),
+    );
   }
   const count = await deps.store.countPrefix(key.prefix, deps.perBuildCap);
   if (count >= deps.perBuildCap) {
     return errorResponse("BUILD_CAP_EXCEEDED");
   }
-  const put = await deps.store.putIfAbsent(key.key, canonical);
-  const idempotent = put === "exists";
+  await deps.store.put(key.key, storedBytes);
   logOutcome("accepted", {
     prefix: key.prefix,
-    idempotent,
-    description_hash_count: manifest.description_hashes.length,
-    bytecode_hash_count: manifest.bytecode_hashes.length,
+    idempotent: false,
+    description_hash_count: descriptionHashCount,
+    bytecode_hash_count: bytecodeHashCount,
   });
-  return jsonResponse(200, receipt(manifest, digest, key.key, idempotent));
+  return jsonResponse(
+    200,
+    receipt(manifest, digest, key.key, false, descriptionHashCount, bytecodeHashCount),
+  );
 }
 
 function receipt(
@@ -79,6 +100,8 @@ function receipt(
   canonicalSha256: string,
   objectKeyValue: string,
   idempotent: boolean,
+  descriptionHashCount: number,
+  bytecodeHashCount: number,
 ): UploadReceipt {
   return {
     accepted: true,
@@ -87,8 +110,8 @@ function receipt(
     schema_version: manifest.schema_version,
     build_id: manifest.build_id,
     collected_hour: manifest.collected_hour,
-    description_hash_count: manifest.description_hashes.length,
-    bytecode_hash_count: manifest.bytecode_hashes.length,
+    description_hash_count: descriptionHashCount,
+    bytecode_hash_count: bytecodeHashCount,
     canonical_sha256: canonicalSha256,
     object_key: objectKeyValue,
   };

@@ -152,8 +152,10 @@ contract: [docs/WORKER_DESIGN.md](docs/WORKER_DESIGN.md).
 
 **Implementation notes:**
 - Stateless: no sessions, no cookies
-- Rate limiting: wrangler rate-limit binding with a constant key, plus
-  a documented future dashboard rule. No IP counters in our storage.
+- Rate limiting: wrangler rate-limit binding with one constant key
+  (`v1-upload`). The binding is approximate and counted per Cloudflare
+  location; a single client can consume the whole budget for everyone
+  at that location. No IP counters in our storage.
 - Turnstile: ephemeral; token is never stored or logged
 - Per-build upload cap: count objects under the R2 prefix (approximate
   under races)
@@ -480,12 +482,18 @@ interface DataBundle {
 5. **Client shows preview:** GUI displays what will be uploaded (no personal data)
 6. **User approves:** Explicitly confirms upload
 7. **Client POSTs manifest:** Sends JSON to ingest worker (HTTPS)
-8. **Worker validates:** Checks schema, proof of ownership
+8. **Worker records the claim:** Parses the manifest and stores the
+   ownership object as `UNVERIFIED`. It does not check proof of
+   ownership.
 9. **Worker stores:** Writes to staging (R2 or GitHub PR)
 10. **Client receives receipt:** Confirmation (no tracking ID)
 
 **Privacy guarantees:**
-- Worker logs omit IP addresses (configure Cloudflare Logpush accordingly)
+- This Worker does not persist IPs or fingerprints. Cloudflare itself
+  may still log request metadata at the edge; that is outside this
+  repository's control. Our Logpush template is an exact low-risk
+  field allowlist and omits `Event` (which would carry headers and
+  `cf` data).
 - No game paths in manifest
 - No machine identifiers
 - Timestamp rounded to hour
@@ -559,7 +567,11 @@ interface DataBundle {
 
 ### IP address handling
 
-- **Cloudflare Worker logs:** Configure Logpush to omit `ClientIP` field
+- **Cloudflare Worker logs:** Use the committed Logpush allowlist
+  (`EventType`, `Outcome`, `ScriptName`, `Logs`, `CPUTimeMs`,
+  `WallTimeMs`, `EventTimestampMs`). Do not export `Event` or
+  `Exceptions`. Cloudflare edge logs outside that job are not in our
+  control.
 - **Rate limiting:** Handled by Cloudflare at edge (temporary in-memory, not persisted to storage)
 - **Turnstile:** Bot detection at edge (ephemeral, no persistent fingerprinting)
 - **No correlation:** IP not stored with uploads
@@ -568,7 +580,9 @@ interface DataBundle {
 
 - **Staging data:** Retained until validated or 90 days (whichever is sooner)
 - **Published indexes:** Retained indefinitely (immutable releases)
-- **Worker logs:** Configured with no ClientIP field; retained per Cloudflare retention policy
+- **Worker logs:** Logpush template is the low-risk allowlist above;
+  Workers Logs are disabled in `wrangler.toml`. Cloudflare may still
+  retain its own edge logs.
 
 ### Legal considerations
 

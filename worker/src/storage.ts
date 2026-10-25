@@ -5,7 +5,11 @@ import type { R2Bucket, StagingStore } from "./types.js";
 export class MemoryStore implements StagingStore {
   private readonly objects = new Map<string, Uint8Array>();
 
-  async get(key: string): Promise<Uint8Array | null> {
+  async head(key: string): Promise<boolean> {
+    return this.objects.has(key);
+  }
+
+  async read(key: string): Promise<Uint8Array | null> {
     const found = this.objects.get(key);
     if (found === undefined) {
       return null;
@@ -13,11 +17,15 @@ export class MemoryStore implements StagingStore {
     return new Uint8Array(found);
   }
 
+  async put(key: string, bytes: Uint8Array): Promise<void> {
+    this.objects.set(key, new Uint8Array(bytes));
+  }
+
   async putIfAbsent(key: string, bytes: Uint8Array): Promise<"created" | "exists"> {
-    if (this.objects.has(key)) {
+    if (await this.head(key)) {
       return "exists";
     }
-    this.objects.set(key, new Uint8Array(bytes));
+    await this.put(key, bytes);
     return "created";
   }
 
@@ -38,20 +46,19 @@ export class MemoryStore implements StagingStore {
 export class R2StagingStore implements StagingStore {
   public constructor(private readonly bucket: R2Bucket) {}
 
-  async get(key: string): Promise<Uint8Array | null> {
-    const object = await this.bucket.get(key);
-    if (object === null) {
-      return null;
-    }
-    return new Uint8Array(await object.arrayBuffer());
+  async head(key: string): Promise<boolean> {
+    return (await this.bucket.head(key)) !== null;
+  }
+
+  async put(key: string, bytes: Uint8Array): Promise<void> {
+    await this.bucket.put(key, bytes);
   }
 
   async putIfAbsent(key: string, bytes: Uint8Array): Promise<"created" | "exists"> {
-    const existing = await this.bucket.get(key);
-    if (existing !== null) {
+    if (await this.head(key)) {
       return "exists";
     }
-    await this.bucket.put(key, bytes);
+    await this.put(key, bytes);
     return "created";
   }
 

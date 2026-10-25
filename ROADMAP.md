@@ -93,8 +93,8 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 
 - [x] User can preview the exact payload before it is sent (CLI; nothing is sent)
 - [x] Worker accepts valid manifests and rejects invalid ones with clear errors (unit tests; not deployed)
-- [x] No IP addresses are stored; Logpush field list omits ClientIP (template committed; not deployed)
-- [x] Rate limiting is edge-only (binding + documented dashboard rule) plus a per-build upload cap (not deployed)
+- [x] No IP addresses are stored by this Worker; Logpush template is an exact low-risk allowlist and does not export `Event` (template committed; not deployed)
+- [x] Rate limiting is the constant-key wrangler binding (approximate, per location) plus a per-build upload cap of 64 (not deployed)
 
 ---
 

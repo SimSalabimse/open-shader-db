@@ -1,0 +1,275 @@
+{
+  "count": 54,
+  "vectors": [
+    {
+      "path": "invalid/april-31.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/backslash-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/byte-order-mark.json",
+      "verdict": "reject",
+      "error_code": "BYTE_ORDER_MARK"
+    },
+    {
+      "path": "invalid/century-leap-2100.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/client-version-33.json",
+      "verdict": "reject",
+      "error_code": "INVALID_CLIENT_VERSION"
+    },
+    {
+      "path": "invalid/client-version-empty-part.json",
+      "verdict": "reject",
+      "error_code": "INVALID_CLIENT_VERSION"
+    },
+    {
+      "path": "invalid/client-version-nondigit.json",
+      "verdict": "reject",
+      "error_code": "INVALID_CLIENT_VERSION"
+    },
+    {
+      "path": "invalid/colon-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/day-0.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/dot-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/dot-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/dotdot-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/dotdot-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/duplicate-hashes.json",
+      "verdict": "reject",
+      "error_code": "UNSORTED_OR_DUPLICATE_HASHES"
+    },
+    {
+      "path": "invalid/duplicate-key.json",
+      "verdict": "reject",
+      "error_code": "DUPLICATE_KEY"
+    },
+    {
+      "path": "invalid/exe-binding-with-reason.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/four-part-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_CLIENT_VERSION"
+    },
+    {
+      "path": "invalid/full-timestamp.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/hour-24.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/impossible-date.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/lowercase-z.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/missing-field.json",
+      "verdict": "reject",
+      "error_code": "MISSING_FIELD"
+    },
+    {
+      "path": "invalid/month-13.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/nesting-depth-8.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/nesting-too-deep.json",
+      "verdict": "reject",
+      "error_code": "NESTING_TOO_DEEP"
+    },
+    {
+      "path": "invalid/nonascii-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/nonzero-minutes.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/nonzero-seconds.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/overlong-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/ownership-unknown-key.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/path-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/schema-version-2.json",
+      "verdict": "reject",
+      "error_code": "UNSUPPORTED_SCHEMA_VERSION"
+    },
+    {
+      "path": "invalid/schema-version-float.json",
+      "verdict": "reject",
+      "error_code": "INVALID_INTEGER"
+    },
+    {
+      "path": "invalid/schema-version-negative.json",
+      "verdict": "reject",
+      "error_code": "INVALID_INTEGER"
+    },
+    {
+      "path": "invalid/short-hex.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
+    },
+    {
+      "path": "invalid/space-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/trailing-garbage.json",
+      "verdict": "reject",
+      "error_code": "TRAILING_GARBAGE"
+    },
+    {
+      "path": "invalid/truncated.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/unchallenged-challenge.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/unknown-build-field.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/unknown-field.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/unknown-ownership-kind.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_OWNERSHIP_KIND"
+    },
+    {
+      "path": "invalid/unknown-ownership-reason.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_OWNERSHIP_REASON"
+    },
+    {
+      "path": "invalid/unsorted-hashes.json",
+      "verdict": "reject",
+      "error_code": "UNSORTED_OR_DUPLICATE_HASHES"
+    },
+    {
+      "path": "invalid/uppercase-hex.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
+      "path": "invalid/year-0000.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/year-1969.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "valid-text/uppercase-u-escape.json",
+      "verdict": "accept",
+      "error_code": null
+    },
+    {
+      "path": "valid/brackets-game-id.json",
+      "verdict": "accept",
+      "error_code": null
+    },
+    {
+      "path": "valid/exe-binding.json",
+      "verdict": "accept",
+      "error_code": null
+    },
+    {
+      "path": "valid/leap-day.json",
+      "verdict": "accept",
+      "error_code": null
+    },
+    {
+      "path": "valid/max-ident.json",
+      "verdict": "accept",
+      "error_code": null
+    },
+    {
+      "path": "valid/minimal.json",
+      "verdict": "accept",
+      "error_code": null
+    },
+    {
+      "path": "valid/sorted-hashes.json",
+      "verdict": "accept",
+      "error_code": null
+    }
+  ]
+}

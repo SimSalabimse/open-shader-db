@@ -22,6 +22,12 @@ export const SCHEMA_VERSION = 1;
 
 export const TURNSTILE_HEADER = "X-Turnstile-Token";
 
+/** Cloudflare documents siteverify tokens as at most 2048 characters. */
+export const TURNSTILE_TOKEN_MAX_CHARS = 2048;
+
+/** Siteverify timeout. Failure is closed (no accept on abort). */
+export const TURNSTILE_TIMEOUT_MS = 4000;
+
 export const RATE_LIMIT_KEY = "v1-upload";
 
 export const DEFAULT_SITEVERIFY_URL =

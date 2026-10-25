@@ -42,7 +42,8 @@ export interface UploadReceipt {
 }
 
 export interface StagingStore {
-  get(key: string): Promise<Uint8Array | null>;
+  head(key: string): Promise<boolean>;
+  put(key: string, bytes: Uint8Array): Promise<void>;
   putIfAbsent(key: string, bytes: Uint8Array): Promise<"created" | "exists">;
   countPrefix(prefix: string, limit: number): Promise<number>;
 }
@@ -58,6 +59,7 @@ export interface InjectedFetch {
       method: string;
       headers: Record<string, string>;
       body: string;
+      signal?: AbortSignal;
     },
   ): Promise<{
     readonly ok: boolean;
@@ -88,6 +90,7 @@ export interface R2ListResult {
 }
 
 export interface R2Bucket {
+  head(key: string): Promise<{ readonly key: string } | null>;
   get(key: string): Promise<R2ObjectBody | null>;
   put(key: string, value: ArrayBuffer | Uint8Array): Promise<unknown>;
   list(options: {
@@ -106,5 +109,7 @@ export interface WorkerEnv {
   readonly UPLOAD_RATE_LIMITER: RateLimitBinding;
   readonly TURNSTILE_SECRET: string;
   readonly TURNSTILE_SITEVERIFY_URL: string;
+  readonly TURNSTILE_EXPECTED_HOSTNAME?: string;
+  readonly TURNSTILE_EXPECTED_ACTION?: string;
   readonly PER_BUILD_UPLOAD_CAP?: string;
 }

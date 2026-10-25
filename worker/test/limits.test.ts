@@ -11,6 +11,7 @@ import {
   PER_BUILD_UPLOAD_CAP,
   WIRE_MAX_JSON_BYTES,
 } from "../src/limits.js";
+import { DEFAULT_PARSE_LIMITS } from "../src/parse.js";
 import { readUtf8 } from "./helpers.js";
 
 test("Worker constants match schemas/limits.v1.json", () => {
@@ -32,4 +33,7 @@ test("Worker constants match schemas/limits.v1.json", () => {
   assert.equal(LOCAL_MAX_JSON_BYTES, 64 * 1024 * 1024);
   assert.equal(MAX_DESCRIPTION_HASHES, 150_000);
   assert.equal(MAX_BYTECODE_HASHES, 400_000);
+  assert.equal(DEFAULT_PARSE_LIMITS.maxJsonBytes, LOCAL_MAX_JSON_BYTES);
+  assert.equal(DEFAULT_PARSE_LIMITS.maxDescriptionHashes, MAX_DESCRIPTION_HASHES);
+  assert.equal(DEFAULT_PARSE_LIMITS.maxBytecodeHashes, MAX_BYTECODE_HASHES);
 });

@@ -20,8 +20,41 @@ fn vectors_dir() -> PathBuf {
 fn json_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     visit(dir, &mut out);
-    out.sort();
+    out.retain(|path| path.file_name().and_then(|n| n.to_str()) != Some("index.json"));
+    out.sort_by(|left, right| {
+        let a = left
+            .strip_prefix(dir)
+            .unwrap_or(left)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let b = right
+            .strip_prefix(dir)
+            .unwrap_or(right)
+            .to_string_lossy()
+            .replace('\\', "/");
+        a.cmp(&b)
+    });
     out
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VectorIndex {
+    count: usize,
+    vectors: Vec<VectorIndexEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VectorIndexEntry {
+    path: String,
+    verdict: String,
+    error_code: Option<String>,
+}
+
+fn load_index(dir: &Path) -> VectorIndex {
+    let text = fs::read_to_string(dir.join("index.json"))
+        .unwrap()
+        .replace("\r\n", "\n");
+    serde_json::from_str(&text).unwrap()
 }
 
 fn visit(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -87,17 +120,48 @@ fn payload(value: &serde_json::Value, path: &Path) -> Vec<u8> {
 fn every_golden_vector_matches_rust_parser() {
     let dir = vectors_dir();
     let files = json_files(&dir);
-    assert!(
-        files.len() >= 16,
-        "expected a full valid+invalid set, found {}",
-        files.len()
+    let index = load_index(&dir);
+    assert_eq!(
+        index.count,
+        index.vectors.len(),
+        "index count must match the vector list"
     );
-    for path in files {
-        let text = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+    let relative: Vec<String> = files
+        .iter()
+        .map(|path| {
+            path.strip_prefix(&dir)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    let listed: Vec<String> = index
+        .vectors
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect();
+    assert_eq!(
+        relative, listed,
+        "on-disk vectors must match schemas/vectors/index.json exactly"
+    );
+    for (path, listed) in files.iter().zip(index.vectors.iter()) {
+        let text = fs::read_to_string(path).unwrap().replace("\r\n", "\n");
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         let verdict = value["verdict"].as_str().unwrap();
         let error_code = value["error_code"].as_str();
-        let bytes = payload(&value, &path);
+        assert_eq!(
+            verdict,
+            listed.verdict,
+            "{} verdict must match index",
+            path.display()
+        );
+        assert_eq!(
+            error_code,
+            listed.error_code.as_deref(),
+            "{} error_code must match index",
+            path.display()
+        );
+        let bytes = payload(&value, path);
         let parsed = UploadManifest::parse(&bytes);
         match verdict {
             "accept" => {

@@ -18,7 +18,7 @@ repository are synthetic and CC0.
 [ARCHITECTURE.md](../ARCHITECTURE.md) sketches a logical
 `UploadManifest` with `descriptions` objects and a string
 `proofOfOwnership`. Schema version 1 is the allowlist that the client
-and the future Worker both check:
+and the Worker (`worker/`, built and tested, not deployed) both check:
 
 - one integer `schema_version`
 - one structured `build_id` (`game_id`, `version`, `exe_hash`)

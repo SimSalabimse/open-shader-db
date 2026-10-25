@@ -13,6 +13,10 @@ is one case.
 
 A file uses exactly one of `body`, `body_text`, or `body_hex`.
 
+`index.json` lists every vector path, verdict, and error code. Both
+language runners require that list to match the directory exactly, so
+deleting a vector fails. An unknown `verdict` is a hard error.
+
 Valid `body` values are produced by `osdb-upload` (canonical
 `UploadManifest`). Invalid cases are hand-written. Both language test
 suites walk this directory and run every file. The JSON Schema is

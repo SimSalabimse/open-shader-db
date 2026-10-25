@@ -1,42 +1,93 @@
 // SPDX-License-Identifier: MIT
 
+import { TURNSTILE_TIMEOUT_MS, TURNSTILE_TOKEN_MAX_CHARS } from "./limits.js";
 import type { InjectedFetch, TurnstileClient } from "./types.js";
 
+export interface TurnstileOptions {
+  readonly secret: string;
+  readonly siteverifyUrl: string;
+  readonly fetchImpl: InjectedFetch;
+  readonly timeoutMs?: number;
+  readonly expectedHostname?: string;
+  readonly expectedAction?: string;
+}
+
 export function createTurnstileClient(
-  secret: string,
-  siteverifyUrl: string,
-  fetchImpl: InjectedFetch,
+  secretOrOptions: string | TurnstileOptions,
+  siteverifyUrl?: string,
+  fetchImpl?: InjectedFetch,
 ): TurnstileClient {
+  const options = normalizeOptions(secretOrOptions, siteverifyUrl, fetchImpl);
   return {
     async verify(token: string): Promise<boolean> {
-      if (token.length === 0) {
+      if (token.length === 0 || token.length > TURNSTILE_TOKEN_MAX_CHARS) {
         return false;
       }
-      const body = `secret=${encodeURIComponent(secret)}&response=${encodeURIComponent(token)}`;
+      const body = `secret=${encodeURIComponent(options.secret)}&response=${encodeURIComponent(token)}`;
+      const timeoutMs = options.timeoutMs ?? TURNSTILE_TIMEOUT_MS;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetchImpl(siteverifyUrl, {
+        const response = await options.fetchImpl(options.siteverifyUrl, {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
           body,
+          signal: controller.signal,
         });
         if (!response.ok) {
           return false;
         }
-        const json: unknown = await response.json();
-        return siteverifySuccess(json);
+        let json: unknown;
+        try {
+          json = await response.json();
+        } catch {
+          return false;
+        }
+        return siteverifySuccess(json, options.expectedHostname, options.expectedAction);
       } catch {
         return false;
+      } finally {
+        clearTimeout(timer);
       }
     },
   };
 }
 
-function siteverifySuccess(json: unknown): boolean {
-  if (typeof json !== "object" || json === null) {
+function normalizeOptions(
+  secretOrOptions: string | TurnstileOptions,
+  siteverifyUrl?: string,
+  fetchImpl?: InjectedFetch,
+): TurnstileOptions {
+  if (typeof secretOrOptions === "object") {
+    return secretOrOptions;
+  }
+  if (siteverifyUrl === undefined || fetchImpl === undefined) {
+    throw new Error("turnstile siteverify url and fetch are required");
+  }
+  return { secret: secretOrOptions, siteverifyUrl, fetchImpl };
+}
+
+function siteverifySuccess(
+  json: unknown,
+  expectedHostname: string | undefined,
+  expectedAction: string | undefined,
+): boolean {
+  if (typeof json !== "object" || json === null || Array.isArray(json)) {
     return false;
   }
-  if (!("success" in json)) {
+  const record = json as Record<string, unknown>;
+  if (record.success !== true) {
     return false;
   }
-  return json.success === true;
+  if (expectedHostname !== undefined && expectedHostname.length > 0) {
+    if (record.hostname !== expectedHostname) {
+      return false;
+    }
+  }
+  if (expectedAction !== undefined && expectedAction.length > 0) {
+    if (record.action !== expectedAction) {
+      return false;
+    }
+  }
+  return true;
 }

@@ -48,8 +48,8 @@ This document tracks the implementation status of planned features. Milestone na
 | Ingest Worker (Cloudflare) | ⚠️ Partial | worker/ | M2 Upload preview and submission | `POST /v1/upload` built and tested. **Not deployed.** Placeholders only |
 | Schema validation | ⚠️ Partial | crates/upload, worker/, schemas/ | M2 Upload preview and submission | Shared golden vectors. JSON Schema is looser than the parsers. Worker does not use the schema alone |
 | Staging storage (R2 or reviewed PRs) | ⚠️ Partial | worker/, worker/config/ | M2 Upload preview and submission | Key layout, 90-day lifecycle file, access policy in WORKER_DESIGN. **Not deployed.** Reviewed-PR path documented |
-| Rate limiting | ⚠️ Partial | worker/ | M2 Upload preview and submission | Constant-key wrangler binding + documented dashboard rule. No IP counters in our storage. **Not deployed** |
-| No IP logging | ⚠️ Partial | worker/, worker/config/ | M2 Upload preview and submission | Source lint + Logpush field list without ClientIP. **Not deployed** |
+| Rate limiting | ⚠️ Partial | worker/ | M2 Upload preview and submission | Constant-key wrangler binding (`v1-upload`), approximate and per location. One client can consume the shared budget. No IP counters in our storage. **Not deployed** |
+| No IP logging | ⚠️ Partial | worker/, worker/config/ | M2 Upload preview and submission | Source lint + Logpush exact allowlist (no `Event`). Cloudflare edge logs remain outside our control. **Not deployed** |
 
 ## Validation and publishing
 

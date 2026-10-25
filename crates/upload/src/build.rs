@@ -138,6 +138,8 @@ impl BuildId {
 pub(crate) fn validate_ident(text: &str) -> Result<(), Error> {
     if text.is_empty()
         || text.len() > 128
+        || text == "."
+        || text == ".."
         || text.bytes().any(|b| {
             b == b'/'
                 || b == b'\\'

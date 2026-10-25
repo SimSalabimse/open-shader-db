@@ -4,13 +4,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { canonicalize } from "../src/canonical.js";
 import { handleUpload } from "../src/handler.js";
+import { WIRE_MAX_JSON_BYTES } from "../src/limits.js";
 import { parseManifest } from "../src/parse.js";
 import { MemoryStore } from "../src/storage.js";
 import { createTurnstileClient } from "../src/turnstile.js";
-import type { UploadReceipt } from "../src/types.js";
-import { listJsonFiles, testDeps, uploadRequest, type VectorFile, vectorPayload } from "./helpers.js";
+import type { R2Bucket, UploadReceipt } from "../src/types.js";
+import { R2StagingStore } from "../src/storage.js";
+import {
+  listJsonFiles,
+  testDeps,
+  uploadRequest,
+  type VectorFile,
+  vectorPayload,
+} from "./helpers.js";
 
 const RECEIPT_KEYS = [
   "accepted",
@@ -49,12 +56,12 @@ test("valid upload stores only canonical manifest bytes", async () => {
   assert.equal(body.idempotent, false);
   assert.equal(body.ownership_state, "UNVERIFIED");
   assert.equal(body.schema_version, 1);
-  const stored = await store.get(body.object_key);
+  const stored = await store.read(body.object_key);
   assert.ok(stored);
   const parsed = parseManifest(stored);
   assert.equal(parsed.ok, true);
   if (parsed.ok) {
-    assert.deepEqual(stored, canonicalize(parsed.manifest));
+    assert.deepEqual(stored, parsed.storedBytes);
     assert.deepEqual([...Object.keys(parsed.manifest)].sort(), [
       "build_id",
       "bytecode_hashes",
@@ -104,16 +111,51 @@ test("per-build cap rejects a new object under the same prefix", async () => {
   assert.equal(err.message.includes("0.1.1"), false);
 });
 
-test("Content-Length over the wire cap is refused before parse", async () => {
-  const deps = testDeps({ wireMaxBytes: 32 });
-  const bytes = new Uint8Array(40);
+test("Content-Length over the wire cap is refused before siteverify", async () => {
+  let called = false;
+  const deps = testDeps({
+    turnstile: {
+      verify: async () => {
+        called = true;
+        return true;
+      },
+    },
+  });
   const response = await handleUpload(
-    uploadRequest(bytes, { "Content-Length": "40" }),
+    uploadRequest(minimalBytes(), { "Content-Length": String(WIRE_MAX_JSON_BYTES + 1) }),
     deps,
   );
   assert.equal(response.status, 413);
   const err = (await response.json()) as { code: string };
   assert.equal(err.code, "BODY_TOO_LARGE");
+  assert.equal(called, false);
+});
+
+test("body of exactly the wire cap is read; one extra byte is 413", async () => {
+  const atCap = await handleUpload(
+    uploadRequest(new Uint8Array(WIRE_MAX_JSON_BYTES).fill(0x20)),
+    testDeps(),
+  );
+  assert.equal(atCap.status, 400);
+  const over = await handleUpload(
+    uploadRequest(new Uint8Array(WIRE_MAX_JSON_BYTES + 1).fill(0x20)),
+    testDeps(),
+  );
+  assert.equal(over.status, 413);
+  const err = (await over.json()) as { code: string };
+  assert.equal(err.code, "BODY_TOO_LARGE");
+});
+
+test("non-JSON Content-Type is 415 and stores nothing", async () => {
+  const store = new MemoryStore();
+  const response = await handleUpload(
+    uploadRequest(minimalBytes(), { "content-type": "text/plain" }),
+    testDeps({ store }),
+  );
+  assert.equal(response.status, 415);
+  const err = (await response.json()) as { code: string };
+  assert.equal(err.code, "UNSUPPORTED_MEDIA_TYPE");
+  assert.equal(await store.countPrefix("", 8), 0);
 });
 
 test("streaming counter catches a missing or lying Content-Length", async () => {
@@ -122,7 +164,10 @@ test("streaming counter catches a missing or lying Content-Length", async () => 
   const missing = await handleUpload(
     new Request("https://example.invalid/v1/upload", {
       method: "POST",
-      headers: { "X-Turnstile-Token": "ok" },
+      headers: {
+        "content-type": "application/json",
+        "X-Turnstile-Token": "ok",
+      },
       body: bytes,
     }),
     deps,
@@ -132,6 +177,7 @@ test("streaming counter catches a missing or lying Content-Length", async () => 
     new Request("https://example.invalid/v1/upload", {
       method: "POST",
       headers: {
+        "content-type": "application/json",
         "X-Turnstile-Token": "ok",
         "Content-Length": "8",
       },
@@ -140,6 +186,120 @@ test("streaming counter catches a missing or lying Content-Length", async () => 
     deps,
   );
   assert.equal(lying.status, 413);
+});
+
+test("Turnstile failure paths return 403 and store nothing", async () => {
+  const bytes = minimalBytes();
+  const cases: { name: string; request: Request; deps: ReturnType<typeof testDeps> }[] = [];
+  const store = new MemoryStore();
+  cases.push({
+    name: "missing token",
+    request: uploadRequest(bytes, { "X-Turnstile-Token": "" }),
+    deps: testDeps({ store }),
+  });
+  cases.push({
+    name: "oversized token",
+    request: uploadRequest(bytes, { "X-Turnstile-Token": "t".repeat(2049) }),
+    deps: testDeps({ store }),
+  });
+  const failedClient = createTurnstileClient(
+    "placeholder-secret",
+    "https://example.invalid/siteverify",
+    async () => ({ ok: true, json: async () => ({ success: false }) }),
+  );
+  cases.push({
+    name: "success false",
+    request: uploadRequest(bytes),
+    deps: testDeps({ store, turnstile: failedClient }),
+  });
+  const timeoutClient = createTurnstileClient({
+    secret: "placeholder-secret",
+    siteverifyUrl: "https://example.invalid/siteverify",
+    timeoutMs: 20,
+    fetchImpl: async (_input, init) => {
+      await new Promise<void>((_, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+      return { ok: true, json: async () => ({ success: true }) };
+    },
+  });
+  cases.push({
+    name: "timeout",
+    request: uploadRequest(bytes),
+    deps: testDeps({ store, turnstile: timeoutClient }),
+  });
+  const serverError = createTurnstileClient(
+    "placeholder-secret",
+    "https://example.invalid/siteverify",
+    async () => ({ ok: false, json: async () => ({ success: true }) }),
+  );
+  cases.push({
+    name: "5xx",
+    request: uploadRequest(bytes),
+    deps: testDeps({ store, turnstile: serverError }),
+  });
+  const malformed = createTurnstileClient(
+    "placeholder-secret",
+    "https://example.invalid/siteverify",
+    async () => ({
+      ok: true,
+      json: async () => {
+        throw new Error("not json");
+      },
+    }),
+  );
+  cases.push({
+    name: "malformed JSON",
+    request: uploadRequest(bytes),
+    deps: testDeps({ store, turnstile: malformed }),
+  });
+  for (const item of cases) {
+    const response = await handleUpload(item.request, item.deps);
+    assert.equal(response.status, 403, item.name);
+    assert.equal(await store.countPrefix("", 8), 0, item.name);
+  }
+});
+
+test("siteverify client mutants fail closed", async () => {
+  const url = "https://example.invalid/siteverify";
+  const secret = "placeholder-secret";
+  assert.equal(await createTurnstileClient(secret, url, async () => ({ ok: true, json: async () => ({ success: false }) })).verify("tok"), false);
+  assert.equal(await createTurnstileClient(secret, url, async () => ({ ok: false, json: async () => ({ success: true }) })).verify("tok"), false);
+  assert.equal(await createTurnstileClient(secret, url, async () => { throw new Error("net"); }).verify("tok"), false);
+  assert.equal(await createTurnstileClient(secret, url, async () => ({ ok: true, json: async () => "true" })).verify("tok"), false);
+  assert.equal(await createTurnstileClient(secret, url, async () => ({ ok: true, json: async () => 1 })).verify("tok"), false);
+  assert.equal(await createTurnstileClient(secret, url, async () => ({ ok: true, json: async () => null })).verify("tok"), false);
+  assert.equal(await createTurnstileClient(secret, url, async () => ({ ok: true, json: async () => [true] })).verify("tok"), false);
+  assert.equal(await createTurnstileClient(secret, url, async () => ({ ok: true, json: async () => ({ success: true }) })).verify(""), false);
+  assert.equal(
+    await createTurnstileClient(secret, url, async () => ({ ok: true, json: async () => ({ success: true }) })).verify("t".repeat(2049)),
+    false,
+  );
+  const hostnameClient = createTurnstileClient({
+    secret,
+    siteverifyUrl: url,
+    expectedHostname: "example.invalid",
+    fetchImpl: async () => ({ ok: true, json: async () => ({ success: true, hostname: "other.invalid" }) }),
+  });
+  assert.equal(await hostnameClient.verify("tok"), false);
+  const actionClient = createTurnstileClient({
+    secret,
+    siteverifyUrl: url,
+    expectedAction: "upload",
+    fetchImpl: async () => ({ ok: true, json: async () => ({ success: true, action: "other" }) }),
+  });
+  assert.equal(await actionClient.verify("tok"), false);
+  const okClient = createTurnstileClient({
+    secret,
+    siteverifyUrl: url,
+    expectedHostname: "example.invalid",
+    expectedAction: "upload",
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({ success: true, hostname: "example.invalid", action: "upload" }),
+    }),
+  });
+  assert.equal(await okClient.verify("tok"), true);
 });
 
 test("Turnstile failures and rate denials do not store objects", async () => {
@@ -200,4 +360,59 @@ test("wrong method and path are rejected", async () => {
     testDeps(),
   );
   assert.equal(other.status, 404);
+});
+
+test("hash-list cap accepts max and refuses max plus one", () => {
+  const base = JSON.parse(new TextDecoder().decode(minimalBytes())) as {
+    bytecode_hashes: string[];
+  };
+  const hex = (n: number): string => n.toString(16).padStart(64, "0");
+  base.bytecode_hashes = [hex(1), hex(2)];
+  const two = parseManifest(new TextEncoder().encode(JSON.stringify(base)), {
+    maxJsonBytes: 64 * 1024 * 1024,
+    maxDescriptionHashes: 2,
+    maxBytecodeHashes: 2,
+  });
+  assert.equal(two.ok, true);
+  base.bytecode_hashes = [hex(1), hex(2), hex(3)];
+  const three = parseManifest(new TextEncoder().encode(JSON.stringify(base)), {
+    maxJsonBytes: 64 * 1024 * 1024,
+    maxDescriptionHashes: 2,
+    maxBytecodeHashes: 2,
+  });
+  assert.equal(three.ok, false);
+  if (!three.ok) {
+    assert.equal(three.code, "TOO_MANY_HASHES");
+  }
+});
+
+test("R2 staging existence uses one head and never get", async () => {
+  const calls: string[] = [];
+  const objects = new Map<string, Uint8Array>();
+  const bucket: R2Bucket = {
+    async head(key) {
+      calls.push(`head:${key}`);
+      return objects.has(key) ? { key } : null;
+    },
+    async get() {
+      throw new Error("get must not be used for existence");
+    },
+    async put(key, value) {
+      calls.push(`put:${key}`);
+      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+      objects.set(key, bytes);
+      return {};
+    },
+    async list() {
+      return { objects: [...objects.keys()].map((key) => ({ key })), truncated: false };
+    },
+  };
+  const store = new R2StagingStore(bucket);
+  const deps = testDeps({ store });
+  const first = await handleUpload(uploadRequest(minimalBytes()), deps);
+  assert.equal(first.status, 200);
+  const second = await handleUpload(uploadRequest(minimalBytes()), deps);
+  assert.equal(second.status, 200);
+  assert.equal(calls.filter((c) => c.startsWith("head:")).length, 2);
+  assert.equal(calls.filter((c) => c.startsWith("put:")).length, 1);
 });

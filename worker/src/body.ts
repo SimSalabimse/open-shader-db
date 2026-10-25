@@ -3,12 +3,20 @@
 import type { ErrorCode } from "./errors.js";
 import { readAllowedHeader } from "./privacy.js";
 
+export function declaredContentLength(request: Request): number | null {
+  return parseContentLength(readAllowedHeader(request.headers, "Content-Length"));
+}
+
+export function declaredBodyTooLarge(request: Request, maxBytes: number): boolean {
+  const declared = declaredContentLength(request);
+  return declared !== null && declared > maxBytes;
+}
+
 export async function readBodyCapped(
   request: Request,
   maxBytes: number,
 ): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; code: ErrorCode }> {
-  const declared = parseContentLength(readAllowedHeader(request.headers, "Content-Length"));
-  if (declared !== null && declared > maxBytes) {
+  if (declaredBodyTooLarge(request, maxBytes)) {
     return { ok: false, code: "BODY_TOO_LARGE" };
   }
   const stream = request.body;

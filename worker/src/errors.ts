@@ -6,6 +6,7 @@ export const ERROR_CODES = [
   "RATE_LIMITED",
   "TURNSTILE_MISSING",
   "TURNSTILE_FAILED",
+  "UNSUPPORTED_MEDIA_TYPE",
   "BODY_TOO_LARGE",
   "MANIFEST_TOO_LARGE",
   "BYTE_ORDER_MARK",
@@ -37,6 +38,7 @@ const MESSAGES: Record<ErrorCode, string> = {
   RATE_LIMITED: "rate limit exceeded",
   TURNSTILE_MISSING: "turnstile token is missing",
   TURNSTILE_FAILED: "turnstile verification failed",
+  UNSUPPORTED_MEDIA_TYPE: "content-type must be application/json",
   BODY_TOO_LARGE: "request body exceeds the wire size limit",
   MANIFEST_TOO_LARGE: "upload manifest exceeds size limit",
   BYTE_ORDER_MARK: "upload manifest begins with a UTF-8 byte order mark",
@@ -81,6 +83,8 @@ export function httpStatus(code: ErrorCode): number {
     case "TURNSTILE_MISSING":
     case "TURNSTILE_FAILED":
       return 403;
+    case "UNSUPPORTED_MEDIA_TYPE":
+      return 415;
     case "BODY_TOO_LARGE":
     case "MANIFEST_TOO_LARGE":
       return 413;
