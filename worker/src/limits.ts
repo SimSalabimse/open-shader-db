@@ -15,6 +15,9 @@ export const MAX_BYTECODE_HASHES = 400_000;
 /** `{` / `[` nesting cap. */
 export const MAX_JSON_NESTING = 8;
 
+/** Maximum characters in a JSON number token (`schema_version` is one digit). */
+export const MAX_NUMBER_TOKEN_CHARS = 16;
+
 /** Staging objects per `(game_id, build_id)` prefix. Approximate under races. */
 export const PER_BUILD_UPLOAD_CAP = 64;
 

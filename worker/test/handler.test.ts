@@ -201,6 +201,50 @@ test("streaming counter catches a missing or lying Content-Length", async () => 
   assert.equal(lying.status, 413);
 });
 
+function streamBody(bytes: Uint8Array, headers: Record<string, string>): Request {
+  let offset = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(bytes.subarray(offset));
+      offset = bytes.length;
+    },
+  });
+  return new Request("https://example.invalid/v1/upload", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Turnstile-Token": "ok",
+      ...headers,
+    },
+    body: stream,
+    duplex: "half",
+  } as RequestInit);
+}
+
+test("small declared Content-Length with a larger body is 413", async () => {
+  const body = new Uint8Array(64).fill(0x20);
+  const response = await handleUpload(
+    streamBody(body, { "Content-Length": "8" }),
+    testDeps({ wireMaxBytes: 256 }),
+  );
+  assert.equal(response.status, 413);
+  const err = (await response.json()) as { code: string };
+  assert.equal(err.code, "BODY_TOO_LARGE");
+});
+
+test("large declared Content-Length with a smaller body is read to the real size", async () => {
+  const bytes = minimalBytes();
+  const response = await handleUpload(
+    streamBody(bytes, { "Content-Length": "1000" }),
+    testDeps({ wireMaxBytes: 4096 }),
+  );
+  assert.equal(response.status, 200);
+});
+
 test("Turnstile failure paths return 403 and store nothing", async () => {
   const bytes = minimalBytes();
   const cases: { name: string; request: Request; deps: ReturnType<typeof testDeps> }[] = [];

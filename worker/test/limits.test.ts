@@ -8,6 +8,7 @@ import {
   MAX_BYTECODE_HASHES,
   MAX_DESCRIPTION_HASHES,
   MAX_JSON_NESTING,
+  MAX_NUMBER_TOKEN_CHARS,
   PER_BUILD_UPLOAD_CAP,
   parsePerBuildCap,
   WIRE_MAX_JSON_BYTES,
@@ -22,6 +23,7 @@ test("Worker constants match schemas/limits.v1.json", () => {
     max_description_hashes: number;
     max_bytecode_hashes: number;
     max_json_nesting: number;
+    max_number_token_chars: number;
     per_build_upload_cap: number;
   };
   assert.equal(LOCAL_MAX_JSON_BYTES, limits.local_max_json_bytes);
@@ -29,6 +31,7 @@ test("Worker constants match schemas/limits.v1.json", () => {
   assert.equal(MAX_DESCRIPTION_HASHES, limits.max_description_hashes);
   assert.equal(MAX_BYTECODE_HASHES, limits.max_bytecode_hashes);
   assert.equal(MAX_JSON_NESTING, limits.max_json_nesting);
+  assert.equal(MAX_NUMBER_TOKEN_CHARS, limits.max_number_token_chars);
   assert.equal(PER_BUILD_UPLOAD_CAP, limits.per_build_upload_cap);
   assert.equal(WIRE_MAX_JSON_BYTES, 8 * 1024 * 1024);
   assert.equal(LOCAL_MAX_JSON_BYTES, 64 * 1024 * 1024);

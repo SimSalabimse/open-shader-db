@@ -6,20 +6,27 @@ import {
   SyntaxKind,
   createSourceFile,
   forEachChild,
+  isAsExpression,
+  isBinaryExpression,
   isBindingElement,
   isCallExpression,
   isElementAccessExpression,
   isForOfStatement,
   isFunctionDeclaration,
-  isFunctionExpression,
   isIdentifier,
   isMethodDeclaration,
+  isNewExpression,
   isNoSubstitutionTemplateLiteral,
+  isParameter,
+  isParenthesizedExpression,
   isPropertyAccessExpression,
   isPropertyAssignment,
   isPropertySignature,
+  isShorthandPropertyAssignment,
   isSpreadElement,
   isStringLiteral,
+  isTypeAssertionExpression,
+  isVariableDeclaration,
   type BindingElement,
   type Expression,
   type Identifier,
@@ -39,8 +46,17 @@ const FORBIDDEN_HEADER_NAMES = [
 ];
 
 const FORBIDDEN_GLOBALS = new Set(["console", "globalThis", "Reflect", "self"]);
-const SECRET_BINDINGS = new Set(["token", "secret"]);
+const SECRET_BINDINGS = new Set(["token", "secret", "turnstileToken"]);
 const COMPUTED_ROOTS = new Set(["request", "headers", "env"]);
+const OBJECT_REFLECT = new Set([
+  "entries",
+  "fromEntries",
+  "getOwnPropertyDescriptor",
+  "getOwnPropertyDescriptors",
+  "keys",
+  "values",
+]);
+const ALLOWED_SECRET_CALLEES = new Set(["verify", "encodeURIComponent"]);
 
 export function lintTypeScript(fileName: string, sourceText: string): string[] {
   const sf = createSourceFile(fileName, sourceText, ScriptTarget.Latest, true, ScriptKind.TS);
@@ -53,8 +69,9 @@ export function lintTypeScript(fileName: string, sourceText: string): string[] {
     checkHeadersIteration(node, sf, errors);
     checkReadAllowedHeader(node, sf, errors);
     checkForbiddenGlobals(node, sf, fileName, errors);
-    checkSecretBindings(node, sf, fileName, errors);
+    checkSecretBindings(node, sf, errors);
     checkComputedAccess(node, sf, errors);
+    checkObjectReflection(node, sf, errors);
     forEachChild(node, visit);
   };
   visit(sf);
@@ -89,7 +106,7 @@ function checkCfAccess(node: Node, sf: SourceFile, errors: string[]): void {
       errors.push(`${loc(sf, node)}: destructuring cf is forbidden`);
     }
     if (name === "headers" || (node.propertyName !== undefined && isIdentifier(node.propertyName) && node.propertyName.text === "headers")) {
-      if (!isInsideReadAllowedHeader(node)) {
+      if (!isPrivacySourceFile(sf)) {
         errors.push(`${loc(sf, node)}: destructuring headers is forbidden`);
       }
     }
@@ -100,7 +117,7 @@ function checkHeadersProperty(node: Node, sf: SourceFile, errors: string[]): voi
   if (!isPropertyAccessExpression(node) || node.name.text !== "headers") {
     return;
   }
-  if (isInsideReadAllowedHeader(node)) {
+  if (isPrivacySourceFile(sf)) {
     return;
   }
   const parent = node.parent;
@@ -125,7 +142,7 @@ function checkHeadersGet(node: Node, sf: SourceFile, errors: string[]): void {
   if (!isHeadersReceiver(node.expression.expression)) {
     return;
   }
-  if (isInsideReadAllowedHeader(node)) {
+  if (isPrivacySourceFile(sf)) {
     return;
   }
   const arg = node.arguments[0];
@@ -139,10 +156,10 @@ function checkHeadersGet(node: Node, sf: SourceFile, errors: string[]): void {
 }
 
 function checkHeadersIteration(node: Node, sf: SourceFile, errors: string[]): void {
-  if (isSpreadElement(node) && isHeadersReceiver(node.expression)) {
-    errors.push(`${loc(sf, node)}: iterating headers is forbidden`);
+  if (isSpreadElement(node) && isSensitiveExpression(node.expression)) {
+    errors.push(`${loc(sf, node)}: spreading request, headers, or env is forbidden`);
   }
-  if (isForOfStatement(node) && isHeadersReceiver(node.expression) && !isInsideReadAllowedHeader(node)) {
+  if (isForOfStatement(node) && isSensitiveExpression(node.expression) && !isPrivacySourceFile(sf)) {
     errors.push(`${loc(sf, node)}: iterating headers is forbidden`);
   }
   if (isCallExpression(node) && isPropertyAccessExpression(node.expression)) {
@@ -183,14 +200,35 @@ function checkForbiddenGlobals(node: Node, sf: SourceFile, fileName: string, err
   errors.push(`${loc(sf, node)}: identifier ${node.text} is forbidden outside the allowlisted log module`);
 }
 
-function checkSecretBindings(node: Node, sf: SourceFile, fileName: string, errors: string[]): void {
+function checkSecretBindings(node: Node, sf: SourceFile, errors: string[]): void {
   if (!isIdentifier(node) || !SECRET_BINDINGS.has(node.text)) {
     return;
   }
-  if (isPropertyNameOnly(node)) {
+  if (isDeclarationName(node) || isPropertyNameOnly(node)) {
     return;
   }
-  if (isTurnstileModule(fileName)) {
+  const parent = node.parent;
+  if (isPropertyAccessExpression(parent) && parent.expression === node) {
+    return;
+  }
+  if (isBinaryExpression(parent) && parent.operatorToken.kind !== SyntaxKind.PlusToken) {
+    return;
+  }
+  if (isShorthandPropertyAssignment(parent)) {
+    errors.push(`${loc(sf, node)}: identifier ${node.text} cannot be placed in an object literal`);
+    return;
+  }
+  if (isPropertyAssignment(parent) && parent.initializer === node) {
+    errors.push(`${loc(sf, node)}: identifier ${node.text} cannot be placed in an object literal`);
+    return;
+  }
+  if ((isCallExpression(parent) || isNewExpression(parent)) && (parent.arguments ?? []).some((arg) => arg === node)) {
+    if (isAllowedSecretCallee(parent.expression)) {
+      return;
+    }
+    errors.push(
+      `${loc(sf, node)}: identifier ${node.text} is only allowed in the Turnstile client call`,
+    );
     return;
   }
   errors.push(
@@ -202,12 +240,30 @@ function checkComputedAccess(node: Node, sf: SourceFile, errors: string[]): void
   if (!isElementAccessExpression(node)) {
     return;
   }
-  const root = rootIdentifier(node.expression);
+  const root = rootIdentifier(unwrapExpr(node.expression));
   if (root === undefined || !COMPUTED_ROOTS.has(root)) {
     return;
   }
   if (!isStringLiteral(node.argumentExpression) && !isNoSubstitutionTemplateLiteral(node.argumentExpression)) {
-    errors.push(`${loc(sf, node)}: computed member access on ${root} is forbidden`);
+    errors.push(`${loc(sf, node)}: computed or concatenated member access on ${root} is forbidden`);
+  }
+}
+
+function checkObjectReflection(node: Node, sf: SourceFile, errors: string[]): void {
+  if (!isCallExpression(node) || !isPropertyAccessExpression(node.expression)) {
+    return;
+  }
+  if (!isIdentifier(node.expression.expression) || node.expression.expression.text !== "Object") {
+    return;
+  }
+  const method = node.expression.name.text;
+  if (!OBJECT_REFLECT.has(method)) {
+    return;
+  }
+  for (const arg of node.arguments) {
+    if (isSensitiveExpression(arg)) {
+      errors.push(`${loc(sf, node)}: Object.${method} on request, headers, or env is forbidden`);
+    }
   }
 }
 
@@ -234,27 +290,77 @@ function isAllowedHeader(name: string): boolean {
 }
 
 function isHeadersReceiver(node: Node): boolean {
-  if (isIdentifier(node) && node.text === "headers") {
+  const inner = unwrapExpr(node as Expression);
+  if (isIdentifier(inner) && inner.text === "headers") {
     return true;
   }
-  if (isPropertyAccessExpression(node) && node.name.text === "headers") {
+  if (isPropertyAccessExpression(inner) && inner.name.text === "headers") {
+    return true;
+  }
+  if (isElementAccessExpression(inner) && isText(inner.argumentExpression, "headers")) {
     return true;
   }
   return false;
 }
 
-function isInsideReadAllowedHeader(node: Node): boolean {
-  let current: Node | undefined = node.parent;
-  while (current !== undefined) {
-    if (isFunctionDeclaration(current) || isFunctionExpression(current) || isMethodDeclaration(current)) {
-      const name = current.name;
-      if (name !== undefined && isIdentifier(name) && name.text === "readAllowedHeader") {
-        return true;
-      }
+function isSensitiveExpression(node: Node): boolean {
+  if (!isExpressionLike(node)) {
+    return false;
+  }
+  const root = rootIdentifier(unwrapExpr(node));
+  return root !== undefined && COMPUTED_ROOTS.has(root);
+}
+
+function isExpressionLike(node: Node): node is Expression {
+  return (node as Expression).kind !== undefined && "parent" in node;
+}
+
+function unwrapExpr(node: Expression): Expression {
+  let current = node;
+  for (;;) {
+    if (isParenthesizedExpression(current)) {
+      current = current.expression;
+      continue;
     }
-    current = current.parent;
+    if (isAsExpression(current) || isTypeAssertionExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    return current;
+  }
+}
+
+function isDeclarationName(node: Identifier): boolean {
+  const parent = node.parent;
+  if (isParameter(parent) && parent.name === node) {
+    return true;
+  }
+  if (isVariableDeclaration(parent) && parent.name === node) {
+    return true;
+  }
+  if (isFunctionDeclaration(parent) && parent.name === node) {
+    return true;
+  }
+  if (isMethodDeclaration(parent) && parent.name === node) {
+    return true;
+  }
+  if (isBindingElement(parent) && isIdentifier(parent.name) && parent.name === node) {
+    return true;
   }
   return false;
+}
+
+function isAllowedSecretCallee(expr: Expression): boolean {
+  const inner = unwrapExpr(expr);
+  if (isIdentifier(inner) && ALLOWED_SECRET_CALLEES.has(inner.text)) {
+    return true;
+  }
+  return isPropertyAccessExpression(inner) && ALLOWED_SECRET_CALLEES.has(inner.name.text);
+}
+
+function isPrivacySourceFile(sf: SourceFile): boolean {
+  const name = normalizePath(sf.fileName);
+  return name.endsWith("/privacy.ts") || name.endsWith("src/privacy.ts") || name === "privacy.ts";
 }
 
 function isText(node: Expression | undefined, value: string): boolean {
@@ -279,6 +385,9 @@ function isPropertyNameOnly(node: Identifier): boolean {
   if (isPropertySignature(parent) && parent.name === node) {
     return true;
   }
+  if (isPropertyAccessExpression(parent) && parent.name === node) {
+    return true;
+  }
   if (parent.kind === SyntaxKind.MethodSignature) {
     const named = parent as { name?: Node };
     return named.name === node;
@@ -287,24 +396,21 @@ function isPropertyNameOnly(node: Identifier): boolean {
 }
 
 function rootIdentifier(node: Expression): string | undefined {
-  if (isIdentifier(node)) {
-    return node.text;
+  const inner = unwrapExpr(node);
+  if (isIdentifier(inner)) {
+    return inner.text;
   }
-  if (isPropertyAccessExpression(node)) {
-    return rootIdentifier(node.expression);
+  if (isPropertyAccessExpression(inner)) {
+    return rootIdentifier(inner.expression);
   }
-  if (isElementAccessExpression(node)) {
-    return rootIdentifier(node.expression);
+  if (isElementAccessExpression(inner)) {
+    return rootIdentifier(inner.expression);
   }
   return undefined;
 }
 
 function isLogModule(fileName: string): boolean {
   return normalizePath(fileName).endsWith("/log.ts") || normalizePath(fileName).endsWith("src/log.ts") || normalizePath(fileName) === "log.ts";
-}
-
-function isTurnstileModule(fileName: string): boolean {
-  return normalizePath(fileName).endsWith("/turnstile.ts") || normalizePath(fileName).endsWith("src/turnstile.ts");
 }
 
 function normalizePath(fileName: string): string {

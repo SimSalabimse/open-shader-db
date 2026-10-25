@@ -36,6 +36,10 @@ pub const WIRE_MAX_JSON_BYTES: u64 = 8 * 1024 * 1024;
 /// under races; documented in `docs/WORKER_DESIGN.md`.
 pub const DEFAULT_PER_BUILD_UPLOAD_CAP: u64 = 64;
 
+/// Maximum characters in a JSON number token (`schema_version` is one digit).
+/// Longer tokens are rejected before conversion.
+pub const MAX_NUMBER_TOKEN_CHARS: usize = 16;
+
 /// Checked-in numbers shared with the Worker.
 pub const LIMITS_JSON: &str = include_str!("../../../schemas/limits.v1.json");
 

@@ -11,9 +11,12 @@ const CASES = [
   "max_valid_pretty",
   "max_valid_chunk_1",
   "max_valid_chunk_16",
+  "max_valid_pretty_chunk_1",
+  "max_valid_pretty_chunk_16",
   "in_field_braces",
   "in_field_huge",
   "deep_nesting",
+  "huge_number_token",
 ];
 
 test("handler stays under a 96 MB old-space limit for compact, pretty, chunked, and hostile bodies", () => {
@@ -36,7 +39,9 @@ test("handler stays under a 96 MB old-space limit for compact, pretty, chunked, 
   assert.match(output, /HEAP_CASE max_valid status=200 peak_heap_mb=/);
   assert.match(output, /HEAP_CASE max_valid_pretty status=200 peak_heap_mb=/);
   assert.match(output, /HEAP_CASE max_valid_chunk_1 status=200 peak_heap_mb=/);
-  assert.match(output, /HEAP_CHILD_OK cases=7/);
+  assert.match(output, /HEAP_CASE max_valid_pretty_chunk_1 status=200 peak_heap_mb=/);
+  assert.match(output, /HEAP_CASE huge_number_token status=400 peak_heap_mb=/);
+  assert.match(output, /HEAP_CHILD_OK cases=10/);
   const ran = [...output.matchAll(/HEAP_CASE ([a-z0-9_]+) /g)].map((m) => m[1]);
   assert.deepEqual(ran, CASES, "child must run exactly the intended cases");
 });

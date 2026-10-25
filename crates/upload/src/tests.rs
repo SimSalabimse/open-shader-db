@@ -22,7 +22,8 @@ use crate::time::{FixedClock, UtcHour};
 use crate::{
     Error, Limits, BYTECODE_STAGES_PER_RECORD, DEFAULT_MAX_BYTECODE_HASHES,
     DEFAULT_MAX_DESCRIPTION_HASHES, DEFAULT_MAX_HASHES_PER_LIST, DEFAULT_MAX_JSON_BYTES,
-    DEFAULT_PER_BUILD_UPLOAD_CAP, DESCRIPTION_HASHES_PER_RECORD, LIMITS_JSON, WIRE_MAX_JSON_BYTES,
+    DEFAULT_PER_BUILD_UPLOAD_CAP, DESCRIPTION_HASHES_PER_RECORD, LIMITS_JSON,
+    MAX_NUMBER_TOKEN_CHARS, WIRE_MAX_JSON_BYTES,
 };
 
 const CANARY_USER: &str = "user-alice-fixture";
@@ -775,6 +776,10 @@ fn shared_limits_json_matches_rust_constants() {
         DEFAULT_MAX_BYTECODE_HASHES
     );
     assert_eq!(value["max_json_nesting"].as_u64().unwrap(), 8);
+    assert_eq!(
+        value["max_number_token_chars"].as_u64().unwrap(),
+        u64::try_from(MAX_NUMBER_TOKEN_CHARS).unwrap()
+    );
     assert_eq!(
         value["per_build_upload_cap"].as_u64().unwrap(),
         DEFAULT_PER_BUILD_UPLOAD_CAP

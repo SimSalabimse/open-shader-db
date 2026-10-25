@@ -1,5 +1,5 @@
 {
-  "count": 79,
+  "count": 101,
   "vectors": [
     {
       "path": "invalid/april-31.json",
@@ -20,6 +20,11 @@
       "path": "invalid/century-leap-2100.json",
       "verdict": "reject",
       "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/challenge-non-hex.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
     },
     {
       "path": "invalid/client-version-33.json",
@@ -72,6 +77,11 @@
       "error_code": "INVALID_BUILD_ID"
     },
     {
+      "path": "invalid/duplicate-build-id-key.json",
+      "verdict": "reject",
+      "error_code": "DUPLICATE_KEY"
+    },
+    {
       "path": "invalid/duplicate-hashes.json",
       "verdict": "reject",
       "error_code": "UNSORTED_OR_DUPLICATE_HASHES"
@@ -85,6 +95,11 @@
       "path": "invalid/duplicate-ownership-key.json",
       "verdict": "reject",
       "error_code": "DUPLICATE_KEY"
+    },
+    {
+      "path": "invalid/escaped-ident-overlong.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
     },
     {
       "path": "invalid/exe-binding-with-reason.json",
@@ -122,12 +137,32 @@
       "error_code": "INVALID_TIMESTAMP"
     },
     {
+      "path": "invalid/huge-number-token.json",
+      "verdict": "reject",
+      "error_code": "INVALID_INTEGER"
+    },
+    {
       "path": "invalid/impossible-date.json",
       "verdict": "reject",
       "error_code": "INVALID_TIMESTAMP"
     },
     {
+      "path": "invalid/invalid-escape.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
       "path": "invalid/leading-zero-schema-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/leap-feb-30.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/lone-surrogate.json",
       "verdict": "reject",
       "error_code": "INVALID_JSON"
     },
@@ -140,6 +175,26 @@
       "path": "invalid/minutes-14-10.json",
       "verdict": "reject",
       "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/missing-comma-build-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/missing-comma-hashes.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/missing-comma-ownership.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/missing-comma-root.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
     },
     {
       "path": "invalid/missing-field.json",
@@ -272,6 +327,11 @@
       "error_code": "UNKNOWN_OWNERSHIP_REASON"
     },
     {
+      "path": "invalid/unquoted-value.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
       "path": "invalid/unsorted-hashes.json",
       "verdict": "reject",
       "error_code": "UNSORTED_OR_DUPLICATE_HASHES"
@@ -287,6 +347,16 @@
       "error_code": "MALFORMED_HEX"
     },
     {
+      "path": "invalid/uppercase-high-nibble.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
+      "path": "invalid/uppercase-low-nibble.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
       "path": "invalid/year-0000.json",
       "verdict": "reject",
       "error_code": "INVALID_TIMESTAMP"
@@ -297,16 +367,34 @@
       "error_code": "INVALID_TIMESTAMP"
     },
     {
+      "path": "valid-text/brackets-in-string.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/brackets-in-string.json"
+    },
+    {
       "path": "valid-text/escaped-exe-hash.json",
       "verdict": "accept",
       "error_code": null,
       "stored": "stored/valid-text/escaped-exe-hash.json"
     },
     {
+      "path": "valid-text/escaped-ident-max.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/escaped-ident-max.json"
+    },
+    {
       "path": "valid-text/escaped-ident.json",
       "verdict": "accept",
       "error_code": null,
       "stored": "stored/valid-text/escaped-ident.json"
+    },
+    {
+      "path": "valid-text/escaped-key-name.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/escaped-key-name.json"
     },
     {
       "path": "valid-text/leading-space-hashes.json",
@@ -327,16 +415,34 @@
       "stored": "stored/valid-text/pretty-printed.json"
     },
     {
+      "path": "valid-text/unsorted-build-id-keys.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/unsorted-build-id-keys.json"
+    },
+    {
       "path": "valid-text/unsorted-keys.json",
       "verdict": "accept",
       "error_code": null,
       "stored": "stored/valid-text/unsorted-keys.json"
     },
     {
+      "path": "valid-text/unsorted-ownership-keys.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/unsorted-ownership-keys.json"
+    },
+    {
       "path": "valid-text/uppercase-u-escape.json",
       "verdict": "accept",
       "error_code": null,
       "stored": "stored/valid-text/uppercase-u-escape.json"
+    },
+    {
+      "path": "valid-text/ws-before-colon-comma.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/ws-before-colon-comma.json"
     },
     {
       "path": "valid/brackets-game-id.json",
@@ -397,6 +503,18 @@
       "verdict": "accept",
       "error_code": null,
       "stored": "stored/valid/month-12.json"
+    },
+    {
+      "path": "valid/nov-30.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/nov-30.json"
+    },
+    {
+      "path": "valid/oct-31.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/oct-31.json"
     },
     {
       "path": "valid/sorted-hashes.json",

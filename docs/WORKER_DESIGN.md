@@ -302,10 +302,14 @@ The Worker source must not read:
 - `request.cf` or any `cf.*` request property
 - Geo or ASN fields
 
-A TypeScript-compiler lint fails on those reads, on any `.cf` access,
-on `headers.get` / header iteration outside the allowlist
-(`Content-Length`, `Content-Type`, `X-Turnstile-Token`), and on
-`console.*` calls that receive `request`, `headers`, or `token`.
+A TypeScript-compiler lint is a **best-effort** guard on those reads,
+on any `.cf` access, on `headers.get` / header iteration outside the
+allowlist (`Content-Length`, `Content-Type`, `X-Turnstile-Token`), on
+concatenated or computed property names on `request` / `headers` /
+`env`, on `Object.entries` / `fromEntries` / `getOwnPropertyDescriptor`
+/ spread of those objects, and on passing `token` / `secret` /
+`turnstileToken` to anything except the Turnstile client call. It does
+not prove the absence of a leak. Code review is the real control.
 
 The stored object is canonical manifest bytes. The HTTP response is
 `UploadReceipt` or `ErrorBody`. A runtime test asserts both contain
@@ -350,20 +354,26 @@ for the 8 MiB body sit beside it (`heapUsed + arrayBuffers`). CPU is
 
 | 8 MiB input | Peak heapUsed | heapUsed + ArrayBuffers | CPU |
 | --- | ---: | ---: | ---: |
-| compact max-valid (62 599 + 62 599 hashes) | 7.5 MB | 44.9 MB | 100.1 ms |
-| pretty-printed max-valid (leading space, same hashes) | 26.4 MB | 62.5 MB | 181.3 ms |
-| compact max-valid in 1-byte chunks | 7.5 MB | 46.1 MB | 3334.6 ms |
-| compact max-valid in 16-byte chunks | 7.2 MB | 68.2 MB | 290.9 ms |
-| braces inside a string field | 7.3 MB | 92.3 MB | 28.5 ms |
-| huge string inside a hash field | 7.1 MB | 76.1 MB | 24.1 ms |
-| nesting-depth guard (64 brackets) | 6.9 MB | 46.9 MB | 39.3 ms |
+| compact max-valid (62 599 + 62 599 hashes) | 7.1 MB | 45.2 MB | 105.5 ms |
+| pretty-printed max-valid (indented JSON, 58 251 hashes) | 24.9 MB | 60.4 MB | 188.5 ms |
+| compact max-valid in 1-byte chunks | 8.0 MB | 46.1 MB | 3208.1 ms |
+| compact max-valid in 16-byte chunks | 7.6 MB | 67.7 MB | 309.6 ms |
+| pretty-printed max-valid in 1-byte chunks | 15.9 MB | 54.8 MB | 3559.8 ms |
+| pretty-printed max-valid in 16-byte chunks | 24.1 MB | 59.6 MB | 351.5 ms |
+| braces inside a string field | 15.5 MB | 78.5 MB | 21.2 ms |
+| huge string inside a hash field | 15.5 MB | 78.5 MB | 16.2 ms |
+| nesting-depth guard (64 brackets) | 5.8 MB | 45.8 MB | 16.2 ms |
+| 8 MiB `schema_version` number token | 5.8 MB | 53.9 MB | 19.2 ms |
 
-CI runs these seven cases in a child process under the 96 MB
+CI runs these ten cases in a child process under the 96 MB
 old-space limit. The pretty-printed max-valid path used to peak at
 223 MB heap when `hexEncode32` built cons-string ropes; a 256-entry
-lookup table plus one `join` brings it to the 26.4 MB above. Tiny
+lookup table plus one `join` brings it to the 24.9 MB above. Tiny
 chunks used to keep one array entry each and ran out of memory;
-`body.ts` now copies into one preallocated `Uint8Array`.
+`body.ts` now copies into one preallocated `Uint8Array`. An 8 MiB
+number token used to cost 178-200 ms and 78.7 MB heap because the
+parser converted the whole token; both languages now cap the token at
+16 characters before conversion (19.2 ms / 5.8 MB here).
 
 A 64 MiB local preview document is still not parsed here, which is
 why the wire cap is separate.
@@ -371,13 +381,15 @@ why the wire cap is separate.
 ## CPU time
 
 The table above is what was measured. Compact max-valid is about
-100 ms; pretty-printed is about 181 ms; a 1-byte-chunk stream of the
-same body is about 3.3 s; 16-byte chunks are about 291 ms. Hostile
-rejects are 24-40 ms. The Workers Free plan allows 10 ms of CPU per
-request, which is far below any parse of a real upload. A deployment
-therefore needs a paid plan or smaller caps. That is a
-deployment-time decision for Simsalabim; this repository does not
-pick one.
+106 ms; pretty-printed is about 189 ms; a 1-byte-chunk stream of the
+compact body is about 3.2 s and of the pretty body about 3.6 s;
+16-byte chunks are about 310-352 ms. Hostile in-field rejects are
+31-52 ms on the reviewer's harness and 16-21 ms here. An uncapped 8
+MiB number token was 178-200 ms; after the length cap it is 19.2 ms.
+The Workers Free plan allows 10 ms of CPU per request, which is far
+below any parse of a real upload. A deployment therefore needs a
+paid plan or smaller caps. That is a deployment-time decision for
+Simsalabim; this repository does not pick one.
 
 ## Shared golden vectors
 

@@ -3,6 +3,7 @@
   "max_bytecode_hashes": 400000,
   "max_description_hashes": 150000,
   "max_json_nesting": 8,
+  "max_number_token_chars": 16,
   "per_build_upload_cap": 64,
   "wire_max_json_bytes": 8388608
 }

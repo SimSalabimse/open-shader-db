@@ -1,0 +1,5 @@
+{
+  "verdict": "reject",
+  "error_code": "INVALID_JSON",
+  "body_text": "{\"bytecode_hashes\":[],\"build_id\":{\"exe_hash\": \"00000000000000000000000000000000000000000000000000000000000000ee\"\n    \"game_id\": \"synthetic\", \"version\": \"1.0.0\"},\"client_version\":\"0.1.0\",\"collected_hour\":\"2026-10-25T14:00:00Z\",\"description_hashes\":[],\"ownership\":{\"kind\":\"unchallenged\",\"reason\":\"no_server_challenge\"},\"schema_version\":1}"
+}

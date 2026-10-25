@@ -67,11 +67,58 @@ function maxValidManifest(target: number): Uint8Array {
   return out;
 }
 
-function prettyMaxValid(): Uint8Array {
-  const compact = maxValidManifest(WIRE_MAX_JSON_BYTES - 1);
-  const out = new Uint8Array(compact.length + 1);
-  out[0] = 0x20;
-  out.set(compact, 1);
+function prettyMaxValid(target: number): Uint8Array {
+  const exe = "0".repeat(62) + "ee";
+  const prefix = `{\n  "build_id": {\n    "exe_hash": "${exe}",\n    "game_id": "synthetic",\n    "version": "1.0.0"\n  },\n  "bytecode_hashes": [\n`;
+  const mid =
+    '\n  ],\n  "client_version": "0.1.0",\n  "collected_hour": "2026-10-25T14:00:00Z",\n  "description_hashes": [\n';
+  const suffix =
+    '\n  ],\n  "ownership": {\n    "kind": "unchallenged",\n    "reason": "no_server_challenge"\n  },\n  "schema_version": 1\n}';
+  const entry = 72;
+  const last = 70;
+  const overhead = prefix.length + mid.length + suffix.length;
+  let count = Math.floor((target - overhead - 2 * last) / (2 * entry)) + 1;
+  while (count > 0) {
+    const size = overhead + 2 * ((count - 1) * entry + last);
+    if (size <= target) {
+      const out = new Uint8Array(size);
+      let offset = writeAscii(out, 0, prefix);
+      for (let i = 1; i <= count; i += 1) {
+        offset = writePrettyHash(out, offset, i, i < count);
+      }
+      offset = writeAscii(out, offset, mid);
+      for (let i = 1; i <= count; i += 1) {
+        offset = writePrettyHash(out, offset, i, i < count);
+      }
+      offset = writeAscii(out, offset, suffix);
+      assert.equal(offset, size);
+      return out;
+    }
+    count -= 1;
+  }
+  throw new Error("pretty max-valid does not fit the wire cap");
+}
+
+function writePrettyHash(out: Uint8Array, offset: number, n: number, comma: boolean): number {
+  offset = writeAscii(out, offset, "    ");
+  offset = writeHex64(out, offset, n);
+  if (comma) {
+    out[offset] = 0x2c;
+    offset += 1;
+    out[offset] = 0x0a;
+    offset += 1;
+  }
+  return offset;
+}
+
+function hugeNumberToken(): Uint8Array {
+  const prefix = '{"schema_version":';
+  const suffix = "}";
+  const out = new Uint8Array(WIRE_MAX_JSON_BYTES);
+  let offset = writeAscii(out, 0, prefix);
+  const digits = WIRE_MAX_JSON_BYTES - prefix.length - suffix.length;
+  out.fill(0x31, offset, offset + digits);
+  writeAscii(out, offset + digits, suffix);
   return out;
 }
 
@@ -159,21 +206,29 @@ const CASES = [
   "max_valid_pretty",
   "max_valid_chunk_1",
   "max_valid_chunk_16",
+  "max_valid_pretty_chunk_1",
+  "max_valid_pretty_chunk_16",
   "in_field_braces",
   "in_field_huge",
   "deep_nesting",
+  "huge_number_token",
 ] as const;
 
 async function main(): Promise<void> {
   const compact = maxValidManifest(WIRE_MAX_JSON_BYTES);
   assert.ok(compact.byteLength <= WIRE_MAX_JSON_BYTES);
   assert.ok(compact.byteLength > WIRE_MAX_JSON_BYTES - 200);
-  const pretty = prettyMaxValid();
+  const pretty = prettyMaxValid(WIRE_MAX_JSON_BYTES);
   assert.ok(pretty.byteLength <= WIRE_MAX_JSON_BYTES);
+  assert.ok(pretty.byteLength > WIRE_MAX_JSON_BYTES - 200);
+  assert.equal(pretty[0], 0x7b);
+  assert.equal(pretty[1], 0x0a);
   await runCase("max_valid", uploadRequest(compact), 200);
   await runCase("max_valid_pretty", uploadRequest(pretty), 200);
   await runCase("max_valid_chunk_1", chunkedRequest(compact, 1), 200);
   await runCase("max_valid_chunk_16", chunkedRequest(compact, 16), 200);
+  await runCase("max_valid_pretty_chunk_1", chunkedRequest(pretty, 1), 200);
+  await runCase("max_valid_pretty_chunk_16", chunkedRequest(pretty, 16), 200);
   await runCase(
     "in_field_braces",
     uploadRequest(fillPattern('{"x":"', "{", '"}', WIRE_MAX_JSON_BYTES)),
@@ -187,6 +242,7 @@ async function main(): Promise<void> {
   const depth = 64;
   const nest = `${"[".repeat(depth)}0${"]".repeat(depth)}`;
   await runCase("deep_nesting", uploadRequest(fillPattern(nest, " ", "", WIRE_MAX_JSON_BYTES)), 400);
+  await runCase("huge_number_token", uploadRequest(hugeNumberToken()), 400);
   console.log(`HEAP_CHILD_OK cases=${CASES.length}`);
 }
 
