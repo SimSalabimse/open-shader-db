@@ -27,9 +27,11 @@ Each record holds:
 - `unresolved_stages` when a `ByteCode_*` key does not resolve
 
 DXIL / bytecode bytes are **never** stored. The extractor hashes each blob
-incrementally and discards it. A DXBC container used as a root signature is
-parsed bounds-checked; only an RTS0 part is emitted, and any other part
-(DXIL, SHEX, SHDR, ILDB, …) rejects the extract.
+incrementally and discards it. Root signatures are structurally parsed as
+D3D12 version 1.0 or 1.1 and **re-serialized canonically**, so only
+structured root-signature fields are carried. A DXBC container used as a
+root signature must contain only an RTS0 part whose payload is that same
+structure; any other part (DXIL, SHEX, SHDR, ILDB, …) rejects the extract.
 
 Signing is **not** part of this format.
 
@@ -51,7 +53,7 @@ deeper than 8 is rejected.
     "exe_hash": "0000000000000000000000000000000000000000000000000000000000000000"
   },
   "root_signatures": {
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "01000000"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "010000000000000000000000000000000000000000000000"
   },
   "input_layouts": {},
   "stream_outputs": {},
@@ -89,7 +91,7 @@ deeper than 8 is rejected.
 | `build.game_id` | string or null | Optional. 1–128 ASCII graphic characters. No `/`, `\`, `:`, or whitespace. |
 | `build.version` | string or null | Same character rules as `game_id`. |
 | `build.exe_hash` | string or null | Optional. 64-character lowercase hex SHA-256. |
-| `root_signatures` | object | Map from SHA-256 (64 lowercase hex) to lowercase hex of sanitized root-signature bytes. Each key must equal the SHA-256 of the decoded value. Missing table is treated as empty. |
+| `root_signatures` | object | Map from SHA-256 (64 lowercase hex) to lowercase hex of the **canonical** serialized root signature. Each key must equal the SHA-256 of the decoded value. The loader re-parses every entry and rejects bytes that are not that exact structure. Missing table is treated as empty. Unreferenced entries are rejected. |
 | `input_layouts` | object | Map from SHA-256 of compact JSON of the element array to that array. Key must match the content hash. |
 | `stream_outputs` | object | Map from SHA-256 of compact JSON of the stream-out object to that object. Key must match the content hash. |
 | `records` | array | Sorted by `app_key` (hex string order). Unique, non-empty keys. Cap 50 000. |
@@ -105,8 +107,9 @@ deeper than 8 is rejected.
 | real fields | finite number | NaN / Inf are rejected at extract so the loader never sees them. |
 
 Output is deterministic: the same SODB bytes produce byte-identical JSON.
-Extract streams JSON through a counting writer and rejects output larger
-than 64 MiB (the same cap the loader enforces).
+Extract encodes JSON in memory up to the 64 MiB cap and writes the complete
+document only on success (stdout cannot observe a partial document). File
+output (`--out`) is atomic (temp file, fsync, rename).
 
 ## Which fields are copied as raw bytes
 
@@ -114,7 +117,7 @@ Only **one** field family is stored as raw bytes (lowercase hex):
 
 | Table field | Source | Why it cannot carry bytecode |
 | --- | --- | --- |
-| `root_signatures` values | `root_signatures.value` | If the blob starts with `DXBC`, the container is parsed with bounds and part-count limits. The extract emits **only** the RTS0 payload. Any other part (DXIL, SHEX, SHDR, ILDB, STAT, …) or a malformed container fails the extract with a typed error that names no content. A non-DXBC blob is treated as a raw serialized root signature: size-capped (1 MiB by default) and checked for a little-endian version field in `1..=3`. |
+| `root_signatures` values | `root_signatures.value` | The blob is parsed as a D3D12 root signature 1.0 or 1.1 (header, parameters, descriptor ranges, static samplers; enums and flags validated; every offset bounds-checked; every byte accounted for). The extract emits the **canonical re-serialization** of the parsed fields, never the input bytes. If the blob starts with `DXBC`, the container must contain only an RTS0 part (plus the standard checksum header); the RTS0 payload is parsed the same way. Any other part (DXIL, SHEX, SHDR, ILDB, STAT, …), a malformed container, a gap/trailing byte, or a non-canonical leftover fails the extract with a typed error that names no content. Size cap: 1 MiB by default. |
 
 Every other descriptor is structured JSON of INTEGER / REAL / TEXT columns
 from the published SQL schema. None of those columns is a bytecode BLOB:
@@ -136,7 +139,8 @@ The tool does **not** rewrite game-provided application keys by default.
 `app_key` is lowercase hex of the SODB `Key` blob. A game that stored a
 path-shaped key will see that key's hex in the file. `--hash-app-keys`
 replaces each key with the SHA-256 of the raw key bytes (64 hex chars).
-That hides the original bytes and makes them unrecoverable; matching or
+The hash is **unsalted**: low-entropy keys can be guessed by brute force.
+Hashing hides the original bytes and makes them unrecoverable; matching or
 debugging by the original key is then impossible.
 
 `SemanticName` is validated as an identifier and rejected (without

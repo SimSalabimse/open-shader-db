@@ -96,4 +96,24 @@ pub enum Error {
     /// A root-signature hex blob exceeded the 1 MiB cap.
     #[error("root signature exceeds limit of {max} bytes (got {got})")]
     RootSignatureTooLarge { max: u64, got: u64 },
+
+    /// A root-signature hex blob failed structural parse or was not canonical.
+    #[error("malformed root signature")]
+    RootSignatureMalformed,
+
+    /// `SemanticName` was not a C-like identifier.
+    #[error("semantic name is not a valid identifier")]
+    InvalidSemanticName,
+
+    /// A descriptor table entry was not referenced by any record.
+    #[error("descriptor table entry is not referenced by any record")]
+    UnreferencedDescriptor,
+
+    /// `unresolved_stages` listed the same stage twice.
+    #[error("duplicate unresolved_stages entry")]
+    DuplicateUnresolvedStage,
+
+    /// `unresolved_stages` listed a stage that also has a bytecode hash.
+    #[error("unresolved_stages overlaps a resolved bytecode hash")]
+    OverlappingUnresolvedStage,
 }

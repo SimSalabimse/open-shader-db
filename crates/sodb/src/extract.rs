@@ -245,7 +245,7 @@ impl std::ops::Deref for ExtractedSodb {
 }
 
 /// `SemanticName` must be a C-like identifier (no paths).
-pub(crate) fn validate_semantic_name(name: &str) -> Result<(), crate::Error> {
+pub fn validate_semantic_name(name: &str) -> Result<(), crate::Error> {
     if name.is_empty() || name.len() > 128 {
         return Err(crate::Error::InvalidSemanticName);
     }

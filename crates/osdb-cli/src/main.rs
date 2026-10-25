@@ -146,8 +146,9 @@ enum RecordsCommand {
         force: bool,
         /// Replace each `app_key` with the SHA-256 of the game-provided key.
         ///
-        /// The tool does not alter keys unless this flag is set. Hashing
-        /// hides path-shaped keys at the cost of making the original key
+        /// The hash is unsalted, so low-entropy keys can be guessed. The
+        /// tool does not alter keys unless this flag is set. Hashing hides
+        /// path-shaped keys at the cost of making the original key
         /// unrecoverable.
         #[arg(long)]
         hash_app_keys: bool,

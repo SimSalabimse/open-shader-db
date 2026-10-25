@@ -73,10 +73,24 @@ pub fn extract_with_options(
     })
 }
 
-/// Deterministic pretty JSON streamed into `writer`, capped at 64 MiB.
-pub fn encode_record_file_to_writer<W: Write>(file: &RecordFile, writer: W) -> Result<(), Error> {
+/// Deterministic pretty JSON written only after a successful in-memory encode.
+///
+/// Encoding is buffered up to the 64 MiB record-file cap. `writer` receives
+/// bytes only on success, so stdout cannot observe a partial document.
+pub fn encode_record_file_to_writer<W: Write>(
+    file: &RecordFile,
+    mut writer: W,
+) -> Result<(), Error> {
+    let bytes = encode_record_file(file)?;
+    writer.write_all(&bytes).map_err(|_| Error::Io)?;
+    Ok(())
+}
+
+/// Deterministic pretty JSON (same SODB in → byte-identical bytes out).
+pub fn encode_record_file(file: &RecordFile) -> Result<Vec<u8>, Error> {
+    let mut bytes = Vec::new();
     let mut capped = CappedWriter {
-        inner: writer,
+        inner: &mut bytes,
         written: 0,
         max: Limits::DEFAULT.max_file_bytes,
         exceeded: false,
@@ -92,13 +106,6 @@ pub fn encode_record_file_to_writer<W: Write>(file: &RecordFile, writer: W) -> R
         }
         return Err(map_write_err(err));
     }
-    Ok(())
-}
-
-/// Deterministic pretty JSON (same SODB in → byte-identical bytes out).
-pub fn encode_record_file(file: &RecordFile) -> Result<Vec<u8>, Error> {
-    let mut bytes = Vec::new();
-    encode_record_file_to_writer(file, &mut bytes)?;
     Ok(bytes)
 }
 

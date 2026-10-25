@@ -1755,7 +1755,8 @@ fn bytecode_row_plan(conn: &Connection, table: TableId) -> Result<BytecodeRowPla
 }
 
 fn table_declares_reserved_rowid(conn: &Connection, table: TableId) -> Result<bool, Error> {
-    let sql = format!("PRAGMA table_info({})", table.sql_name());
+    // `table_xinfo` includes generated / hidden columns that `table_info` omits.
+    let sql = format!("PRAGMA table_xinfo({})", table.sql_name());
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|source| Error::from_sqlite(table, source))?;
@@ -1780,6 +1781,17 @@ fn table_declares_reserved_rowid(conn: &Connection, table: TableId) -> Result<bo
 }
 
 fn table_is_without_rowid(conn: &Connection, table: TableId) -> Result<bool, Error> {
+    let wr: Option<i64> = conn
+        .query_row(
+            "SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = ?1 COLLATE NOCASE",
+            [table.sql_name()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|source| Error::from_sqlite(table, source))?;
+    if let Some(flag) = wr {
+        return Ok(flag != 0);
+    }
     let sql: Option<String> = conn
         .query_row(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1 COLLATE NOCASE",
@@ -1788,9 +1800,78 @@ fn table_is_without_rowid(conn: &Connection, table: TableId) -> Result<bool, Err
         )
         .optional()
         .map_err(|source| Error::from_sqlite(table, source))?;
-    Ok(sql
-        .map(|s| s.to_ascii_uppercase().contains("WITHOUT ROWID"))
-        .unwrap_or(false))
+    Ok(sql.map(|s| sql_has_without_rowid(&s)).unwrap_or(false))
+}
+
+/// Tokenize SQL, ignoring whitespace and comments, and look for WITHOUT ROWID.
+pub(crate) fn sql_has_without_rowid(sql: &str) -> bool {
+    let tokens = sql_ident_tokens(sql);
+    tokens
+        .windows(2)
+        .any(|pair| pair[0] == "WITHOUT" && pair[1] == "ROWID")
+}
+
+fn sql_ident_tokens(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if c == b'-' && bytes.get(i + 1) == Some(&b'-') {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = i.saturating_add(2);
+            continue;
+        }
+        if c == b'\'' || c == b'"' || c == b'`' {
+            let quote = c;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == quote {
+                    if bytes.get(i + 1) == Some(&quote) {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'[' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != b']' {
+                i += 1;
+            }
+            i = i.saturating_add(1);
+            continue;
+        }
+        if c.is_ascii_alphabetic() || c == b'_' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            out.push(sql[start..i].to_ascii_uppercase());
+            continue;
+        }
+        i += 1;
+    }
+    out
 }
 
 /// SHA-256 of a `shader_bytecode.Bytecode` blob without retaining the bytes.
@@ -2062,7 +2143,8 @@ fn read_pipeline_extract(
         return Err(Error::MissingKeyColumn { table });
     }
 
-    let root_sigs = load_root_signatures(conn, catalog, limits)?;
+    let referenced_root_sigs = collect_referenced_root_keys(conn, catalog, limits)?;
+    let root_sigs = load_root_signatures(conn, catalog, limits, &referenced_root_sigs)?;
     let input_elements = load_input_elements(conn, catalog, limits)?;
     let layout_assocs = load_layout_assocs(conn, catalog, limits)?;
     let input_layouts = assemble_input_layouts(&input_elements, &layout_assocs);
@@ -2246,10 +2328,43 @@ fn lookup_clone<T: Clone>(map: &HashMap<AppKey, T>, key: &Option<AppKey>) -> Opt
     key.as_ref().and_then(|k| map.get(k).cloned())
 }
 
+fn collect_referenced_root_keys(
+    conn: &Connection,
+    catalog: &Catalog,
+    limits: Limits,
+) -> Result<HashSet<AppKey>, Error> {
+    let table = TableId::PipelineStates;
+    if !catalog.present.contains(&table) {
+        return Ok(HashSet::new());
+    }
+    let columns = catalog.cols(table);
+    if !has_column(columns, "RootSignature") {
+        return Ok(HashSet::new());
+    }
+    let mut referenced = HashSet::new();
+    keyed_scan(
+        conn,
+        catalog,
+        table,
+        limits,
+        &["Key", "RootSignature"],
+        |_, row, select| {
+            if let Some(col) = select.find("RootSignature") {
+                if let Some(bytes) = read_opt_blob(row, col, table, limits)? {
+                    referenced.insert(AppKey::new(bytes));
+                }
+            }
+            Ok(())
+        },
+    )?;
+    Ok(referenced)
+}
+
 fn load_root_signatures(
     conn: &Connection,
     catalog: &Catalog,
     limits: Limits,
+    referenced: &HashSet<AppKey>,
 ) -> Result<HashMap<AppKey, Arc<DescriptorBlob>>, Error> {
     let table = TableId::RootSignatures;
     if !catalog.present.contains(&table) {
@@ -2263,6 +2378,9 @@ fn load_root_signatures(
         limits,
         &["Key", "value"],
         |key, row, select| {
+            if !referenced.contains(&key) {
+                return Ok(());
+            }
             let value = match select.find("value") {
                 Some(col) => read_opt_blob(row, col, table, limits)?,
                 None => None,
@@ -3161,6 +3279,7 @@ fn assoc_pairs(
         .query([])
         .map_err(|source| Error::from_sqlite(table, source))?;
     let mut out: HashMap<AppKey, Vec<AppKey>> = HashMap::new();
+    let mut seen: HashMap<AppKey, HashSet<AppKey>> = HashMap::new();
     while let Some(row) = rows
         .next()
         .map_err(|source| Error::from_sqlite(table, source))?
@@ -3174,10 +3293,10 @@ fn assoc_pairs(
             None => None,
         };
         if let (Some(owner), Some(child)) = (owner, child) {
-            let list = out.entry(AppKey::new(owner)).or_default();
+            let owner = AppKey::new(owner);
             let child = AppKey::new(child);
-            if !list.contains(&child) {
-                list.push(child);
+            if seen.entry(owner.clone()).or_default().insert(child.clone()) {
+                out.entry(owner).or_default().push(child);
             }
         }
     }

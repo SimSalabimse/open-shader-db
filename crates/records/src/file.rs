@@ -253,6 +253,8 @@ impl RawFile {
             });
         }
         validate_app_keys(&self.records)?;
+        validate_semantic_names(&self.input_layouts, &self.stream_outputs)?;
+        validate_unresolved_stages(&self.records)?;
         validate_refs(
             &self.records,
             &self.root_signatures,
@@ -289,28 +291,87 @@ fn validate_app_keys(records: &[PipelineStateRecord]) -> Result<(), Error> {
     Ok(())
 }
 
+fn validate_semantic_names(
+    input_layouts: &BTreeMap<Sha256, Vec<InputElementDesc>>,
+    stream_outputs: &BTreeMap<Sha256, StreamOutDesc>,
+) -> Result<(), Error> {
+    for elems in input_layouts.values() {
+        for elem in elems {
+            sodb::validate_semantic_name(&elem.semantic_name)
+                .map_err(|_| Error::InvalidSemanticName)?;
+        }
+    }
+    for so in stream_outputs.values() {
+        for decl in &so.declarations {
+            sodb::validate_semantic_name(&decl.semantic_name)
+                .map_err(|_| Error::InvalidSemanticName)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_unresolved_stages(records: &[PipelineStateRecord]) -> Result<(), Error> {
+    for record in records {
+        let mut seen = BTreeSet::new();
+        for stage in &record.unresolved_stages {
+            if !seen.insert(*stage) {
+                return Err(Error::DuplicateUnresolvedStage);
+            }
+            if stage_is_resolved(&record.bytecode_hashes, *stage) {
+                return Err(Error::OverlappingUnresolvedStage);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn stage_is_resolved(hashes: &StageHashes, stage: ShaderStage) -> bool {
+    match stage {
+        ShaderStage::Vs => hashes.vs.is_some(),
+        ShaderStage::Ps => hashes.ps.is_some(),
+        ShaderStage::Hs => hashes.hs.is_some(),
+        ShaderStage::Ds => hashes.ds.is_some(),
+        ShaderStage::Gs => hashes.gs.is_some(),
+        ShaderStage::As => hashes.as_stage.is_some(),
+        ShaderStage::Ms => hashes.ms.is_some(),
+        ShaderStage::Cs => hashes.cs.is_some(),
+    }
+}
+
 fn validate_refs(
     records: &[PipelineStateRecord],
     root_signatures: &BTreeMap<Sha256, HexBytes>,
     input_layouts: &BTreeMap<Sha256, Vec<InputElementDesc>>,
     stream_outputs: &BTreeMap<Sha256, StreamOutDesc>,
 ) -> Result<(), Error> {
+    let mut used_rs = BTreeSet::new();
+    let mut used_layouts = BTreeSet::new();
+    let mut used_so = BTreeSet::new();
     for record in records {
         if let Some(hash) = record.root_signature {
             if !root_signatures.contains_key(&hash) {
                 return Err(Error::UnresolvedDescriptor);
             }
+            used_rs.insert(hash);
         }
         if let Some(hash) = record.input_layout {
             if !input_layouts.contains_key(&hash) {
                 return Err(Error::UnresolvedDescriptor);
             }
+            used_layouts.insert(hash);
         }
         if let Some(hash) = record.stream_out {
             if !stream_outputs.contains_key(&hash) {
                 return Err(Error::UnresolvedDescriptor);
             }
+            used_so.insert(hash);
         }
+    }
+    if used_rs.len() != root_signatures.len()
+        || used_layouts.len() != input_layouts.len()
+        || used_so.len() != stream_outputs.len()
+    {
+        return Err(Error::UnreferencedDescriptor);
     }
     Ok(())
 }
@@ -700,6 +761,11 @@ impl<'de> Visitor<'de> for RawHexTableVisitor {
             }
             if sha256_bytes(&bytes) != hash {
                 return Err(store_typed(Error::DescriptorHashMismatch));
+            }
+            let parsed = sodb::parse_root_signature(&bytes)
+                .map_err(|_| store_typed(Error::RootSignatureMalformed))?;
+            if parsed.serialize() != bytes {
+                return Err(store_typed(Error::RootSignatureMalformed));
             }
             out.insert(hash, HexBytes::from_bytes(&bytes));
         }

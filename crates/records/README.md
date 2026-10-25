@@ -5,8 +5,9 @@ Local-only pipeline-state records for open-shader-db (Simsalabim).
 The crate reads a SODB file the user already has and writes JSON
 `PipelineStateRecord`s **without DXIL bytecode**. Each shader blob is
 hashed (SHA-256, lowercase hex) and discarded. Root signatures are
-sanitized (RTS0-only DXBC, or a size-capped raw blob) and stored once
-in a file-level table keyed by SHA-256. Matching compares bytecode
+parsed as D3D12 version 1.0/1.1 and re-serialized canonically (so only
+structured fields are carried) and stored once in a file-level table
+keyed by SHA-256. Matching compares bytecode
 hashes to a `HashSet` of local hashes. There is no upload, download,
 hosting, or signing.
 
@@ -36,7 +37,7 @@ Record files are treated as untrusted:
 
 | Limit | Default | Purpose |
 | --- | ---: | --- |
-| `max_file_bytes` | 64 MiB | Metadata check plus a capped read (`take(max+1)`). Extract uses the same cap and streams JSON. |
+| `max_file_bytes` | 64 MiB | Metadata check plus a capped read (`take(max+1)`). Extract encodes in memory up to this cap, then writes the complete document. |
 | `max_records` | 50 000 | Enforced in the JSON array visitor as soon as the cap is crossed |
 | `max_json_nesting` | 8 | Reject deep JSON |
 | `max_root_signature_bytes` | 1 MiB | Decoded table values |
@@ -59,7 +60,8 @@ Other hardening:
 
 `app_key` is hex of the game-provided SODB key. The tool does not alter
 those keys unless `--hash-app-keys` is passed (CLI) / `hash_app_keys`
-(library), which replaces each key with SHA-256 of the raw bytes.
+(library), which replaces each key with SHA-256 of the raw bytes
+(unsalted: low-entropy keys can be guessed).
 `SemanticName` is accepted only as `[A-Za-z_][A-Za-z0-9_]*` (max 128).
 The file contains no filesystem paths, no machine identifiers, and no
 timestamps as their own fields. `--game-id`, `--version`, and
@@ -72,7 +74,7 @@ timestamps as their own fields. `--game-id`, `--version`, and
 
 | Case | Peak RSS | Output |
 | --- | ---: | ---: |
-| 200 pipeline states sharing one 8 MiB root signature | 40 607 744 bytes (38.7 MiB) | 16 891 692 bytes |
+| 200 pipeline states sharing one interned root signature | interned once (see extract RSS tests) | hashes + one canonical blob |
 | 200 pipeline states sharing one 4000-element input layout | +3 567 616 bytes (3.4 MiB delta) | 1 049 370 bytes |
 | 200 MiB of bytecode blobs (25 × 8 MiB) | 32 190 464 bytes (30.7 MiB) | hashes only |
 

@@ -6,9 +6,11 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use sodb::{SODB_APPLICATION_ID, SODB_USER_VERSION};
@@ -386,28 +388,45 @@ fn records_extract_refuses_symlink_out() {
 #[cfg(unix)]
 #[test]
 fn records_extract_refuses_fifo_out_without_hanging() {
+    struct KillOnDrop(Option<std::process::Child>);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
     let sodb = create_sodb();
     let fifo = temp_path(".json");
     let status = Command::new("mkfifo").arg(&fifo).status().unwrap();
     assert!(status.success());
-    let sodb_path = sodb.path.clone();
-    let fifo_for_thread = fifo.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || {
-        let result = bin()
-            .arg("records")
-            .arg("extract")
-            .arg("--sodb")
-            .arg(&sodb_path)
-            .arg("--out")
-            .arg(&fifo_for_thread)
-            .output();
-        let _ = tx.send(result);
-    });
-    let received = rx.recv_timeout(Duration::from_secs(3));
+    let child = bin()
+        .arg("records")
+        .arg("extract")
+        .arg("--sodb")
+        .arg(&sodb.path)
+        .arg("--out")
+        .arg(&fifo)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut guard = KillOnDrop(Some(child));
+    let started = Instant::now();
+    let status = loop {
+        match guard.0.as_mut().and_then(|c| c.try_wait().ok()).flatten() {
+            Some(status) => {
+                guard.0 = None;
+                break status;
+            }
+            None if started.elapsed() < Duration::from_secs(3) => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            None => panic!("FIFO --out hung"),
+        }
+    };
     let _ = std::fs::remove_file(&fifo);
-    let result = received.expect("FIFO --out hung");
-    let out = result.unwrap();
-    assert!(!out.status.success());
-    handle.join().unwrap();
+    assert!(!status.success());
 }

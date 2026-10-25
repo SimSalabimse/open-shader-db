@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Local pipeline-state records: bytecode as SHA-256 only; root signatures cannot carry DXIL"
+description = "Local pipeline-state records: bytecode as SHA-256 only; root signatures are parsed and re-serialized canonically so only structured fields are carried"
 readme = "README.md"
 publish = false
 

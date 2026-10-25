@@ -129,3 +129,35 @@ impl Drop for TempGuard {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn temp_file_is_removed_when_write_fails() {
+        let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dest =
+            std::env::temp_dir().join(format!("osdb-out-cleanup-{}-{n}.json", std::process::id()));
+        let input =
+            std::env::temp_dir().join(format!("osdb-in-cleanup-{}-{n}.sodb", std::process::id()));
+        std::fs::write(&input, b"sodb").unwrap();
+        let _ = fs::remove_file(&dest);
+        let err = write_atomic(&dest, &input, false, |_| Err("boom".into()));
+        assert!(err.is_err());
+        assert!(!dest.exists(), "dest must not be created on failure");
+        let stem = dest.file_name().unwrap().to_string_lossy();
+        let parent = dest.parent().unwrap();
+        for entry in fs::read_dir(parent).unwrap() {
+            let name = entry.unwrap().file_name();
+            let name = name.to_string_lossy();
+            assert!(
+                !name.starts_with(&format!(".{stem}.osdb-")) || !name.ends_with(".tmp"),
+                "temp file left behind: {name}"
+            );
+        }
+        let _ = fs::remove_file(&input);
+    }
+}

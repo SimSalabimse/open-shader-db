@@ -16,16 +16,18 @@ use sha2::{Digest, Sha256 as Sha256Digest};
 use crate::build::{BuildIdentity, ExeHash, GameId, GameVersion};
 #[cfg(target_os = "linux")]
 use crate::extract::extract_with_sodb_limits;
-use crate::extract::{encode_record_file, extract, extract_with_options};
+use crate::extract::{
+    encode_record_file, encode_record_file_to_writer, extract, extract_with_options,
+};
 #[cfg(unix)]
 use crate::file::open_regular_nonblocking;
 use crate::file::{
     load, load_with_limits, read_capped, reset_read_reached, take_read_reached, RecordFile,
     RedactedPath, FORMAT_VERSION,
 };
-use crate::hash::Sha256;
+use crate::hash::{sha256_json, Sha256};
 use crate::matching::{match_local_hashes, CoverageKind};
-use crate::types::{HexBytes, ShaderStage};
+use crate::types::{HexBytes, InputElementDesc, ShaderStage, SoDeclaration, StreamOutDesc};
 use crate::{Error, Limits};
 
 use sodb::{SODB_APPLICATION_ID, SODB_USER_VERSION};
@@ -39,7 +41,9 @@ const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const FAKE_VS: &[u8] = b"FAKE_VS_BLOB_BYTES";
 const FAKE_PS: &[u8] = b"FAKE_PS_BLOB_BYTES";
-const FAKE_ROOT: &[u8] = &[1, 0, 0, 0, b'F', b'A', b'K', b'E'];
+const FAKE_ROOT: &[u8] = &[
+    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
 
 struct TempFile {
     path: PathBuf,
@@ -598,7 +602,9 @@ fn rss_bytes() -> Option<u64> {
 #[cfg(target_os = "linux")]
 #[test]
 fn extract_rss_does_not_scale_with_blob_size() {
-    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     const ROWS: usize = 4;
     const BLOB_LEN: usize = 16 * 1024 * 1024;
     const TOTAL: u64 = (ROWS * BLOB_LEN) as u64;
@@ -966,13 +972,14 @@ fn output_cap_fails_without_partial_vec_growth() {
 #[cfg(target_os = "linux")]
 #[test]
 fn shared_root_signature_fanout_stays_under_rss_and_output_caps() {
-    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     const STATES: usize = 200;
     const BLOB_LEN: usize = 8 * 1024 * 1024;
     let fixture = create_sodb(|conn| {
         create_core_tables(conn)?;
-        let mut blob = vec![1_u8, 0, 0, 0];
-        blob.resize(BLOB_LEN, 0);
+        let blob = FAKE_ROOT.to_vec();
         conn.execute(
             "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
             rusqlite::params![b"rs-shared", &blob],
@@ -1026,7 +1033,9 @@ fn shared_root_signature_fanout_stays_under_rss_and_output_caps() {
 #[cfg(target_os = "linux")]
 #[test]
 fn shared_input_layout_fanout_stays_small() {
-    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     const STATES: usize = 200;
     const ELEMS: usize = 4000;
     let fixture = create_sodb(|conn| {
@@ -1101,7 +1110,9 @@ fn shared_input_layout_fanout_stays_small() {
 #[cfg(target_os = "linux")]
 #[test]
 fn extract_rss_200_mib_bytecode() {
-    let _rss = RSS_MEASURE_LOCK.lock().unwrap();
+    let _rss = RSS_MEASURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     const ROWS: usize = 25;
     const BLOB_LEN: usize = 8 * 1024 * 1024;
     let fixture = create_sodb(|conn| {
@@ -1149,4 +1160,404 @@ fn extract_rss_200_mib_bytecode() {
             "200 MiB blob extract RSS grew too much"
         );
     }
+}
+
+const MARKER: &[u8] = b"DXIL_MARKER_SHOULD_NOT_LEAK_9f3a";
+
+fn marker_absent(err: &Error) {
+    let text = format!("{err}{err:?}");
+    assert!(!text.contains("DXIL_MARKER"), "{text}");
+    assert!(!text.contains("9f3a"), "{text}");
+}
+
+fn extract_rejects_root_sig(value: &[u8]) {
+    let sodb = sodb_with_root_sig(value);
+    let err = extract(sodb.path(), BuildIdentity::empty()).unwrap_err();
+    marker_absent(&err);
+}
+
+#[test]
+fn raw_smuggle_is_rejected_and_marker_absent() {
+    let mut blob = vec![1, 0, 0, 0];
+    blob.extend_from_slice(MARKER);
+    extract_rejects_root_sig(&blob);
+}
+
+#[test]
+fn raw_smuggle2_is_rejected_and_marker_absent() {
+    let mut blob = vec![2, 0, 0, 0];
+    blob.extend_from_slice(MARKER);
+    extract_rejects_root_sig(&blob);
+}
+
+#[test]
+fn rts0_smuggle_is_rejected_and_marker_absent() {
+    let mut payload = vec![1, 0, 0, 0];
+    payload.extend_from_slice(MARKER);
+    let blob = dxbc_with_parts(&[(b"RTS0", &payload)]);
+    extract_rejects_root_sig(&blob);
+}
+
+#[test]
+fn rts0_v99_is_rejected_and_marker_absent() {
+    let mut payload = vec![99, 0, 0, 0];
+    payload.extend_from_slice(MARKER);
+    let blob = dxbc_with_parts(&[(b"RTS0", &payload)]);
+    extract_rejects_root_sig(&blob);
+}
+
+#[test]
+fn unreferenced_hostile_root_signature_is_not_copied() {
+    let mut hostile = vec![1, 0, 0, 0];
+    hostile.extend_from_slice(MARKER);
+    let sodb = create_sodb(|conn| {
+        create_core_tables(conn)?;
+        conn.execute(
+            "INSERT INTO root_signatures (Key, value) VALUES (?1, ?2)",
+            rusqlite::params![b"rs-bad", &hostile],
+        )?;
+        conn.execute(
+            "INSERT INTO pipeline_states (Key, Flags) VALUES (?1, 0)",
+            rusqlite::params![b"pso-1"],
+        )?;
+        Ok(())
+    });
+    let file = extract(sodb.path(), BuildIdentity::empty()).unwrap();
+    assert!(file.root_signatures.is_empty());
+    let json = String::from_utf8(encode_record_file(&file).unwrap()).unwrap();
+    assert!(!json.contains("DXIL_MARKER"));
+    assert!(!json.contains(&bytes_to_hex(MARKER)));
+}
+
+#[test]
+fn loader_rejects_dxil_carrying_referenced_root_signature() {
+    let mut hostile = vec![1, 0, 0, 0];
+    hostile.extend_from_slice(MARKER);
+    let hex = bytes_to_hex(&hostile);
+    let hash = sha256_hex(&hostile);
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"root_signatures":{{"{hash}":"{hex}"}},"records":[{{"app_key":"01","version":0,"bytecode_hashes":{{}},"root_signature":"{hash}"}}]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    marker_absent(&err);
+    assert!(matches!(err, Error::RootSignatureMalformed), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_dxil_carrying_unreferenced_root_signature() {
+    let mut hostile = vec![1, 0, 0, 0];
+    hostile.extend_from_slice(MARKER);
+    let hex = bytes_to_hex(&hostile);
+    let hash = sha256_hex(&hostile);
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"root_signatures":{{"{hash}":"{hex}"}},"records":[]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    marker_absent(&err);
+    assert!(
+        matches!(
+            err,
+            Error::RootSignatureMalformed | Error::UnreferencedDescriptor
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn loader_rejects_unreferenced_canonical_root_signature() {
+    let hex = bytes_to_hex(FAKE_ROOT);
+    let hash = sha256_hex(FAKE_ROOT);
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"root_signatures":{{"{hash}":"{hex}"}},"records":[]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::UnreferencedDescriptor), "{err:?}");
+}
+
+fn minimal_record(
+    app_key: &str,
+    input_layout: Option<Sha256>,
+    root_signature: Option<Sha256>,
+) -> crate::types::PipelineStateRecord {
+    crate::types::PipelineStateRecord {
+        app_key: crate::types::AppKeyHex::parse_hex(app_key).unwrap(),
+        version: 0,
+        bytecode_hashes: crate::types::StageHashes {
+            vs: None,
+            ps: None,
+            hs: None,
+            ds: None,
+            gs: None,
+            as_stage: None,
+            ms: None,
+            cs: None,
+        },
+        unresolved_stages: Vec::new(),
+        root_signature,
+        input_layout,
+        depth_stencil: None,
+        blend: None,
+        rasterizer: None,
+        render_target_formats: None,
+        view_instancing: None,
+        stream_out: None,
+        sample_desc: None,
+        sample_mask: None,
+        ib_strip_cut_value: None,
+        primitive_topology: None,
+        dsv_format: None,
+        node_mask: None,
+        flags: None,
+    }
+}
+
+#[test]
+fn loader_rejects_path_shaped_semantic_name() {
+    let elems = vec![InputElementDesc {
+        semantic_name: "C:\\Windows\\secret".into(),
+        semantic_index: 0,
+        format: 0,
+        input_slot: 0,
+        aligned_byte_offset: 0,
+        input_slot_class: 0,
+        instance_data_step_rate: 0,
+    }];
+    let hash = sha256_json(&elems).unwrap();
+    let mut file = RecordFile {
+        format_version: FORMAT_VERSION,
+        build: BuildIdentity::empty(),
+        root_signatures: Default::default(),
+        input_layouts: Default::default(),
+        stream_outputs: Default::default(),
+        records: vec![],
+    };
+    file.input_layouts.insert(hash, elems);
+    file.records.push(minimal_record("01", Some(hash), None));
+    let json = serde_json::to_vec(&file).unwrap();
+    let path = write_temp(".json", json);
+    let err = load(path.path()).unwrap_err();
+    let text = err.to_string();
+    assert!(matches!(err, Error::InvalidSemanticName), "{err:?}");
+    assert!(!text.contains("Windows"));
+    assert!(!text.contains("secret"));
+}
+
+#[test]
+fn loader_rejects_unreferenced_input_layout() {
+    let elems = vec![InputElementDesc {
+        semantic_name: "POSITION".into(),
+        semantic_index: 0,
+        format: 0,
+        input_slot: 0,
+        aligned_byte_offset: 0,
+        input_slot_class: 0,
+        instance_data_step_rate: 0,
+    }];
+    let hash = sha256_json(&elems).unwrap();
+    let mut file = RecordFile {
+        format_version: FORMAT_VERSION,
+        build: BuildIdentity::empty(),
+        root_signatures: Default::default(),
+        input_layouts: Default::default(),
+        stream_outputs: Default::default(),
+        records: Vec::new(),
+    };
+    file.input_layouts.insert(hash, elems);
+    let json = serde_json::to_vec(&file).unwrap();
+    let path = write_temp(".json", json);
+    let err = load(path.path()).unwrap_err();
+    assert!(matches!(err, Error::UnreferencedDescriptor), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_unreferenced_stream_output() {
+    let so = StreamOutDesc {
+        buffer_stride: [0, 0, 0, 0],
+        num_strides: 0,
+        rasterized_stream: 0,
+        declarations: vec![SoDeclaration {
+            stream: 0,
+            semantic_name: "TEXCOORD".into(),
+            semantic_index: 0,
+            start_component: 0,
+            component_count: 1,
+            output_slot: 0,
+        }],
+    };
+    let hash = sha256_json(&so).unwrap();
+    let mut file = RecordFile {
+        format_version: FORMAT_VERSION,
+        build: BuildIdentity::empty(),
+        root_signatures: Default::default(),
+        input_layouts: Default::default(),
+        stream_outputs: Default::default(),
+        records: Vec::new(),
+    };
+    file.stream_outputs.insert(hash, so);
+    let json = serde_json::to_vec(&file).unwrap();
+    let path = write_temp(".json", json);
+    let err = load(path.path()).unwrap_err();
+    assert!(matches!(err, Error::UnreferencedDescriptor), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_root_signature_hash_mismatch() {
+    let hex = bytes_to_hex(FAKE_ROOT);
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"root_signatures":{{"{HASH_A}":"{hex}"}},"records":[]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::DescriptorHashMismatch), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_root_signature_over_cap() {
+    let hex = bytes_to_hex(FAKE_ROOT);
+    let hash = sha256_hex(FAKE_ROOT);
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"root_signatures":{{"{hash}":"{hex}"}},"records":[{{"app_key":"01","version":0,"bytecode_hashes":{{}},"root_signature":"{hash}"}}]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load_with_limits(
+        file.path(),
+        Limits {
+            max_root_signature_bytes: 10,
+            ..Limits::DEFAULT
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::RootSignatureTooLarge { max: 10, .. }),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn loader_rejects_duplicate_root_signature_key() {
+    let hex = bytes_to_hex(FAKE_ROOT);
+    let hash = sha256_hex(FAKE_ROOT);
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"root_signatures":{{"{hash}":"{hex}","{hash}":"{hex}"}},"records":[]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::DuplicateKey), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_layout_hash_mismatch() {
+    let elems = vec![InputElementDesc {
+        semantic_name: "POSITION".into(),
+        semantic_index: 0,
+        format: 0,
+        input_slot: 0,
+        aligned_byte_offset: 0,
+        input_slot_class: 0,
+        instance_data_step_rate: 0,
+    }];
+    let mut file = RecordFile {
+        format_version: FORMAT_VERSION,
+        build: BuildIdentity::empty(),
+        root_signatures: Default::default(),
+        input_layouts: Default::default(),
+        stream_outputs: Default::default(),
+        records: Vec::new(),
+    };
+    let wrong = Sha256::parse_hex(HASH_A).unwrap();
+    file.input_layouts.insert(wrong, elems);
+    file.records.push(minimal_record("01", Some(wrong), None));
+    let json = serde_json::to_vec(&file).unwrap();
+    let path = write_temp(".json", json);
+    let err = load(path.path()).unwrap_err();
+    assert!(matches!(err, Error::DescriptorHashMismatch), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_missing_descriptor_reference() {
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"records":[{{"app_key":"01","version":0,"bytecode_hashes":{{}},"root_signature":"{HASH_A}"}}]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::UnresolvedDescriptor), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_duplicate_app_key() {
+    let json = r#"{"format_version":1,"build":{},"records":[{"app_key":"01","version":0,"bytecode_hashes":{}},{"app_key":"01","version":0,"bytecode_hashes":{}}]}"#;
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::DuplicateKey), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_duplicate_unresolved_stages() {
+    let json = r#"{"format_version":1,"build":{},"records":[{"app_key":"01","version":0,"bytecode_hashes":{},"unresolved_stages":["ps","ps"]}]}"#;
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::DuplicateUnresolvedStage), "{err:?}");
+}
+
+#[test]
+fn loader_rejects_overlapping_unresolved_stages() {
+    let json = format!(
+        r#"{{"format_version":1,"build":{{}},"records":[{{"app_key":"01","version":0,"bytecode_hashes":{{"vs":"{HASH_A}"}},"unresolved_stages":["vs"]}}]}}"#
+    );
+    let file = write_temp(".json", json);
+    let err = load(file.path()).unwrap_err();
+    assert!(matches!(err, Error::OverlappingUnresolvedStage), "{err:?}");
+}
+
+#[test]
+fn encode_to_writer_buffers_before_emitting() {
+    let mut file = RecordFile {
+        format_version: FORMAT_VERSION,
+        build: BuildIdentity::empty(),
+        root_signatures: Default::default(),
+        input_layouts: Default::default(),
+        stream_outputs: Default::default(),
+        records: Vec::new(),
+    };
+    let huge = vec![0_u8; 33 * 1024 * 1024];
+    let hash = crate::hash::sha256_bytes(&huge);
+    file.root_signatures
+        .insert(hash, HexBytes::from_bytes(&huge));
+    let mut dest = Vec::new();
+    let err = encode_record_file_to_writer(&file, &mut dest).unwrap_err();
+    assert!(
+        matches!(err, Error::OutputTooLarge { max: 67_108_864 }),
+        "{err:?}"
+    );
+    assert!(
+        dest.is_empty(),
+        "stdout/writer must not see partial JSON, got {} bytes",
+        dest.len()
+    );
+}
+
+#[test]
+fn encode_write_error_is_io_not_invalid_json() {
+    struct FailWriter;
+    impl std::io::Write for FailWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("no"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let file = RecordFile {
+        format_version: FORMAT_VERSION,
+        build: BuildIdentity::empty(),
+        root_signatures: Default::default(),
+        input_layouts: Default::default(),
+        stream_outputs: Default::default(),
+        records: Vec::new(),
+    };
+    let err = encode_record_file_to_writer(&file, FailWriter).unwrap_err();
+    assert!(matches!(err, Error::Io), "{err:?}");
 }

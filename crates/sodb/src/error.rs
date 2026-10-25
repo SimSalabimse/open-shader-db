@@ -129,9 +129,13 @@ pub enum Error {
     #[error("root signature exceeds limit of {max} bytes (got {got})")]
     RootSignatureTooLarge { max: u64, got: u64 },
 
-    /// A raw root signature's leading version field was missing or not 1..=3.
+    /// A raw root signature's leading version field was missing or not 1.0/1.1.
     #[error("root signature version is not a recognized D3D12 value")]
     RootSignatureBadVersion,
+
+    /// Serialized root-signature bytes failed structural validation.
+    #[error("malformed root signature")]
+    RootSignatureMalformed,
 
     /// A REAL descriptor field was NaN or infinite.
     #[error("non-finite floating point in {table}.{column}")]
