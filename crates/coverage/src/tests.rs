@@ -11,10 +11,12 @@ use rusqlite::Connection;
 
 use crate::build::{BuildId, ExeHash, GameId, GameVersion};
 use crate::hash::DescriptionHash;
+#[cfg(unix)]
+use crate::index::open_regular_nonblocking;
 use crate::index::{
-    load, load_with_limits, open_regular_nonblocking, read_capped, reset_read_reached,
-    take_read_reached, CoverageIndex, GeneratedAt, IndexHashes, RedactedPath, FORMAT_VERSION,
-    UNSIGNED_INDEX_LINE, UNSIGNED_INDEX_NOTE,
+    load, load_with_limits, read_capped, reset_read_reached, take_read_reached, CoverageIndex,
+    GeneratedAt, IndexHashes, RedactedPath, FORMAT_VERSION, UNSIGNED_INDEX_LINE,
+    UNSIGNED_INDEX_NOTE,
 };
 use crate::report::{MatchRate, BUILD_IDENTITY_NOT_COMPARED, BUILD_IDENTITY_REASON};
 use crate::{compare, compare_hashes, local_description_hashes, Error, Limits};
