@@ -106,16 +106,16 @@ Steam discovery lists installed games. It does not mean those installs contain `
 
 **Status:** 📋 Planned
 
-### Held
+### Library slice
 
-M3-B (consensus crate and proof-of-ownership challenge) and M3-C (anomaly detection and the review queue) are still held, pending an overlap check.
+`crates/consensus` (`osdb-consensus`) loads a read-only staging tree and applies an upload threshold. See [docs/CONSENSUS.md](docs/CONSENSUS.md). It is not wired to `osdb-cli`, does not write a coverage index, and is not deployed. M3-B2 (publish writers, coverage format v2, and the CLI) is not done. Server proof-of-ownership, anomaly detection, and the review queue are not done.
 
-One user-captured SODB was tested once and works. The next question is whether two captures of the same game build yield overlapping pipeline hashes. That overlap is needed before consensus can ever reach its threshold. Also open: whether captures from different GPUs or drivers agree. The one test shows neither. See [docs/CAPTURE_SODB.md](docs/CAPTURE_SODB.md).
+One same-PC, same-GPU check exists. Two separate sessions of the same game gave 6416 of 6416 shared app keys, 6416 identical full records, and 2580 shared vertex/pixel shader pairs (session 2 had 12 extra records). That is likely the easy case: the game compiles most pipelines at load. Cross-GPU and cross-driver agreement of pipeline hashes is **UNPROVEN**. Games that compile pipelines lazily are untested. There is no set of real uploads from 3 or more sources; consensus tests use synthetic manifests. The counts are not a count of people (no accounts).
 
 ### Deliverables
 
-- [ ] Staging data loader
-- [ ] Consensus builder (configurable upload threshold)
+- [x] Staging data loader (`osdb-consensus`, read-only; no CLI; not deployed)
+- [x] Consensus builder (library threshold only; not lowered for a small build; no publish writer)
 - [ ] Server-side proof-of-ownership checks
 - [ ] Anomaly detection and manual review queue
 - [ ] Generation of CoverageIndex (M0) and PipelineStateRecord sets (M1)
@@ -123,8 +123,8 @@ One user-captured SODB was tested once and works. The next question is whether t
 
 ### Success criteria
 
-- [ ] Pipeline loads all staging manifests for a build
-- [ ] Consensus uses a documented upload threshold (no weakening for low-population games)
+- [x] A library call loads the staging manifests for one build (no CLI pipeline, not deployed)
+- [x] Consensus uses a documented upload threshold (no weakening for low-population games)
 - [ ] Anomalies are queued for human review
 - [ ] Validated data is published to staging, not as unsigned production releases
 

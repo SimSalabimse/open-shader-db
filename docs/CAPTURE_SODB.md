@@ -145,9 +145,12 @@ records file on that PC.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Satisfactory | Epic Games Store | Unreal Engine 5, D3D12 | Windows 11 version 25H2 build 26200 | 90,628,096 bytes | sodb_files=1 | 1 | 16,171,760 bytes | 903,231 bytes |
 
-**UNVERIFIED:** other landing places for the file, other games, other
-engines, a Steam-installed game, a second capture of the same build,
-and a different GPU or driver.
+A second session of this game on the same PC and GPU is summarized as
+counts in [CONSENSUS.md](CONSENSUS.md) (6416 of 6416 shared app keys,
+6416 identical full records, 2580 shared vertex/pixel shader pairs;
+session 2 had 12 extra records). **UNVERIFIED:** other landing places
+for the file, other games, other engines, a Steam-installed game, a
+different GPU or driver, and games that compile pipelines lazily.
 
 More results are welcome as counts only: `sodb_files`, skipped root
 signatures, records byte size, and preview bytes. Do not send the

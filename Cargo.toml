@@ -8,6 +8,7 @@ members = [
     "crates/shaders",
     "crates/rebuild",
     "crates/upload",
+    "crates/consensus",
     "crates/osdb-cli",
 ]
 
