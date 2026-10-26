@@ -123,10 +123,12 @@ See [LICENSE-PROPOSAL.md](LICENSE-PROPOSAL.md) for rationale.
 - [ROADMAP.md](ROADMAP.md) – Development milestones and planned features
 - [CONTRIBUTING.md](CONTRIBUTING.md) – How to contribute
 - [SECURITY.md](SECURITY.md) – Security policy and reporting
+- [docs/CAPTURE_SODB.md](docs/CAPTURE_SODB.md) – Optional local capture with Microsoft's d3dconfig, then osdb-cli
 
 ## References
 
 - [Where do SODB files come from?](docs/SODB_SOURCES.md)
+- [Capture an SODB on your own PC](docs/CAPTURE_SODB.md)
 - [Microsoft: Advanced Shader Delivery overview](https://learn.microsoft.com/en-us/windows/win32/direct3d12/advanced-shader-delivery)
 - [Microsoft: State Object Database specification](https://microsoft.github.io/DirectX-Specs/d3d/StateObjectDatabase.html)
 - [Microsoft: DirectX Graphics Samples - Advanced Shader Delivery](https://github.com/microsoft/DirectX-Graphics-Samples/tree/master/Samples/Desktop/D3D12AdvancedShaderDelivery)

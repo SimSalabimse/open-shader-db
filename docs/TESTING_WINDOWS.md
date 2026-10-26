@@ -55,7 +55,9 @@ protected online title.
 `sodb_files=0` for that Steam game is a successful discover result.
 Packed game archives are not scanned. Steps that need a `.sodb` file
 are skipped unless you already have one (a developer capture, or a
-folder you pass to `--sodb-dir`).
+folder you pass to `--sodb-dir`). Capturing one on your own PC is
+optional and local. See [CAPTURE_SODB.md](CAPTURE_SODB.md). The `.sodb`
+file can contain shader bytecode; do not share it or upload it.
 
 Where the Xbox app leaves SODB files on disk is **UNVERIFIED** (no
 public document). Windows registry Steam lookup is **UNVERIFIED**.
@@ -221,7 +223,8 @@ only after you have read the preview.
   one warning per game.
 - If every game is zero, skip coverage, extract, scan, rebuild, and
   upload preview unless you have a `.sodb` from somewhere else
-  (`discover --sodb-dir "<path-to-folder>"`). Optional:
+  (`discover --sodb-dir "<path-to-folder>"`). How to capture one is in
+  [CAPTURE_SODB.md](CAPTURE_SODB.md). Optional:
   `discover --xbox-games` also looks for a folder named `XboxGames` on
   each drive root. That layout is **UNVERIFIED**.
 - Later steps either printed the count lines above, were skipped
