@@ -22,3 +22,7 @@ It must never publish descriptor fields or per-game PSO tables derived from thos
 ## Descriptor-field records
 
 Publishing descriptor-field records is allowed only for data that came from SODB files (Microsoft's own sharing format).
+
+## User-captured SODB files
+
+User-captured SODBs work. One capture was tested once (see [CAPTURE_SODB.md](CAPTURE_SODB.md)). Steam installs still ship no `.sodb` files today. That one result does not prove consensus, coverage, or the same hashes on every machine. The red lines above are unchanged.

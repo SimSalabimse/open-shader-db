@@ -11,6 +11,10 @@ Capture stays on your PC. Do not share the `.sodb` file. Do not upload
 it. Do not attach this project's tools, a debugger, or anything else to
 a running anti-cheat game.
 
+One capture was tested once. The counts are under
+[Tested results](#tested-results). Other games, a Steam-installed game,
+and other GPUs or drivers are still **UNVERIFIED**.
+
 ## What an SODB is
 
 An SODB is a developer artifact: the serialized pipeline-state and
@@ -49,8 +53,14 @@ start the game again after.
 The samples readme says `d3dconfig.exe` and
 `D3D12StateObjectCompiler.exe` ship in the Agility SDK (1.619.5 or
 newer) and names Windows 11, version 24H2 (build 26100.1000) or newer.
-**UNVERIFIED:** the directory those executables are installed into. No
-page linked above gives that path.
+On the one tested PC (Windows 11 version 25H2, build 26200),
+`d3dconfig.exe` version 10.0.26100.8521 was already in the Windows
+System32 folder. That build supports `device pso-db-path` and
+`device enable-pso-db`. No Agility SDK download was needed on that
+machine. Per the samples readme, the tools may otherwise come from
+the Agility SDK (1.619.5 or newer). **UNVERIFIED:** any other
+directory those executables are installed into. No page linked above
+gives a path.
 
 The Learn sample gives these commands. The add command uses two dashes.
 `<exefilename>` may be a full path; the same page notes that a hard
@@ -76,14 +86,14 @@ The samples readme also lists `d3dconfig.exe --reset --confirm`, which
 clears the settings without a prompt.
 
 The samples readme adds a checkpoint that folds a write-ahead log back
-into the SODB. The Learn sample page does not mention this command:
+into the SODB. The Learn sample page does not mention this command.
+The checkpoint is optional. It was not needed in the one test:
+`osdb-cli` read the capture directly. Run it if `osdb-cli` cannot
+read the file:
 
 ```
 D3D12StateObjectCompiler.exe checkpoint-db <path-to-sodb>
 ```
-
-**UNVERIFIED:** whether `osdb-cli` can open a capture before that
-checkpoint. Run the checkpoint, then use the same `<path-to-sodb>`.
 
 ## Run osdb-cli
 
@@ -121,6 +131,27 @@ The preview starts with `Upload preview (N bytes)`, then `These exact
 bytes would be sent by a later upload step.` and `Nothing is sent by
 this command. There is no network upload.` If `--exe-hash` was omitted,
 it also prints `build identity is incomplete`.
+
+## Tested results
+
+Do not share the `.sodb`. Do not point `d3dconfig` at an anti-cheat
+game. The row below is one test, on 2026-10-26, of one single-player
+D3D12 game with no anti-cheat. `checkpoint-db` was not run.
+`records extract` ended without error. `upload prepare` sent nothing.
+The tester reset capture afterwards and kept the `.sodb` and the
+records file on that PC.
+
+| Title | Store | Engine | Windows build | File size | Discover | Skipped root signature | Records size | Preview bytes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Satisfactory | Epic Games Store | Unreal Engine 5, D3D12 | Windows 11 version 25H2 build 26200 | 90,628,096 bytes | sodb_files=1 | 1 | 16,171,760 bytes | 903231 |
+
+**UNVERIFIED:** other landing places for the file, other games, other
+engines, a Steam-installed game, a second capture of the same build,
+and a different GPU or driver.
+
+More results are welcome as counts only: `sodb_files`, skipped root
+signatures, records byte size, and preview bytes. Do not send the
+`.sodb`, shader bytes, `records.json`, a path, or a username.
 
 ## What to send back
 

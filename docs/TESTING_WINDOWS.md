@@ -56,8 +56,12 @@ protected online title.
 Packed game archives are not scanned. Steps that need a `.sodb` file
 are skipped unless you already have one (a developer capture, or a
 folder you pass to `--sodb-dir`). Capturing one on your own PC is
-optional and local. See [CAPTURE_SODB.md](CAPTURE_SODB.md). The `.sodb`
-file can contain shader bytecode; do not share it or upload it.
+optional and local. See [CAPTURE_SODB.md](CAPTURE_SODB.md). One user
+capture was tested once and works (one game; see Tested results in
+that guide). Steam installs still ship no `.sodb` files today. That
+one result does not show every game, a Steam-installed game, or
+another GPU. The `.sodb` file can contain shader bytecode; do not
+share it or upload it.
 
 Where the Xbox app leaves SODB files on disk is **UNVERIFIED** (no
 public document). Windows registry Steam lookup is **UNVERIFIED**.
@@ -95,6 +99,9 @@ directory) are one info line with a count and no paths, for example
 `info: 6 library paths listed in VDF are not directories`. A walk that
 stops early is also one info line and names the bound, for example
 `info: stopped SODB scan after a walk bound (files=0, entries=0, time=1)`.
+The line `stopped SODB scan after a walk bound (files=N, entries=N, time=N)`
+counts how many scans (Steam games and explicit folders) stopped on
+each limit. It does not mean the capture was incomplete.
 
 If nothing is installed where the tool looks:
 
@@ -105,8 +112,9 @@ No games found.
 and stderr may say `warning: no Steam install directory was found` or
 `warning: Steam root does not exist or is not a directory`.
 
-JSON (`--json`) never includes paths. Real names, app ids, and counts
-from a live library are **UNVERIFIED**.
+JSON (`--json`) never includes paths. An explicit `--sodb-dir` folder
+with one captured file reported `sodb_files=1` (tested once, works).
+Real names, app ids, and counts from a live library are **UNVERIFIED**.
 
 **2. Coverage** needs a local unsigned index JSON. There is no published
 community index yet. If you do not have one, skip this step and write
