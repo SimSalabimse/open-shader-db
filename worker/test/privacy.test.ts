@@ -276,9 +276,47 @@ test("privacy lint rejects the twenty structural bypass variants", () => {
   }
 });
 
+const ROUND5_VARIANTS: { name: string; file: string; source: string }[] = [
+  {
+    name: "Function constructor reaches console",
+    file: "mutant-function-console.ts",
+    source: `export function leak(t: string): void { (Function("return this")() as any).console.log(t); }`,
+  },
+  {
+    name: "Object.assign copies request",
+    file: "mutant-object-assign.ts",
+    source: `export function leak(request: Request): object { return Object.assign({}, request); }`,
+  },
+  {
+    name: "renamed token passed to logJson",
+    file: "mutant-renamed-token.ts",
+    source: `declare function logJson(value: unknown): void;
+      export function leak(token: string): void { const t = token; logJson(t); }`,
+  },
+  {
+    name: "env alias with concatenated key",
+    file: "mutant-env-alias.ts",
+    source: `export function leak(env: Record<string, string>): string { const e = env; return e["TURNSTILE_" + "SECRET"]; }`,
+  },
+  {
+    name: "secret.slice passed to logJson",
+    file: "mutant-secret-slice.ts",
+    source: `declare function logJson(value: unknown): void;
+      export function leak(secret: string): void { logJson({ v: secret.slice(0) }); }`,
+  },
+];
+
 test("privacy lint rejects the nine remaining bypass variants", () => {
   assert.equal(ROUND4_VARIANTS.length, 9);
   for (const variant of ROUND4_VARIANTS) {
+    const errors = lintTypeScript(variant.file, variant.source);
+    assert.ok(errors.length > 0, `${variant.name} must fail the privacy lint`);
+  }
+});
+
+test("privacy lint rejects Function, eval, and the new alias bypasses", () => {
+  assert.equal(ROUND5_VARIANTS.length, 5);
+  for (const variant of ROUND5_VARIANTS) {
     const errors = lintTypeScript(variant.file, variant.source);
     assert.ok(errors.length > 0, `${variant.name} must fail the privacy lint`);
   }

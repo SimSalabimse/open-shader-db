@@ -104,7 +104,10 @@ Pinned in `schemas/limits.v1.json`, `crates/upload` `Limits`, and
 | Description hashes | 150 000 | both validators (`50 000` records × 3 keys) |
 | Bytecode hashes | 400 000 | both validators (`50 000` records × 8 stages) |
 | JSON nesting | 8 | both validators |
+| JSON number token | 16 characters | `schema_version` only |
 | Per-build upload objects | 64 | Worker staging prefix only |
+
+The 16-character cap can only affect `schema_version`. Counts, timestamps, and hashes are strings or array lengths, so no other field can reach it.
 
 64 MiB stays the local cap so a full record file can still be previewed.
 The Worker **wire cap** is 8 MiB (not an isolate-size budget). A 53-64
@@ -306,10 +309,12 @@ A TypeScript-compiler lint is a **best-effort** guard on those reads,
 on any `.cf` access, on `headers.get` / header iteration outside the
 allowlist (`Content-Length`, `Content-Type`, `X-Turnstile-Token`), on
 concatenated or computed property names on `request` / `headers` /
-`env`, on `Object.entries` / `fromEntries` / `getOwnPropertyDescriptor`
-/ spread of those objects, and on passing `token` / `secret` /
-`turnstileToken` to anything except the Turnstile client call. It does
-not prove the absence of a leak. Code review is the real control.
+`env` (including a one-level alias), on `Object.entries` /
+`fromEntries` / `getOwnPropertyDescriptor` / `assign` / spread of those
+objects, on `Function` and `eval`, and on passing `token` / `secret` /
+`turnstileToken` (or a one-level rename of them) to anything except
+the Turnstile client call. It does not prove the absence of a leak.
+Code review is the real control.
 
 The stored object is canonical manifest bytes. The HTTP response is
 `UploadReceipt` or `ErrorBody`. A runtime test asserts both contain
@@ -347,10 +352,10 @@ that is not an isolate budget. The parser is schema-directed and
 fails at the first violation, so hostile 8 MiB bodies do not build a
 generic JSON tree.
 
-Measured Node 22 on the handler path (`--max-old-space-size=96
---max-semi-space-size=1`). `heapUsed` is V8 old-space; ArrayBuffers
-for the 8 MiB body sit beside it (`heapUsed + arrayBuffers`). CPU is
-`process.cpuUsage` (user + system) on this machine:
+Measured on one Node 22 machine. The figures below are approximate
+(another machine measured about 0-20% more CPU). `heapUsed` is V8
+old-space; ArrayBuffers for the 8 MiB body sit beside it
+(`heapUsed + arrayBuffers`). CPU is `process.cpuUsage` (user + system):
 
 | 8 MiB input | Peak heapUsed | heapUsed + ArrayBuffers | CPU |
 | --- | ---: | ---: | ---: |
@@ -365,8 +370,9 @@ for the 8 MiB body sit beside it (`heapUsed + arrayBuffers`). CPU is
 | nesting-depth guard (64 brackets) | 5.8 MB | 45.8 MB | 16.2 ms |
 | 8 MiB `schema_version` number token | 5.8 MB | 53.9 MB | 19.2 ms |
 
-CI runs these ten cases in a child process under the 96 MB
-old-space limit. The pretty-printed max-valid path used to peak at
+CI runs these ten cases in a child process under a 64 MB
+old-space limit. An uncapped 8 MiB number token runs out of memory
+there. The pretty-printed max-valid path used to peak at
 223 MB heap when `hexEncode32` built cons-string ropes; a 256-entry
 lookup table plus one `join` brings it to the 24.9 MB above. Tiny
 chunks used to keep one array entry each and ran out of memory;
@@ -380,7 +386,7 @@ why the wire cap is separate.
 
 ## CPU time
 
-The table above is what was measured. Compact max-valid is about
+The table above is approximate. Compact max-valid is about
 106 ms; pretty-printed is about 189 ms; a 1-byte-chunk stream of the
 compact body is about 3.2 s and of the pretty body about 3.6 s;
 16-byte chunks are about 310-352 ms. Hostile in-field rejects are

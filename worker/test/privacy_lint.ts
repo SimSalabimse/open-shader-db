@@ -45,7 +45,7 @@ const FORBIDDEN_HEADER_NAMES = [
   "clientip",
 ];
 
-const FORBIDDEN_GLOBALS = new Set(["console", "globalThis", "Reflect", "self"]);
+const FORBIDDEN_GLOBALS = new Set(["console", "eval", "Function", "globalThis", "Reflect", "self"]);
 const SECRET_BINDINGS = new Set(["token", "secret", "turnstileToken"]);
 const COMPUTED_ROOTS = new Set(["request", "headers", "env"]);
 const OBJECT_REFLECT = new Set([
@@ -53,6 +53,7 @@ const OBJECT_REFLECT = new Set([
   "fromEntries",
   "getOwnPropertyDescriptor",
   "getOwnPropertyDescriptors",
+  "assign",
   "keys",
   "values",
 ]);
@@ -60,18 +61,19 @@ const ALLOWED_SECRET_CALLEES = new Set(["verify", "encodeURIComponent"]);
 
 export function lintTypeScript(fileName: string, sourceText: string): string[] {
   const sf = createSourceFile(fileName, sourceText, ScriptTarget.Latest, true, ScriptKind.TS);
+  const aliases = collectAliases(sf);
   const errors: string[] = [];
   const visit = (node: Node): void => {
     checkForbiddenHeaderLiteral(node, sf, errors);
     checkCfAccess(node, sf, errors);
     checkHeadersProperty(node, sf, errors);
     checkHeadersGet(node, sf, errors);
-    checkHeadersIteration(node, sf, errors);
+    checkHeadersIteration(node, sf, errors, aliases.roots);
     checkReadAllowedHeader(node, sf, errors);
     checkForbiddenGlobals(node, sf, fileName, errors);
-    checkSecretBindings(node, sf, errors);
-    checkComputedAccess(node, sf, errors);
-    checkObjectReflection(node, sf, errors);
+    checkSecretBindings(node, sf, errors, aliases.secrets);
+    checkComputedAccess(node, sf, errors, aliases.roots);
+    checkObjectReflection(node, sf, errors, aliases.roots);
     forEachChild(node, visit);
   };
   visit(sf);
@@ -155,11 +157,16 @@ function checkHeadersGet(node: Node, sf: SourceFile, errors: string[]): void {
   }
 }
 
-function checkHeadersIteration(node: Node, sf: SourceFile, errors: string[]): void {
-  if (isSpreadElement(node) && isSensitiveExpression(node.expression)) {
+function checkHeadersIteration(
+  node: Node,
+  sf: SourceFile,
+  errors: string[],
+  roots: ReadonlyMap<string, string>,
+): void {
+  if (isSpreadElement(node) && isSensitiveExpression(node.expression, roots)) {
     errors.push(`${loc(sf, node)}: spreading request, headers, or env is forbidden`);
   }
-  if (isForOfStatement(node) && isSensitiveExpression(node.expression) && !isPrivacySourceFile(sf)) {
+  if (isForOfStatement(node) && isSensitiveExpression(node.expression, roots) && !isPrivacySourceFile(sf)) {
     errors.push(`${loc(sf, node)}: iterating headers is forbidden`);
   }
   if (isCallExpression(node) && isPropertyAccessExpression(node.expression)) {
@@ -200,8 +207,13 @@ function checkForbiddenGlobals(node: Node, sf: SourceFile, fileName: string, err
   errors.push(`${loc(sf, node)}: identifier ${node.text} is forbidden outside the allowlisted log module`);
 }
 
-function checkSecretBindings(node: Node, sf: SourceFile, errors: string[]): void {
-  if (!isIdentifier(node) || !SECRET_BINDINGS.has(node.text)) {
+function checkSecretBindings(
+  node: Node,
+  sf: SourceFile,
+  errors: string[],
+  secrets: ReadonlySet<string>,
+): void {
+  if (!isIdentifier(node) || (!SECRET_BINDINGS.has(node.text) && !secrets.has(node.text))) {
     return;
   }
   if (isDeclarationName(node) || isPropertyNameOnly(node)) {
@@ -209,6 +221,12 @@ function checkSecretBindings(node: Node, sf: SourceFile, errors: string[]): void
   }
   const parent = node.parent;
   if (isPropertyAccessExpression(parent) && parent.expression === node) {
+    if (parent.name.text === "length") {
+      return;
+    }
+    errors.push(
+      `${loc(sf, node)}: identifier ${node.text} is only allowed in the Turnstile client call`,
+    );
     return;
   }
   if (isBinaryExpression(parent) && parent.operatorToken.kind !== SyntaxKind.PlusToken) {
@@ -236,11 +254,16 @@ function checkSecretBindings(node: Node, sf: SourceFile, errors: string[]): void
   );
 }
 
-function checkComputedAccess(node: Node, sf: SourceFile, errors: string[]): void {
+function checkComputedAccess(
+  node: Node,
+  sf: SourceFile,
+  errors: string[],
+  roots: ReadonlyMap<string, string>,
+): void {
   if (!isElementAccessExpression(node)) {
     return;
   }
-  const root = rootIdentifier(unwrapExpr(node.expression));
+  const root = rootIdentifier(unwrapExpr(node.expression), roots);
   if (root === undefined || !COMPUTED_ROOTS.has(root)) {
     return;
   }
@@ -249,7 +272,12 @@ function checkComputedAccess(node: Node, sf: SourceFile, errors: string[]): void
   }
 }
 
-function checkObjectReflection(node: Node, sf: SourceFile, errors: string[]): void {
+function checkObjectReflection(
+  node: Node,
+  sf: SourceFile,
+  errors: string[],
+  roots: ReadonlyMap<string, string>,
+): void {
   if (!isCallExpression(node) || !isPropertyAccessExpression(node.expression)) {
     return;
   }
@@ -261,10 +289,32 @@ function checkObjectReflection(node: Node, sf: SourceFile, errors: string[]): vo
     return;
   }
   for (const arg of node.arguments) {
-    if (isSensitiveExpression(arg)) {
+    if (isSensitiveExpression(arg, roots)) {
       errors.push(`${loc(sf, node)}: Object.${method} on request, headers, or env is forbidden`);
     }
   }
+}
+
+function collectAliases(sf: SourceFile): { roots: Map<string, string>; secrets: Set<string> } {
+  const roots = new Map<string, string>();
+  const secrets = new Set<string>();
+  const visit = (node: Node): void => {
+    if (isVariableDeclaration(node) && isIdentifier(node.name) && node.initializer !== undefined) {
+      const init = unwrapExpr(node.initializer);
+      if (isIdentifier(init)) {
+        const root = roots.get(init.text) ?? (COMPUTED_ROOTS.has(init.text) ? init.text : undefined);
+        if (root !== undefined) {
+          roots.set(node.name.text, root);
+        }
+        if (SECRET_BINDINGS.has(init.text) || secrets.has(init.text)) {
+          secrets.add(node.name.text);
+        }
+      }
+    }
+    forEachChild(node, visit);
+  };
+  visit(sf);
+  return { roots, secrets };
 }
 
 function lintAllowedSet(sourceText: string): string[] {
@@ -303,11 +353,11 @@ function isHeadersReceiver(node: Node): boolean {
   return false;
 }
 
-function isSensitiveExpression(node: Node): boolean {
+function isSensitiveExpression(node: Node, roots: ReadonlyMap<string, string>): boolean {
   if (!isExpressionLike(node)) {
     return false;
   }
-  const root = rootIdentifier(unwrapExpr(node));
+  const root = rootIdentifier(unwrapExpr(node), roots);
   return root !== undefined && COMPUTED_ROOTS.has(root);
 }
 
@@ -395,16 +445,16 @@ function isPropertyNameOnly(node: Identifier): boolean {
   return false;
 }
 
-function rootIdentifier(node: Expression): string | undefined {
+function rootIdentifier(node: Expression, roots: ReadonlyMap<string, string>): string | undefined {
   const inner = unwrapExpr(node);
   if (isIdentifier(inner)) {
-    return inner.text;
+    return roots.get(inner.text) ?? inner.text;
   }
   if (isPropertyAccessExpression(inner)) {
-    return rootIdentifier(inner.expression);
+    return rootIdentifier(inner.expression, roots);
   }
   if (isElementAccessExpression(inner)) {
-    return rootIdentifier(inner.expression);
+    return rootIdentifier(inner.expression, roots);
   }
   return undefined;
 }

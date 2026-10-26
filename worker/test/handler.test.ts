@@ -236,6 +236,35 @@ test("small declared Content-Length with a larger body is 413", async () => {
   assert.equal(err.code, "BODY_TOO_LARGE");
 });
 
+test("an oversized stream is cancelled once the cap is hit", async () => {
+  let cancelled = 0;
+  const chunk = new Uint8Array(64).fill(0x20);
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelled += 1;
+    },
+  });
+  const response = await handleUpload(
+    new Request("https://example.invalid/v1/upload", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Turnstile-Token": "ok",
+      },
+      body: stream,
+      duplex: "half",
+    } as RequestInit),
+    testDeps({ wireMaxBytes: 32 }),
+  );
+  assert.equal(response.status, 413);
+  const err = (await response.json()) as { code: string };
+  assert.equal(err.code, "BODY_TOO_LARGE");
+  assert.equal(cancelled, 1);
+});
+
 test("large declared Content-Length with a smaller body is read to the real size", async () => {
   const bytes = minimalBytes();
   const response = await handleUpload(

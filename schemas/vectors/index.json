@@ -1,5 +1,5 @@
 {
-  "count": 101,
+  "count": 106,
   "vectors": [
     {
       "path": "invalid/april-31.json",
@@ -262,6 +262,11 @@
       "error_code": "INVALID_BUILD_ID"
     },
     {
+      "path": "invalid/schema-version-16-digits.json",
+      "verdict": "reject",
+      "error_code": "UNSUPPORTED_SCHEMA_VERSION"
+    },
+    {
       "path": "invalid/schema-version-2.json",
       "verdict": "reject",
       "error_code": "UNSUPPORTED_SCHEMA_VERSION"
@@ -397,10 +402,22 @@
       "stored": "stored/valid-text/escaped-key-name.json"
     },
     {
+      "path": "valid-text/escaped-quote-long-digits.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/escaped-quote-long-digits.json"
+    },
+    {
       "path": "valid-text/leading-space-hashes.json",
       "verdict": "accept",
       "error_code": null,
       "stored": "stored/valid-text/leading-space-hashes.json"
+    },
+    {
+      "path": "valid-text/pretty-exe-binding.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/pretty-exe-binding.json"
     },
     {
       "path": "valid-text/pretty-hashes.json",
@@ -413,6 +430,18 @@
       "verdict": "accept",
       "error_code": null,
       "stored": "stored/valid-text/pretty-printed.json"
+    },
+    {
+      "path": "valid-text/sorted-root-unsorted-build-id.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/sorted-root-unsorted-build-id.json"
+    },
+    {
+      "path": "valid-text/sorted-root-unsorted-ownership.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/sorted-root-unsorted-ownership.json"
     },
     {
       "path": "valid-text/unsorted-build-id-keys.json",

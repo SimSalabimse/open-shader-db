@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 
 import {
@@ -14,7 +16,7 @@ import {
   WIRE_MAX_JSON_BYTES,
 } from "../src/limits.js";
 import { DEFAULT_PARSE_LIMITS } from "../src/parse.js";
-import { readUtf8 } from "./helpers.js";
+import { readUtf8, repoRoot } from "./helpers.js";
 
 test("Worker constants match schemas/limits.v1.json", () => {
   const limits = JSON.parse(readUtf8("schemas/limits.v1.json")) as {
@@ -58,4 +60,16 @@ test("per-build cap parser fails closed on bad or missing values", () => {
   }
   assert.equal(parsePerBuildCap("32"), 32);
   assert.equal(parsePerBuildCap("64"), 64);
+});
+
+test("every number-token length check uses the strict 16-character bound", () => {
+  const source = readFileSync(path.join(repoRoot(), "worker", "src", "parse.ts"), "utf8");
+  const start = source.indexOf("function parseNumber");
+  const end = source.indexOf("function parseHex", start);
+  assert.ok(start >= 0 && end > start);
+  const fn = source.slice(start, end);
+  const strict = fn.split("cur.pos - start > MAX_NUMBER_TOKEN_CHARS").length - 1;
+  const loose = fn.split("cur.pos - start >= MAX_NUMBER_TOKEN_CHARS").length - 1;
+  assert.equal(strict, 4, "integer, fraction, exponent, and final checks");
+  assert.equal(loose, 0);
 });

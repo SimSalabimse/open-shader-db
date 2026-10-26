@@ -192,12 +192,17 @@ async function runCase(
   peakExternal = Math.max(peakExternal, after.heapUsed + after.arrayBuffers);
   peakRss = Math.max(peakRss, after.rss);
   assert.equal(response.status, expectedStatus, name);
+  let code = "";
+  if (response.status !== 200) {
+    const err = (await response.json()) as { code?: string };
+    code = err.code ?? "";
+  }
   const heapMb = (peakHeap / (1024 * 1024)).toFixed(1);
   const totalMb = (peakExternal / (1024 * 1024)).toFixed(1);
   const rssMb = (peakRss / (1024 * 1024)).toFixed(1);
   const cpuMs = ((cpu.user + cpu.system) / 1000).toFixed(1);
   console.log(
-    `HEAP_CASE ${name} status=${response.status} peak_heap_mb=${heapMb} peak_heap_plus_ab_mb=${totalMb} peak_rss_mb=${rssMb} cpu_ms=${cpuMs} wall_ms=${wallMs.toFixed(1)} bytes=${request.headers.get("content-length") ?? "?"}`,
+    `HEAP_CASE ${name} status=${response.status} code=${code} peak_heap_mb=${heapMb} peak_heap_plus_ab_mb=${totalMb} peak_rss_mb=${rssMb} cpu_ms=${cpuMs} wall_ms=${wallMs.toFixed(1)} bytes=${request.headers.get("content-length") ?? "?"}`,
   );
 }
 

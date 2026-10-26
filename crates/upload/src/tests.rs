@@ -790,6 +790,32 @@ fn shared_limits_json_matches_rust_constants() {
 }
 
 #[test]
+fn number_token_cap_checks_are_strict_and_cover_each_loop() {
+    let src = include_str!("manifest.rs");
+    let start = src.find("fn number_token_exceeds").unwrap();
+    let rest = &src[start..];
+    let end = rest.find("\nstruct RawManifest").unwrap();
+    let fn_src = &rest[..end];
+    assert_eq!(count_strict_gt(fn_src, "> max_chars"), 4);
+    assert_eq!(fn_src.matches(">= max_chars").count(), 0);
+    assert!(fn_src.contains("escape = true"));
+    assert!(fn_src.contains("if escape {"));
+}
+
+fn count_strict_gt(src: &str, needle: &str) -> usize {
+    let mut count = 0;
+    let mut rest = src;
+    while let Some(pos) = rest.find(needle) {
+        let preceded_by_eq = pos > 0 && rest.as_bytes()[pos - 1] == b'=';
+        if !preceded_by_eq {
+            count += 1;
+        }
+        rest = &rest[pos + needle.len()..];
+    }
+    count
+}
+
+#[test]
 fn description_and_bytecode_caps_are_independent() {
     let limits = Limits {
         max_json_bytes: 64 * 1024 * 1024,
