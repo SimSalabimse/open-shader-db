@@ -25,4 +25,4 @@ Publishing descriptor-field records is allowed only for data that came from SODB
 
 ## User-captured SODB files
 
-User-captured SODBs work. One capture was tested once (see [CAPTURE_SODB.md](CAPTURE_SODB.md)). Steam installs still ship no `.sodb` files today. That one result does not prove consensus, coverage, or the same hashes on every machine. The red lines above are unchanged.
+One user capture was tested once and worked (one game, one PC, Windows 11 25H2; see [CAPTURE_SODB.md#tested-results](CAPTURE_SODB.md#tested-results)). Microsoft's d3dconfig samples readme names Windows 11 version 24H2 or newer for that tool. Steam installs are not expected to contain `.sodb` files today (inferred, not verified; see [SODB_SOURCES.md](SODB_SOURCES.md)). That one result does not prove consensus, coverage, or the same hashes on every machine. The red lines above are unchanged.

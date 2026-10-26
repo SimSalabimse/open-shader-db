@@ -58,9 +58,9 @@ are skipped unless you already have one (a developer capture, or a
 folder you pass to `--sodb-dir`). Capturing one on your own PC is
 optional and local. See [CAPTURE_SODB.md](CAPTURE_SODB.md). One user
 capture was tested once and works (one game; see Tested results in
-that guide). Steam installs still ship no `.sodb` files today. That
-one result does not show every game, a Steam-installed game, or
-another GPU. The `.sodb` file can contain shader bytecode; do not
+that guide). Steam installs are not expected to contain `.sodb` files
+today (inferred, not verified). That one result does not show every
+game, a Steam-installed game, or another GPU. The `.sodb` file can contain shader bytecode; do not
 share it or upload it.
 
 Where the Xbox app leaves SODB files on disk is **UNVERIFIED** (no
@@ -97,11 +97,12 @@ a `.sodb` file.
 Stale library entries (a path in `libraryfolders.vdf` that is not a
 directory) are one info line with a count and no paths, for example
 `info: 6 library paths listed in VDF are not directories`. A walk that
-stops early is also one info line and names the bound, for example
-`info: stopped SODB scan after a walk bound (files=0, entries=0, time=1)`.
-The line `stopped SODB scan after a walk bound (files=N, entries=N, time=N)`
-counts how many scans (Steam games and explicit folders) stopped on
-each limit. It does not mean the capture was incomplete.
+stops early is one info line,
+`info: stopped SODB scan after a walk bound (files=N, entries=N, time=N)`,
+which counts how many scans (Steam games and explicit folders) stopped
+on the files, entries, or time limit. The depth cap is not counted.
+That line does not mean a capture file you already have is incomplete.
+A scan stopped by a limit on a `--sodb-dir` folder could miss a `.sodb`.
 
 If nothing is installed where the tool looks:
 

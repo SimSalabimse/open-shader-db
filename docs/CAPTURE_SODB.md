@@ -143,7 +143,7 @@ records file on that PC.
 
 | Title | Store | Engine | Windows build | File size | Discover | Skipped root signature | Records size | Preview bytes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Satisfactory | Epic Games Store | Unreal Engine 5, D3D12 | Windows 11 version 25H2 build 26200 | 90,628,096 bytes | sodb_files=1 | 1 | 16,171,760 bytes | 903231 |
+| Satisfactory | Epic Games Store | Unreal Engine 5, D3D12 | Windows 11 version 25H2 build 26200 | 90,628,096 bytes | sodb_files=1 | 1 | 16,171,760 bytes | 903,231 bytes |
 
 **UNVERIFIED:** other landing places for the file, other games, other
 engines, a Steam-installed game, a second capture of the same build,
