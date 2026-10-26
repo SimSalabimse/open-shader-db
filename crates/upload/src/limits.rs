@@ -20,6 +20,10 @@ pub const DEFAULT_MAX_BYTECODE_HASHES: u64 =
 pub const DEFAULT_MAX_DESCRIPTION_HASHES: u64 =
     osdb_records::Limits::DEFAULT.max_records * DESCRIPTION_HASHES_PER_RECORD;
 
+/// Default `pipeline_hashes` cap. One hash per pipeline-state record, so
+/// the cap equals `records.max_records` (currently 50 000).
+pub const DEFAULT_MAX_PIPELINE_HASHES: u64 = osdb_records::Limits::DEFAULT.max_records;
+
 /// Historical name for [`DEFAULT_MAX_BYTECODE_HASHES`].
 pub const DEFAULT_MAX_HASHES_PER_LIST: u64 = DEFAULT_MAX_BYTECODE_HASHES;
 
@@ -36,7 +40,8 @@ pub const WIRE_MAX_JSON_BYTES: u64 = 8 * 1024 * 1024;
 /// under races; documented in `docs/WORKER_DESIGN.md`.
 pub const DEFAULT_PER_BUILD_UPLOAD_CAP: u64 = 64;
 
-/// Maximum characters in a JSON number token (`schema_version` is one digit).
+/// Maximum characters in a JSON number token (`schema_version` is the only
+/// numeric field, and it is one digit: `1` or `2`).
 /// Longer tokens are rejected before conversion.
 pub const MAX_NUMBER_TOKEN_CHARS: usize = 16;
 
@@ -52,21 +57,25 @@ pub struct Limits {
     pub max_description_hashes: u64,
     /// Reject `bytecode_hashes` if it has more unique entries than this.
     pub max_bytecode_hashes: u64,
+    /// Reject `pipeline_hashes` if it has more unique entries than this.
+    pub max_pipeline_hashes: u64,
     /// Reject the document if `{` / `[` nesting exceeds this depth.
     pub max_json_nesting: u32,
 }
 
 impl Limits {
     /// 64 MiB JSON, 150 000 description hashes, 400 000 bytecode hashes,
-    /// nesting depth 8.
+    /// 50 000 pipeline hashes, nesting depth 8.
     ///
     /// Larger limits are library-only (`parse_with_limits` /
     /// `ManifestBuilder::limits`). The Worker uses [`WIRE_MAX_JSON_BYTES`]
-    /// for the HTTP body and the same list and nesting caps.
+    /// for the HTTP body and the same list and nesting caps. Schema version
+    /// 2 adds one hash array; it does not add a nesting level.
     pub const DEFAULT: Self = Self {
         max_json_bytes: DEFAULT_MAX_JSON_BYTES,
         max_description_hashes: DEFAULT_MAX_DESCRIPTION_HASHES,
         max_bytecode_hashes: DEFAULT_MAX_BYTECODE_HASHES,
+        max_pipeline_hashes: DEFAULT_MAX_PIPELINE_HASHES,
         max_json_nesting: 8,
     };
 }

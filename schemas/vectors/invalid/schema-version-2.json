@@ -1,6 +1,6 @@
 {
   "verdict": "reject",
-  "error_code": "UNSUPPORTED_SCHEMA_VERSION",
+  "error_code": "MISSING_FIELD",
   "body": {
     "bytecode_hashes": [],
     "build_id": {

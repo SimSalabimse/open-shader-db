@@ -121,6 +121,134 @@ Extract encodes JSON in memory up to the 64 MiB cap and writes the complete
 document only on success (stdout cannot observe a partial document). File
 output (`--out`) is atomic (temp file, fsync, rename).
 
+## `pipeline_content_hash`
+
+`osdb_records::pipeline_content_hash(file, record)` is the SHA-256 of one
+pipeline-state record. A later consensus step can agree on this value
+(full description plus shader hashes) without agreeing on `app_key`.
+
+The owning `RecordFile` is not an input. `format_version`, `build`, and
+the descriptor tables are not hashed. `root_signature`, `input_layout`,
+and `stream_out` stay the 64-character lowercase content hashes already
+stored on the record (or JSON `null`). Table bodies are not read.
+
+This is **not** the SODB CanonicalHasher `desc_hash` used by coverage
+indexes. It is only the encoding below.
+
+### Preimage bytes
+
+The preimage is the UTF-8 bytes of one JSON object, with no BOM, no
+whitespace, and no trailing newline. SHA-256 covers those bytes, not
+their hex encoding. There is no length prefix and no domain separator.
+
+Rules, applied by `serde_json::to_value` on the record (object keys land
+in a `BTreeMap`) then `serde_json::to_vec` after deleting two keys:
+
+1. Delete `app_key` and `version`. No other field is renamed or removed
+   except the omissions below. `version` here is `groups.Version` on the
+   record, not `build.version` and not a root-signature version code.
+2. Object keys are sorted by raw UTF-8 byte order at every object,
+   including nested descriptor objects and `bytecode_hashes`. Stage keys
+   therefore appear in lexicographic order (`as` before `ps` before
+   `vs`), not in spec order.
+3. Arrays keep the record's element order. They are not sorted.
+   `unresolved_stages` stays in the order stored on the record.
+4. `bytecode_hashes` is always present. A stage key is omitted when that
+   stage has no hash. The amplification stage key is `as`.
+5. `unresolved_stages` is omitted when the array is empty.
+6. `root_signature_skip` is omitted when absent. When present it is the
+   documented reason string (`unsupported_version`, `invalid`, or
+   `unsupported_container`).
+7. Every other record field is present. An absent optional value is JSON
+   `null` (not omitted).
+8. Integers are decimal JSON numbers with no leading zero, fraction, or
+   exponent. `0` is `0`.
+9. Finite floats use serde_json 1's default number format (shortest
+   round trip). A value that is an integer in magnitude but stored as
+   `f64` still has a fraction: `0.0`, `1.5`. Negative zero is the
+   distinct token `-0.0`. Exponents are not used for the vectors below.
+10. Strings use serde_json escaping: `"` and `\` are escaped, solidus
+    is not, control characters are `\u00XX`. The vectors below need no
+    escapes.
+11. A non-finite float (`NaN`, `+Inf`, `-Inf`) cannot be encoded. There
+    is no object preimage. The hash is SHA-256 of the four bytes `null`
+    (`6e756c6c`), which is
+    `74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b`.
+    A file the loader accepted does not contain a non-finite float.
+
+Two records that differ only in `app_key` and `version` have the same
+preimage and the same hash. Filling a descriptor table does not change
+the hash.
+
+### Golden vectors
+
+Each preimage hex decodes to the JSON on the line above it. The SHA-256
+is of those decoded bytes. The Rust test
+`golden_vectors_match_the_record_format_doc` checks the same strings.
+
+#### Minimal
+
+`app_key` `01`, `version` `0`, no stages, every optional field null.
+The same preimage is produced for `app_key` `ff` and `version` `7`.
+
+```json
+{"blend":null,"bytecode_hashes":{},"depth_stencil":null,"dsv_format":null,"flags":null,"ib_strip_cut_value":null,"input_layout":null,"node_mask":null,"primitive_topology":null,"rasterizer":null,"render_target_formats":null,"root_signature":null,"sample_desc":null,"sample_mask":null,"stream_out":null,"view_instancing":null}
+```
+
+```text
+7b22626c656e64223a6e756c6c2c2262797465636f64655f686173686573223a7b7d2c2264657074685f7374656e63696c223a6e756c6c2c226473765f666f726d6174223a6e756c6c2c22666c616773223a6e756c6c2c2269625f73747269705f6375745f76616c7565223a6e756c6c2c22696e7075745f6c61796f7574223a6e756c6c2c226e6f64655f6d61736b223a6e756c6c2c227072696d69746976655f746f706f6c6f6779223a6e756c6c2c22726173746572697a6572223a6e756c6c2c2272656e6465725f7461726765745f666f726d617473223a6e756c6c2c22726f6f745f7369676e6174757265223a6e756c6c2c2273616d706c655f64657363223a6e756c6c2c2273616d706c655f6d61736b223a6e756c6c2c2273747265616d5f6f7574223a6e756c6c2c22766965775f696e7374616e63696e67223a6e756c6c7d
+```
+
+SHA-256: `d2bf3066e02ce21bd8e7af9d601299f921793901a6df3aa775fade455884e615`
+
+#### Stages and descriptor references
+
+`vs` / `ps` / `as` bytecode hashes, `root_signature` and `input_layout`
+references, `sample_desc.count` 1, `sample_mask` 4294967295, `flags` 0.
+`stream_out` stays null. Stage keys are sorted (`as`, `ps`, `vs`).
+
+```json
+{"blend":null,"bytecode_hashes":{"as":"3333333333333333333333333333333333333333333333333333333333333333","ps":"2222222222222222222222222222222222222222222222222222222222222222","vs":"1111111111111111111111111111111111111111111111111111111111111111"},"depth_stencil":null,"dsv_format":null,"flags":0,"ib_strip_cut_value":null,"input_layout":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","node_mask":null,"primitive_topology":null,"rasterizer":null,"render_target_formats":null,"root_signature":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sample_desc":{"count":1,"quality":null},"sample_mask":4294967295,"stream_out":null,"view_instancing":null}
+```
+
+```text
+7b22626c656e64223a6e756c6c2c2262797465636f64655f686173686573223a7b226173223a2233333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333222c227073223a2232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232222c227673223a2231313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131227d2c2264657074685f7374656e63696c223a6e756c6c2c226473765f666f726d6174223a6e756c6c2c22666c616773223a302c2269625f73747269705f6375745f76616c7565223a6e756c6c2c22696e7075745f6c61796f7574223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c226e6f64655f6d61736b223a6e756c6c2c227072696d69746976655f746f706f6c6f6779223a6e756c6c2c22726173746572697a6572223a6e756c6c2c2272656e6465725f7461726765745f666f726d617473223a6e756c6c2c22726f6f745f7369676e6174757265223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2273616d706c655f64657363223a7b22636f756e74223a312c227175616c697479223a6e756c6c7d2c2273616d706c655f6d61736b223a343239343936373239352c2273747265616d5f6f7574223a6e756c6c2c22766965775f696e7374616e63696e67223a6e756c6c7d
+```
+
+SHA-256: `26809b705494bb1915b52f1e9fe3a36ff9a21ea1eb23cef1137280d8ed79518a`
+
+#### Nested objects, skip reason, unresolved stages
+
+`root_signature_skip` `invalid`, `unresolved_stages` `["vs","ps"]` in
+that order (not sorted), one depth-stencil front face, and blend render
+target 0. Nested object keys are sorted. The other seven render targets
+are JSON `null`.
+
+```json
+{"blend":{"alpha_to_coverage_enable":0,"independent_blend_enable":1,"render_targets":[{"blend_enable":0,"blend_op":3,"blend_op_alpha":6,"dest_blend":2,"dest_blend_alpha":5,"logic_op":7,"logic_op_enable":0,"render_target_write_mask":15,"src_blend":1,"src_blend_alpha":4},null,null,null,null,null,null,null]},"bytecode_hashes":{},"depth_stencil":{"back_face":null,"depth_bounds_test_enable":0,"depth_enable":1,"depth_func":2,"depth_write_mask":1,"front_face":{"stencil_depth_fail_op":2,"stencil_fail_op":1,"stencil_func":4,"stencil_pass_op":3,"stencil_read_mask":255,"stencil_write_mask":255},"stencil_enable":0},"dsv_format":null,"flags":null,"ib_strip_cut_value":null,"input_layout":null,"node_mask":null,"primitive_topology":null,"rasterizer":null,"render_target_formats":null,"root_signature":null,"root_signature_skip":"invalid","sample_desc":null,"sample_mask":null,"stream_out":null,"unresolved_stages":["vs","ps"],"view_instancing":null}
+```
+
+```text
+7b22626c656e64223a7b22616c7068615f746f5f636f7665726167655f656e61626c65223a302c22696e646570656e64656e745f626c656e645f656e61626c65223a312c2272656e6465725f74617267657473223a5b7b22626c656e645f656e61626c65223a302c22626c656e645f6f70223a332c22626c656e645f6f705f616c706861223a362c22646573745f626c656e64223a322c22646573745f626c656e645f616c706861223a352c226c6f6769635f6f70223a372c226c6f6769635f6f705f656e61626c65223a302c2272656e6465725f7461726765745f77726974655f6d61736b223a31352c227372635f626c656e64223a312c227372635f626c656e645f616c706861223a347d2c6e756c6c2c6e756c6c2c6e756c6c2c6e756c6c2c6e756c6c2c6e756c6c2c6e756c6c5d7d2c2262797465636f64655f686173686573223a7b7d2c2264657074685f7374656e63696c223a7b226261636b5f66616365223a6e756c6c2c2264657074685f626f756e64735f746573745f656e61626c65223a302c2264657074685f656e61626c65223a312c2264657074685f66756e63223a322c2264657074685f77726974655f6d61736b223a312c2266726f6e745f66616365223a7b227374656e63696c5f64657074685f6661696c5f6f70223a322c227374656e63696c5f6661696c5f6f70223a312c227374656e63696c5f66756e63223a342c227374656e63696c5f706173735f6f70223a332c227374656e63696c5f726561645f6d61736b223a3235352c227374656e63696c5f77726974655f6d61736b223a3235357d2c227374656e63696c5f656e61626c65223a307d2c226473765f666f726d6174223a6e756c6c2c22666c616773223a6e756c6c2c2269625f73747269705f6375745f76616c7565223a6e756c6c2c22696e7075745f6c61796f7574223a6e756c6c2c226e6f64655f6d61736b223a6e756c6c2c227072696d69746976655f746f706f6c6f6779223a6e756c6c2c22726173746572697a6572223a6e756c6c2c2272656e6465725f7461726765745f666f726d617473223a6e756c6c2c22726f6f745f7369676e6174757265223a6e756c6c2c22726f6f745f7369676e61747572655f736b6970223a22696e76616c6964222c2273616d706c655f64657363223a6e756c6c2c2273616d706c655f6d61736b223a6e756c6c2c2273747265616d5f6f7574223a6e756c6c2c22756e7265736f6c7665645f737461676573223a5b227673222c227073225d2c22766965775f696e7374616e63696e67223a6e756c6c7d
+```
+
+SHA-256: `54ec9d9e5ea052ddb266be20aa9e27840374cba3b2bcffcd8444e6a6cd9baf7d`
+
+#### Finite floats, including negative zero
+
+Rasterizer `depth_bias` is `1.5`, `depth_bias_clamp` is `-0.0`, and
+`slope_scaled_depth_bias` is `0.0`.
+
+```json
+{"blend":null,"bytecode_hashes":{},"depth_stencil":null,"dsv_format":null,"flags":null,"ib_strip_cut_value":null,"input_layout":null,"node_mask":null,"primitive_topology":null,"rasterizer":{"conservative_raster":0,"cull_mode":1,"depth_bias":1.5,"depth_bias_clamp":-0.0,"depth_clip_enable":1,"fill_mode":3,"forced_sample_count":0,"front_counter_clockwise":0,"line_rasterization_mode":0,"slope_scaled_depth_bias":0.0},"render_target_formats":null,"root_signature":null,"sample_desc":null,"sample_mask":null,"stream_out":null,"view_instancing":null}
+```
+
+```text
+7b22626c656e64223a6e756c6c2c2262797465636f64655f686173686573223a7b7d2c2264657074685f7374656e63696c223a6e756c6c2c226473765f666f726d6174223a6e756c6c2c22666c616773223a6e756c6c2c2269625f73747269705f6375745f76616c7565223a6e756c6c2c22696e7075745f6c61796f7574223a6e756c6c2c226e6f64655f6d61736b223a6e756c6c2c227072696d69746976655f746f706f6c6f6779223a6e756c6c2c22726173746572697a6572223a7b22636f6e7365727661746976655f726173746572223a302c2263756c6c5f6d6f6465223a312c2264657074685f62696173223a312e352c2264657074685f626961735f636c616d70223a2d302e302c2264657074685f636c69705f656e61626c65223a312c2266696c6c5f6d6f6465223a332c22666f726365645f73616d706c655f636f756e74223a302c2266726f6e745f636f756e7465725f636c6f636b77697365223a302c226c696e655f726173746572697a6174696f6e5f6d6f6465223a302c22736c6f70655f7363616c65645f64657074685f62696173223a302e307d2c2272656e6465725f7461726765745f666f726d617473223a6e756c6c2c22726f6f745f7369676e6174757265223a6e756c6c2c2273616d706c655f64657363223a6e756c6c2c2273616d706c655f6d61736b223a6e756c6c2c2273747265616d5f6f7574223a6e756c6c2c22766965775f696e7374616e63696e67223a6e756c6c7d
+```
+
+SHA-256: `e1f347fd625cc1c8755fa8f10cb5dc74da72208bbf501aee594b32586742fae0`
+
 ## Which fields are copied as raw bytes
 
 Only **one** field family is stored as raw bytes (lowercase hex):

@@ -3,12 +3,14 @@
 //! Local pipeline-state records without DXIL bytecode.
 //!
 //! Extraction reads a SODB the user already has. Matching is a pure function
-//! over hashes. This crate has no network client.
+//! over hashes. `pipeline_content_hash` hashes one record without `app_key`
+//! or `version`. This crate has no network client.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 mod build;
+mod content_hash;
 mod error;
 mod extract;
 mod file;
@@ -18,6 +20,7 @@ mod matching;
 mod types;
 
 pub use build::{BuildIdentity, ExeHash, GameId, GameVersion};
+pub use content_hash::pipeline_content_hash;
 pub use error::Error;
 pub use extract::{
     encode_record_file, encode_record_file_to_writer, extract, extract_with_options,

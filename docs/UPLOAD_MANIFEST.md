@@ -3,7 +3,8 @@
 This is the on-wire JSON schema for the anonymized upload payload
 produced by `osdb-cli upload prepare` and parsed by `osdb-upload`.
 
-**Schema version:** `schema_version: 1`  
+**Schema versions:** `1` and `2`. `osdb-cli upload prepare` emits
+`schema_version: 2`.  
 **Scope:** local preview and Worker ingest (`worker/`, built and
 tested, not deployed). This crate does not send bytes. There is no
 HTTP client in this repository.
@@ -17,32 +18,43 @@ repository are synthetic and CC0.
 
 [ARCHITECTURE.md](../ARCHITECTURE.md) sketches a logical
 `UploadManifest` with `descriptions` objects and a string
-`proofOfOwnership`. Schema version 1 is the allowlist that the client
-and the Worker (`worker/`, built and tested, not deployed) both check:
+`proofOfOwnership`. The allowlist that the client and the Worker
+(`worker/`, built and tested, not deployed) both check is:
 
-- one integer `schema_version`
+- one integer `schema_version` (`1` or `2`)
 - one structured `build_id` (`game_id`, `version`, `exe_hash`)
 - `client_version` (`major.minor.patch`)
 - `collected_hour` (UTC, minutes and seconds always `00`)
 - two sorted unique SHA-256 arrays: `description_hashes`,
   `bytecode_hashes`
+- on version 2 only, `pipeline_hashes` (one combined hash per
+  pipeline-state record)
 - `ownership` (versioned object; see [Proof of ownership](#proof-of-ownership))
+
+Version 1 documents still parse. A version 1 document that includes
+`pipeline_hashes` is `UNKNOWN_FIELD`. Any other `schema_version` is
+`UNSUPPORTED_SCHEMA_VERSION`. Version 2 without `pipeline_hashes` is
+`MISSING_FIELD`. A later consensus step can treat a version 1 manifest
+as hash-set-only evidence.
 
 The payload never includes a game path, username, IP, hostname,
 hardware id, `app_key`, or a full timestamp.
 
-## JSON schema (`schema_version` 1)
+## JSON schema (`schema_version` 1 and 2)
 
 Unknown top-level fields, unknown `build_id` fields, and unknown
 `ownership` fields are rejected. Duplicate keys are rejected.
 Trailing tokens after the JSON value are rejected. A UTF-8 BOM
 (`EF BB BF`) is rejected. Nesting deeper than 8 is rejected.
 
-The machine-readable schema is
-[schemas/upload_manifest.v1.json](../schemas/upload_manifest.v1.json).
-That file is **hand-maintained**. It is not generated from the Rust
-types. A drift test fails if the checked-in file and the hand-written
-`document()` helper disagree.
+The machine-readable schemas are
+[schemas/upload_manifest.v1.json](../schemas/upload_manifest.v1.json)
+and
+[schemas/upload_manifest.v2.json](../schemas/upload_manifest.v2.json).
+Both files are **hand-maintained**. They are not generated from the
+Rust types. A drift test fails if a checked-in file and the matching
+`document()` / `document_v2()` helper disagree. The version 1 file is
+unchanged by version 2.
 
 The JSON Schema is **looser** than the Rust and Worker parsers. It
 does not encode hash sort order, real calendar dates, byte or nesting
@@ -79,7 +91,7 @@ bytes. The preview and `--out` file are those bytes.
 
 | Field | Type | Rules |
 | --- | --- | --- |
-| `schema_version` | integer | Must be `1`. |
+| `schema_version` | integer | `1` or `2`. |
 | `build_id.game_id` | string | 1–128 ASCII graphic characters. No `/`, `\`, `:`, or whitespace. |
 | `build_id.version` | string | Same character rules as `game_id`. |
 | `build_id.exe_hash` | string | 64-character lowercase hex SHA-256. |
@@ -87,7 +99,13 @@ bytes. The preview and `--out` file are those bytes.
 | `collected_hour` | string | `YYYY-MM-DDTHH:00:00Z` only. The constructor floors a clock instant to the UTC hour and discards the original instant. |
 | `description_hashes` | array | Sorted unique 64-character lowercase hex. Cap 150 000. Unsorted or duplicate entries are rejected. |
 | `bytecode_hashes` | array | Same rules as `description_hashes`, cap 400 000. |
+| `pipeline_hashes` | array | Required on version 2. Forbidden on version 1. Same hex rules, cap 50 000 (`records.max_records`). Empty is valid. |
 | `ownership` | object | `unchallenged` or `exe_binding_v1` (see below). |
+
+Version 2 canonical JSON is the version 1 object plus
+`pipeline_hashes`, with keys still sorted. `pipeline_hashes` therefore
+sits immediately before `schema_version`. Adding the field does not
+add a nesting level.
 
 ## Which record fields become hashes
 
@@ -98,19 +116,27 @@ and copies only hashes that the record file already stores:
 | --- | --- |
 | `bytecode_hashes` | `records[].bytecode_hashes` stage values (`vs` … `cs`) |
 | `description_hashes` | `records[].root_signature`, `input_layout`, `stream_out` |
+| `pipeline_hashes` | one [`pipeline_content_hash`](RECORD_FORMAT.md#pipeline_content_hash) per record |
 
-The builder does not read `app_key`, `version`, `unresolved_stages`,
+The builder does not copy `app_key`, `version`, `unresolved_stages`,
 `root_signature_skip`, inline integer descriptors, or table values
-(root-signature bytes, input-layout objects, stream-out objects).
-It never opens shader bytecode.
+(root-signature bytes, input-layout objects, stream-out objects) onto
+the wire. It never opens shader bytecode. `pipeline_content_hash`
+drops `app_key` and `version` and keeps descriptor references as the
+content hashes already stored on the record.
 
-### What format-1 records do not carry
+### `pipeline_content_hash` is not a coverage `desc_hash`
+
+`pipeline_hashes` entries are `osdb_records::pipeline_content_hash`.
+The preimage rules and golden vectors (hex inputs and the SHA-256)
+are in [RECORD_FORMAT.md](RECORD_FORMAT.md). Two records that differ
+only in `app_key` and `version` collapse to one hash.
 
 The SODB parser's CanonicalHasher description hash (used by coverage
-indexes) is **not** stored on a format-1 record. This crate does not
-invent a substitute hash of the inline descriptors. Consensus that
-needs those SODB description hashes is **UNVERIFIED** until a later
-record format or a documented derivation exists.
+indexes) is **not** stored on a format-1 record and is **not** this
+hash. Consensus that needs those SODB description hashes is
+**UNVERIFIED**. A version 1 manifest remains hash-set-only evidence:
+the two hash arrays, with no combined description-plus-shader hash.
 
 Steam discovery (`osdb-steam`) can supply a `GameIdentity`. That
 identity is upload-safe (no paths) but is still **not** copied into
@@ -184,6 +210,8 @@ These claims are **not** made by the code or tests:
   control
 - That `description_hashes` from record descriptor keys match SODB
   CanonicalHasher hashes or a future consensus index
+- That `pipeline_content_hash` equals a SODB CanonicalHasher
+  `desc_hash` (it does not; see [RECORD_FORMAT.md](RECORD_FORMAT.md))
 - Real game record files, real Steam installs, or a network path
 - That the Worker is deployed, or that Turnstile / rate limits /
   Logpush are live (those are built and tested as placeholders only)
@@ -207,10 +235,11 @@ boundary. Typed errors never echo rejected field values.
 
 | Limit | Default | Purpose |
 | --- | ---: | --- |
-| Local JSON bytes | 64 MiB | Client preview; two full hash lists fit |
-| Wire JSON bytes | 8 MiB | Worker request body, before parse (128 MB isolate) |
+| Local JSON bytes | 64 MiB | Client preview. A max valid version 2 document (150 000 + 400 000 + 50 000 hashes) is bounded at 40 800 349 bytes from the empty synthetic manifest (`empty + slots * (per_hash + 1)`), which is under this cap. |
+| Wire JSON bytes | 8 MiB | Worker request body, before parse (128 MB isolate). That full version 2 document does not fit on the wire. |
 | Description hashes | 150 000 | `records.max_records` (50 000) × 3 keys |
 | Bytecode hashes | 400 000 | `records.max_records` (50 000) × 8 stages |
+| Pipeline hashes | 50 000 | `records.max_records`. Version 2 only. No extra nesting level. |
 | JSON nesting | 8 | Reject deep documents |
 | Per-build uploads | 64 | Staging objects per game and BuildId prefix |
 

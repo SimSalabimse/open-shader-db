@@ -17,13 +17,13 @@ use crate::hash::Sha256Hex;
 use crate::manifest::{HashSet, UploadManifest, SCHEMA_VERSION};
 use crate::ownership::OwnershipProof;
 use crate::preview::{UploadPreview, NOTHING_SENT_LINE, THESE_EXACT_BYTES_LINE, UNCHALLENGED_LINE};
-use crate::schema::{document, MANIFEST_FIELDS, SCHEMA_JSON};
+use crate::schema::{document, document_v2, MANIFEST_FIELDS_V2, SCHEMA_JSON, SCHEMA_JSON_V2};
 use crate::time::{FixedClock, UtcHour};
 use crate::{
     Error, Limits, BYTECODE_STAGES_PER_RECORD, DEFAULT_MAX_BYTECODE_HASHES,
     DEFAULT_MAX_DESCRIPTION_HASHES, DEFAULT_MAX_HASHES_PER_LIST, DEFAULT_MAX_JSON_BYTES,
-    DEFAULT_PER_BUILD_UPLOAD_CAP, DESCRIPTION_HASHES_PER_RECORD, LIMITS_JSON,
-    MAX_NUMBER_TOKEN_CHARS, WIRE_MAX_JSON_BYTES,
+    DEFAULT_MAX_PIPELINE_HASHES, DEFAULT_PER_BUILD_UPLOAD_CAP, DESCRIPTION_HASHES_PER_RECORD,
+    LIMITS_JSON, MAX_NUMBER_TOKEN_CHARS, WIRE_MAX_JSON_BYTES,
 };
 
 const CANARY_USER: &str = "user-alice-fixture";
@@ -301,6 +301,7 @@ fn oversized_manifest_and_hash_lists_are_rejected() {
         max_json_bytes: 8,
         max_description_hashes: 2,
         max_bytecode_hashes: 2,
+        max_pipeline_hashes: 50_000,
         max_json_nesting: 8,
     };
     assert!(matches!(
@@ -442,6 +443,17 @@ fn preview_is_produced_from_canonical_bytes() {
     assert!(listed.iter().any(|p| p == "build_id.exe_hash"));
     assert!(listed.iter().any(|p| p == "bytecode_hashes"));
     assert!(listed.iter().any(|p| p == "description_hashes"));
+    assert!(listed.iter().any(|p| p == "pipeline_hashes"));
+    let count_line = preview
+        .as_text()
+        .lines()
+        .find(|line| line.starts_with("  pipeline_hashes ("))
+        .unwrap();
+    let expected = format!(
+        "  pipeline_hashes ({})",
+        manifest.pipeline_hashes.unwrap().len()
+    );
+    assert_eq!(count_line, expected);
 }
 
 fn preview_listed_paths(text: &str) -> Vec<String> {
@@ -486,13 +498,16 @@ fn field_paths(value: &serde_json::Value, prefix: &str) -> Vec<String> {
 
 #[test]
 fn schema_file_matches_rust_document() {
-    let from_file: serde_json::Value = serde_json::from_str(SCHEMA_JSON).unwrap();
-    let from_rust = document();
-    assert_eq!(from_file, from_rust);
-    let mut pretty = serde_json::to_string_pretty(&from_rust).unwrap();
+    assert_schema_file(SCHEMA_JSON, &document());
+    assert_schema_file(SCHEMA_JSON_V2, &document_v2());
+}
+
+fn assert_schema_file(checked_in: &str, from_rust: &serde_json::Value) {
+    let from_file: serde_json::Value = serde_json::from_str(checked_in).unwrap();
+    assert_eq!(from_file, *from_rust);
+    let mut pretty = serde_json::to_string_pretty(from_rust).unwrap();
     pretty.push('\n');
-    // Git on Windows may check the file out with CRLF; compare LF form.
-    let checked_in = SCHEMA_JSON.replace("\r\n", "\n");
+    let checked_in = checked_in.replace("\r\n", "\n");
     assert_eq!(pretty, checked_in);
 }
 
@@ -502,8 +517,9 @@ fn schema_required_fields_match_serialized_manifest() {
     let value = serde_json::to_value(&manifest).unwrap();
     let mut keys: Vec<_> = value.as_object().unwrap().keys().cloned().collect();
     keys.sort();
-    assert_eq!(keys, MANIFEST_FIELDS);
+    assert_eq!(keys, MANIFEST_FIELDS_V2);
     assert_eq!(manifest.schema_version, SCHEMA_VERSION);
+    assert!(manifest.pipeline_hashes.is_some());
 }
 
 #[test]
@@ -734,9 +750,15 @@ fn default_caps_cover_a_full_record_file() {
     );
     assert_eq!(DEFAULT_MAX_JSON_BYTES, 64 * 1024 * 1024);
     assert_eq!(WIRE_MAX_JSON_BYTES, 8 * 1024 * 1024);
+    assert_eq!(DEFAULT_MAX_PIPELINE_HASHES, 50_000);
+    assert_eq!(
+        DEFAULT_MAX_PIPELINE_HASHES,
+        osdb_records::Limits::DEFAULT.max_records
+    );
     assert_eq!(DEFAULT_PER_BUILD_UPLOAD_CAP, 64);
     assert_eq!(Limits::DEFAULT.max_bytecode_hashes, 400_000);
     assert_eq!(Limits::DEFAULT.max_description_hashes, 150_000);
+    assert_eq!(Limits::DEFAULT.max_pipeline_hashes, 50_000);
     assert_eq!(Limits::DEFAULT.max_json_bytes, 64 * 1024 * 1024);
     let empty = sample_canonical().len() as u64;
     let with_eight = {
@@ -749,11 +771,18 @@ fn default_caps_cover_a_full_record_file() {
             .len() as u64
     };
     let per_hash = with_eight.saturating_sub(empty).div_ceil(8);
-    let worst = empty + 2 * DEFAULT_MAX_HASHES_PER_LIST * (per_hash + 1);
+    let slots =
+        DEFAULT_MAX_DESCRIPTION_HASHES + DEFAULT_MAX_BYTECODE_HASHES + DEFAULT_MAX_PIPELINE_HASHES;
+    let worst = empty + slots * (per_hash + 1);
     assert!(
         worst <= DEFAULT_MAX_JSON_BYTES,
-        "two full hash lists need {worst} bytes, cap is {DEFAULT_MAX_JSON_BYTES}"
+        "max valid v2 needs {worst} bytes, cap is {DEFAULT_MAX_JSON_BYTES}"
     );
+    assert!(
+        worst > WIRE_MAX_JSON_BYTES,
+        "max valid v2 must stay above the 8 MiB wire cap"
+    );
+    assert_eq!(DEFAULT_MAX_BYTECODE_HASHES, 400_000);
 }
 
 #[test]
@@ -774,6 +803,10 @@ fn shared_limits_json_matches_rust_constants() {
     assert_eq!(
         value["max_bytecode_hashes"].as_u64().unwrap(),
         DEFAULT_MAX_BYTECODE_HASHES
+    );
+    assert_eq!(
+        value["max_pipeline_hashes"].as_u64().unwrap(),
+        DEFAULT_MAX_PIPELINE_HASHES
     );
     assert_eq!(value["max_json_nesting"].as_u64().unwrap(), 8);
     assert_eq!(
@@ -821,6 +854,7 @@ fn description_and_bytecode_caps_are_independent() {
         max_json_bytes: 64 * 1024 * 1024,
         max_description_hashes: 1,
         max_bytecode_hashes: 3,
+        max_pipeline_hashes: 50_000,
         max_json_nesting: 8,
     };
     let mut json = sample_json();
@@ -838,6 +872,7 @@ fn hash_cap_accepts_max_and_refuses_max_plus_one() {
         max_json_bytes: 64 * 1024 * 1024,
         max_description_hashes: 2,
         max_bytecode_hashes: 2,
+        max_pipeline_hashes: 50_000,
         max_json_nesting: 8,
     };
     let two = with_bytecode_hashes(&[&hex64(1), &hex64(2)]);
@@ -859,6 +894,7 @@ fn builder_insert_cap_accepts_max_and_refuses_max_plus_one() {
         max_json_bytes: 64 * 1024 * 1024,
         max_description_hashes: 2,
         max_bytecode_hashes: 2,
+        max_pipeline_hashes: 50_000,
         max_json_nesting: 8,
     };
     let mut two = Vec::new();
@@ -921,6 +957,7 @@ fn encode_enforces_json_size_cap() {
         max_json_bytes: u64::try_from(bytes.len()).unwrap().saturating_sub(1),
         max_description_hashes: 8,
         max_bytecode_hashes: 8,
+        max_pipeline_hashes: 8,
         max_json_nesting: 8,
     };
     let err = manifest.to_canonical_bytes_with_limits(tiny).unwrap_err();
@@ -1020,10 +1057,10 @@ fn ownership_fields_are_strict() {
 }
 
 #[test]
-fn schema_version_must_be_one() {
+fn schema_version_accepts_v1_and_v2_only() {
     for raw in [
         r#"{"schema_version":0,"build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
-        r#"{"schema_version":2,"build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
+        r#"{"schema_version":3,"build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"pipeline_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
         r#"{"schema_version":"1","build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
         r#"{"schema_version":1.0,"build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
         r#"{"schema_version":-1,"build_id":{"game_id":"synthetic","version":"1.0.0","exe_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[],"bytecode_hashes":[],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"}}"#,
@@ -1037,9 +1074,29 @@ fn schema_version_must_be_one() {
             "unexpected {err:?} for {raw}"
         );
     }
-    let mut ok = sample_json();
-    ok["schema_version"] = serde_json::json!(1);
-    UploadManifest::parse(&compact(&ok)).unwrap();
+    let mut v1 = sample_json();
+    v1["schema_version"] = serde_json::json!(1);
+    let parsed_v1 = UploadManifest::parse(&compact(&v1)).unwrap();
+    assert_eq!(parsed_v1.schema_version, 1);
+    assert!(parsed_v1.pipeline_hashes.is_none());
+    let mut v2_missing = sample_json();
+    v2_missing["schema_version"] = serde_json::json!(2);
+    assert!(matches!(
+        UploadManifest::parse(&compact(&v2_missing)),
+        Err(Error::MissingField)
+    ));
+    let mut v1_with = sample_json();
+    v1_with["pipeline_hashes"] = serde_json::json!([hex64(1)]);
+    assert!(matches!(
+        UploadManifest::parse(&compact(&v1_with)),
+        Err(Error::UnknownField)
+    ));
+    let mut v2 = sample_json();
+    v2["schema_version"] = serde_json::json!(2);
+    v2["pipeline_hashes"] = serde_json::json!([hex64(1), hex64(2)]);
+    let parsed_v2 = UploadManifest::parse(&compact(&v2)).unwrap();
+    assert_eq!(parsed_v2.schema_version, 2);
+    assert_eq!(parsed_v2.pipeline_hashes.unwrap().len(), 2);
 }
 
 #[test]
@@ -1239,7 +1296,11 @@ fn schema_and_rust_agree_on_generated_and_hostile_manifests() {
             patch: |v| v["client_version"] = serde_json::json!("1.2.3.4"),
         },
         Case {
-            name: "schema_version 2",
+            name: "schema_version 3",
+            patch: |v| v["schema_version"] = serde_json::json!(3),
+        },
+        Case {
+            name: "schema_version 2 without pipeline_hashes",
             patch: |v| v["schema_version"] = serde_json::json!(2),
         },
     ];
@@ -1256,7 +1317,15 @@ fn schema_and_rust_agree_on_generated_and_hostile_manifests() {
 }
 
 fn schema_accepts(value: &serde_json::Value) -> bool {
-    let schema = document();
+    let schema = if value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        == Some(2)
+    {
+        document_v2()
+    } else {
+        document()
+    };
     validate_schema_node(&schema, value)
 }
 

@@ -111,6 +111,47 @@ function writePrettyHash(out: Uint8Array, offset: number, n: number, comma: bool
   return offset;
 }
 
+function maxValidV2(target: number): Uint8Array {
+  const exe = "0".repeat(62) + "ee";
+  const prefix = `{"build_id":{"exe_hash":"${exe}","game_id":"synthetic","version":"1.0.0"},"bytecode_hashes":[`;
+  const mid1 =
+    '],"client_version":"0.1.0","collected_hour":"2026-10-25T14:00:00Z","description_hashes":[';
+  const mid2 =
+    '],"ownership":{"kind":"unchallenged","reason":"no_server_challenge"},"pipeline_hashes":[';
+  const suffix = '],"schema_version":2}';
+  const overhead = prefix.length + mid1.length + mid2.length + suffix.length;
+  let count = Math.floor((target - overhead + 3) / (3 * 67));
+  while (count > 0) {
+    const size = overhead + 3 * (count * 66 + (count - 1));
+    if (size <= target) {
+      const out = new Uint8Array(size);
+      let offset = writeAscii(out, 0, prefix);
+      offset = writeHashList(out, offset, count);
+      offset = writeAscii(out, offset, mid1);
+      offset = writeHashList(out, offset, count);
+      offset = writeAscii(out, offset, mid2);
+      offset = writeHashList(out, offset, count);
+      offset = writeAscii(out, offset, suffix);
+      assert.equal(offset, size);
+      assert.ok(count < 50_000, `v2 wire case must stay under the pipeline cap, got ${count}`);
+      return out;
+    }
+    count -= 1;
+  }
+  throw new Error("max-valid v2 does not fit the wire cap");
+}
+
+function writeHashList(out: Uint8Array, offset: number, count: number): number {
+  for (let i = 1; i <= count; i += 1) {
+    offset = writeHex64(out, offset, i);
+    if (i < count) {
+      out[offset] = 0x2c;
+      offset += 1;
+    }
+  }
+  return offset;
+}
+
 function hugeNumberToken(): Uint8Array {
   const prefix = '{"schema_version":';
   const suffix = "}";
@@ -217,6 +258,7 @@ const CASES = [
   "in_field_huge",
   "deep_nesting",
   "huge_number_token",
+  "max_valid_v2",
 ] as const;
 
 async function main(): Promise<void> {
@@ -248,6 +290,10 @@ async function main(): Promise<void> {
   const nest = `${"[".repeat(depth)}0${"]".repeat(depth)}`;
   await runCase("deep_nesting", uploadRequest(fillPattern(nest, " ", "", WIRE_MAX_JSON_BYTES)), 400);
   await runCase("huge_number_token", uploadRequest(hugeNumberToken()), 400);
+  const v2 = maxValidV2(WIRE_MAX_JSON_BYTES);
+  assert.ok(v2.byteLength <= WIRE_MAX_JSON_BYTES);
+  assert.ok(v2.byteLength > WIRE_MAX_JSON_BYTES - 200);
+  await runCase("max_valid_v2", uploadRequest(v2), 200);
   console.log(`HEAP_CHILD_OK cases=${CASES.length}`);
 }
 

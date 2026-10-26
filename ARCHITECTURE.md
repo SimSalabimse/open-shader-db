@@ -137,7 +137,7 @@ dependencies). **Not deployed.** Config uses placeholders only. Design
 contract: [docs/WORKER_DESIGN.md](docs/WORKER_DESIGN.md).
 
 **Key responsibilities:**
-- Accept `POST /v1/upload` with an UploadManifest v1 JSON body
+- Accept `POST /v1/upload` with an UploadManifest v1 or v2 JSON body
 - Parse untrusted bytes into a typed manifest (same rules as
   `osdb-upload`; do not use the JSON Schema alone)
 - Verify a Turnstile token (injected fetch in tests; omit `remoteip`)
@@ -382,18 +382,22 @@ The following aspects require further research or testing:
 ### UploadManifest
 
 The anonymized data a contributor can preview (and later send). Schema
-version 1 is implemented by `osdb-upload` and documented in
-[docs/UPLOAD_MANIFEST.md](docs/UPLOAD_MANIFEST.md). The machine-readable
-schema is [schemas/upload_manifest.v1.json](schemas/upload_manifest.v1.json).
+versions 1 and 2 are implemented by `osdb-upload` and documented in
+[docs/UPLOAD_MANIFEST.md](docs/UPLOAD_MANIFEST.md). `upload prepare`
+emits version 2. Version 1 still parses (no `pipeline_hashes`). The
+machine-readable schemas are
+[schemas/upload_manifest.v1.json](schemas/upload_manifest.v1.json) and
+[schemas/upload_manifest.v2.json](schemas/upload_manifest.v2.json).
 
 ```typescript
 interface UploadManifest {
-  schema_version: 1
+  schema_version: 1 | 2
   build_id: BuildId          // game_id, version, exe_hash
   client_version: string     // major.minor.patch
   collected_hour: string     // YYYY-MM-DDTHH:00:00Z only
   description_hashes: string[] // sorted unique SHA-256 hex
   bytecode_hashes: string[]    // sorted unique SHA-256 hex
+  pipeline_hashes?: string[]   // version 2 only; one pipeline_content_hash per record
   ownership: OwnershipProof    // unchallenged | exe_binding_v1
   // NO: user ID, IP, game path, hostname, hardware id, full timestamp, app_key
 }

@@ -56,6 +56,7 @@ export async function handleUpload(
     parsed.storedBytes,
     parsed.descriptionHashCount,
     parsed.bytecodeHashCount,
+    parsed.pipelineHashCount,
     deps,
   );
 }
@@ -65,6 +66,7 @@ async function storeManifest(
   storedBytes: Uint8Array,
   descriptionHashCount: number,
   bytecodeHashCount: number,
+  pipelineHashCount: number,
   deps: HandlerDeps,
 ): Promise<Response> {
   const digest = await sha256Hex(storedBytes);
@@ -76,7 +78,15 @@ async function storeManifest(
     logOutcome("accepted", { prefix: key.prefix, idempotent: true });
     return jsonResponse(
       200,
-      receipt(manifest, digest, key.key, true, descriptionHashCount, bytecodeHashCount),
+      receipt(
+        manifest,
+        digest,
+        key.key,
+        true,
+        descriptionHashCount,
+        bytecodeHashCount,
+        pipelineHashCount,
+      ),
     );
   }
   const count = await deps.store.countPrefix(key.prefix, deps.perBuildCap);
@@ -92,7 +102,15 @@ async function storeManifest(
   });
   return jsonResponse(
     200,
-    receipt(manifest, digest, key.key, false, descriptionHashCount, bytecodeHashCount),
+    receipt(
+      manifest,
+      digest,
+      key.key,
+      false,
+      descriptionHashCount,
+      bytecodeHashCount,
+      pipelineHashCount,
+    ),
   );
 }
 
@@ -103,6 +121,7 @@ function receipt(
   idempotent: boolean,
   descriptionHashCount: number,
   bytecodeHashCount: number,
+  pipelineHashCount: number,
 ): UploadReceipt {
   return {
     accepted: true,
@@ -113,6 +132,7 @@ function receipt(
     collected_hour: manifest.collected_hour,
     description_hash_count: descriptionHashCount,
     bytecode_hash_count: bytecodeHashCount,
+    pipeline_hash_count: pipelineHashCount,
     canonical_sha256: canonicalSha256,
     object_key: objectKeyValue,
   };

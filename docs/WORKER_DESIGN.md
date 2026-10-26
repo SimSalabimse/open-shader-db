@@ -8,7 +8,7 @@ This document is the contract for `worker/`. Implementation must match it.
 
 ## What is in scope
 
-- `POST /v1/upload` accepts UploadManifest v1 JSON
+- `POST /v1/upload` accepts UploadManifest v1 and v2 JSON
 - The same validation rules as `crates/upload` (plus a lower wire body cap)
 - Staging object layout on R2 (or a documented reviewed-PR alternative)
 - Turnstile verification, edge rate limiting, per-build upload cap
@@ -25,7 +25,7 @@ This document is the contract for `worker/`. Implementation must match it.
 ## Types
 
 ```typescript
-type SchemaVersion = 1
+type SchemaVersion = 1 | 2
 
 type Sha256Hex = string // 64 lowercase hex characters
 
@@ -46,6 +46,7 @@ interface UploadManifest {
   collected_hour: string // YYYY-MM-DDTHH:00:00Z, real calendar, hour only
   description_hashes: Sha256Hex[] // sorted unique; cap 150 000
   bytecode_hashes: Sha256Hex[]    // sorted unique; cap 400 000
+  pipeline_hashes?: Sha256Hex[]   // version 2 only; sorted unique; cap 50 000
   ownership: OwnershipProof
 }
 
@@ -58,6 +59,7 @@ interface UploadReceipt {
   collected_hour: string
   description_hash_count: number
   bytecode_hash_count: number
+  pipeline_hash_count: number // 0 on version 1
   canonical_sha256: Sha256Hex
   object_key: string
 }
@@ -103,6 +105,7 @@ Pinned in `schemas/limits.v1.json`, `crates/upload` `Limits`, and
 | Wire request body | 8 MiB | Worker, before JSON parse |
 | Description hashes | 150 000 | both validators (`50 000` records × 3 keys) |
 | Bytecode hashes | 400 000 | both validators (`50 000` records × 8 stages) |
+| Pipeline hashes | 50 000 | both validators (version 2; one hash per record). No extra nesting level. |
 | JSON nesting | 8 | both validators |
 | JSON number token | 16 characters | `schema_version` only |
 | Per-build upload objects | 64 | Worker staging prefix only |
@@ -110,10 +113,14 @@ Pinned in `schemas/limits.v1.json`, `crates/upload` `Limits`, and
 The 16-character cap can only affect `schema_version`. Counts, timestamps, and hashes are strings or array lengths, so no other field can reach it.
 
 64 MiB stays the local cap so a full record file can still be previewed.
+A max valid version 2 manifest (150 000 description hashes, 400 000
+bytecode hashes, and 50 000 pipeline hashes) is bounded at
+40 800 349 bytes from the empty synthetic manifest, under 64 MiB and
+over 8 MiB.
 The Worker **wire cap** is 8 MiB (not an isolate-size budget). A 53-64
 MiB document is refused before parse; see [Memory](#memory) for measured
-peaks under that wire cap. A full 150 000 + 400 000 hash payload does
-not fit on the wire; those contributors use the reviewed-PR path.
+peaks under that wire cap. A full version 2 payload does not fit on the
+wire; those contributors use the reviewed-PR path.
 
 ## Module layout
 
@@ -181,6 +188,8 @@ emitted JS.
     unbounded except by the rate gate.
 12. `put` the stored canonical bytes only. Receipt fields are
     manifest-derived plus `idempotent` and `ownership_state: "UNVERIFIED"`.
+    `pipeline_hash_count` is on the receipt (0 for version 1). It is
+    not written to the accept log.
 
 The Worker never verifies `exe_binding_v1` and never claims that
 `unchallenged` is a proof. Both are stored as `UNVERIFIED`.
@@ -207,7 +216,7 @@ header values, IPs, paths, or any request substring.
 | `DUPLICATE_KEY` | 400 | repeated object key |
 | `UNKNOWN_FIELD` | 400 | field outside the allowlist |
 | `MISSING_FIELD` | 400 | required field absent |
-| `UNSUPPORTED_SCHEMA_VERSION` | 400 | `schema_version` is not 1 |
+| `UNSUPPORTED_SCHEMA_VERSION` | 400 | `schema_version` is not 1 or 2 |
 | `INVALID_INTEGER` | 400 | integer field is not an integer token |
 | `MALFORMED_HEX` | 400 | non-lowercase-hex in a hash |
 | `WRONG_HEX_LENGTH` | 400 | hash is not 64 characters |
@@ -370,7 +379,17 @@ old-space; ArrayBuffers for the 8 MiB body sit beside it
 | nesting-depth guard (64 brackets) | 5.8 MB | 45.8 MB | 16.2 ms |
 | 8 MiB `schema_version` number token | 5.8 MB | 53.9 MB | 19.2 ms |
 
-CI runs these ten cases in a child process under a 64 MB
+The ten rows above are the earlier measurement and are left as recorded.
+This machine (Node 22) added one case and re-ran the heap child under
+`--max-old-space-size=64`. Compact max-valid v2 fills the wire cap with
+three equal hash lists (41 732 hashes each, 8 388 478 bytes, under the
+50 000 pipeline cap):
+
+| 8 MiB input | Peak heapUsed | heapUsed + ArrayBuffers | CPU |
+| --- | ---: | ---: | ---: |
+| compact max-valid v2 (41 732 + 41 732 + 41 732 hashes) | 5.9 MB | 53.0 MB | 103.1 ms |
+
+CI runs these eleven cases in a child process under a 64 MB
 old-space limit. An uncapped 8 MiB number token runs out of memory
 there. The pretty-printed max-valid path used to peak at
 223 MB heap when `hexEncode32` built cons-string ropes; a 256-entry

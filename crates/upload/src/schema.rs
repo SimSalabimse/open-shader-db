@@ -5,13 +5,16 @@
 //! `document()` is written by hand and kept aligned with the Rust
 //! validators by tests. It is not generated from the serde types.
 
-use crate::manifest::SCHEMA_VERSION;
+use crate::manifest::{SCHEMA_VERSION, SCHEMA_VERSION_V1};
 use crate::Limits;
 
 /// JSON Schema file checked in at `schemas/upload_manifest.v1.json`.
 pub const SCHEMA_JSON: &str = include_str!("../../../schemas/upload_manifest.v1.json");
 
-/// Top-level manifest field names, sorted, matching the wire allowlist.
+/// JSON Schema file checked in at `schemas/upload_manifest.v2.json`.
+pub const SCHEMA_JSON_V2: &str = include_str!("../../../schemas/upload_manifest.v2.json");
+
+/// Top-level manifest field names for schema version 1, sorted.
 pub const MANIFEST_FIELDS: &[&str] = &[
     "build_id",
     "bytecode_hashes",
@@ -19,6 +22,18 @@ pub const MANIFEST_FIELDS: &[&str] = &[
     "collected_hour",
     "description_hashes",
     "ownership",
+    "schema_version",
+];
+
+/// Top-level manifest field names for schema version 2, sorted.
+pub const MANIFEST_FIELDS_V2: &[&str] = &[
+    "build_id",
+    "bytecode_hashes",
+    "client_version",
+    "collected_hour",
+    "description_hashes",
+    "ownership",
+    "pipeline_hashes",
     "schema_version",
 ];
 
@@ -101,6 +116,77 @@ pub fn document() -> serde_json::Value {
                     }
                 ]
             },
+            "schema_version": {
+                "type": "integer",
+                "const": SCHEMA_VERSION_V1
+            }
+        }
+    })
+}
+
+/// Hand-maintained JSON Schema for schema version 2.
+///
+/// Same looseness as [`document`]: no sort order, calendar, or byte caps.
+#[must_use]
+pub fn document_v2() -> serde_json::Value {
+    let max_description = Limits::DEFAULT.max_description_hashes;
+    let max_bytecode = Limits::DEFAULT.max_bytecode_hashes;
+    let max_pipeline = Limits::DEFAULT.max_pipeline_hashes;
+    serde_json::json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$id": "https://github.com/SimSalabimse/open-shader-db/schemas/upload_manifest.v2.json",
+        "title": "UploadManifest",
+        "description": "Anonymized upload manifest (schema_version 2). Adds pipeline_hashes. No paths, usernames, IPs, hostnames, hardware ids, app keys, or full timestamps.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": MANIFEST_FIELDS_V2,
+        "properties": {
+            "bytecode_hashes": hash_array_schema(max_bytecode),
+            "build_id": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": BUILD_ID_FIELDS,
+                "properties": {
+                    "exe_hash": sha256_schema(),
+                    "game_id": ident_schema(),
+                    "version": ident_schema()
+                }
+            },
+            "client_version": {
+                "type": "string",
+                "pattern": CLIENT_VERSION_PATTERN,
+                "maxLength": 32
+            },
+            "collected_hour": {
+                "type": "string",
+                "pattern": UTC_HOUR_PATTERN,
+                "description": "UTC hour boundary. Minutes and seconds are always 00."
+            },
+            "description_hashes": hash_array_schema(max_description),
+            "ownership": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "reason"],
+                        "properties": {
+                            "kind": { "const": "unchallenged" },
+                            "reason": { "const": "no_server_challenge" }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["challenge", "kind", "response"],
+                        "properties": {
+                            "challenge": sha256_schema(),
+                            "kind": { "const": "exe_binding_v1" },
+                            "response": sha256_schema()
+                        }
+                    }
+                ]
+            },
+            "pipeline_hashes": hash_array_schema(max_pipeline),
             "schema_version": {
                 "type": "integer",
                 "const": SCHEMA_VERSION

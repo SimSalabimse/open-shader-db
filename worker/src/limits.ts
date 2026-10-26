@@ -12,10 +12,13 @@ export const MAX_DESCRIPTION_HASHES = 150_000;
 /** Bytecode-hash list cap (`50 000` records × 8 stages). */
 export const MAX_BYTECODE_HASHES = 400_000;
 
+/** `pipeline_hashes` cap. One hash per record (`records.max_records`). */
+export const MAX_PIPELINE_HASHES = 50_000;
+
 /** `{` / `[` nesting cap. */
 export const MAX_JSON_NESTING = 8;
 
-/** Maximum characters in a JSON number token (`schema_version` is one digit). */
+/** Maximum characters in a JSON number token (`schema_version` is one digit: 1 or 2). */
 export const MAX_NUMBER_TOKEN_CHARS = 16;
 
 /** Staging objects per `(game_id, build_id)` prefix. Approximate under races. */
@@ -36,7 +39,8 @@ export function parsePerBuildCap(value: string | undefined): number {
   return parsed;
 }
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION_V1 = 1;
+export const SCHEMA_VERSION_V2 = 2;
 
 export const TURNSTILE_HEADER = "X-Turnstile-Token";
 

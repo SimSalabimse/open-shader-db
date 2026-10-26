@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::build::{BuildId, ExeHash, GameId, GameVersion};
 use crate::client::ClientVersion;
@@ -17,8 +17,12 @@ use crate::ownership::{OwnershipProof, UnchallengedReason};
 use crate::time::UtcHour;
 use crate::{Error, Limits};
 
-/// On-wire schema version implemented by this crate.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Schema version written by [`crate::ManifestBuilder`]. Parsers also accept
+/// [`SCHEMA_VERSION_V1`].
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// Original upload manifest. No `pipeline_hashes` field.
+pub const SCHEMA_VERSION_V1: u32 = 1;
 
 /// Sorted unique SHA-256 hex strings.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize)]
@@ -110,6 +114,9 @@ pub struct UploadManifest {
     pub description_hashes: HashSet,
     pub bytecode_hashes: HashSet,
     pub ownership: OwnershipProof,
+    /// Present on schema version 2. Absent on version 1 (omitted from JSON).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipeline_hashes: Option<HashSet>,
 }
 
 impl fmt::Debug for UploadManifest {
@@ -122,6 +129,7 @@ impl fmt::Debug for UploadManifest {
             .field("description_hashes", &self.description_hashes)
             .field("bytecode_hashes", &self.bytecode_hashes)
             .field("ownership", &self.ownership)
+            .field("pipeline_hashes", &self.pipeline_hashes)
             .finish()
     }
 }
@@ -311,30 +319,43 @@ struct RawManifest {
     description_hashes: Vec<Sha256Hex>,
     bytecode_hashes: Vec<Sha256Hex>,
     ownership: OwnershipProof,
+    /// `Some` only when the key was present and the version allows it.
+    pipeline_hashes: Option<Vec<Sha256Hex>>,
 }
 
 impl RawManifest {
     fn into_manifest(self, limits: Limits) -> Result<UploadManifest, Error> {
-        if self.schema_version != u64::from(SCHEMA_VERSION) {
+        if self.schema_version != u64::from(SCHEMA_VERSION_V1)
+            && self.schema_version != u64::from(SCHEMA_VERSION)
+        {
             return Err(Error::UnsupportedSchemaVersion {
                 found: self.schema_version,
-                expected: SCHEMA_VERSION,
             });
         }
+        let description_hashes =
+            HashSet::from_sorted_unique(self.description_hashes, limits.max_description_hashes)?;
+        let bytecode_hashes =
+            HashSet::from_sorted_unique(self.bytecode_hashes, limits.max_bytecode_hashes)?;
+        let (schema_version, pipeline_hashes) =
+            if self.schema_version == u64::from(SCHEMA_VERSION_V1) {
+                if self.pipeline_hashes.is_some() {
+                    return Err(Error::UnknownField);
+                }
+                (SCHEMA_VERSION_V1, None)
+            } else {
+                let raw = self.pipeline_hashes.ok_or(Error::MissingField)?;
+                let set = HashSet::from_sorted_unique(raw, limits.max_pipeline_hashes)?;
+                (SCHEMA_VERSION, Some(set))
+            };
         Ok(UploadManifest {
-            schema_version: SCHEMA_VERSION,
+            schema_version,
             build_id: self.build_id,
             client_version: self.client_version,
             collected_hour: self.collected_hour,
-            description_hashes: HashSet::from_sorted_unique(
-                self.description_hashes,
-                limits.max_description_hashes,
-            )?,
-            bytecode_hashes: HashSet::from_sorted_unique(
-                self.bytecode_hashes,
-                limits.max_bytecode_hashes,
-            )?,
+            description_hashes,
+            bytecode_hashes,
             ownership: self.ownership,
+            pipeline_hashes,
         })
     }
 }
@@ -363,13 +384,27 @@ impl<'de> Visitor<'de> for RawManifestVisitor {
         let mut description_hashes = None;
         let mut bytecode_hashes = None;
         let mut ownership = None;
+        let mut pipeline_hashes: Option<Vec<Sha256Hex>> = None;
+        let mut pipeline_pending: Option<serde_json::Value> = None;
         while let Some(key) = map.next_key::<String>()? {
             if !seen.insert(key.clone()) {
                 return Err(store_typed(Error::DuplicateKey));
             }
             match key.as_str() {
                 "schema_version" => {
-                    schema_version = Some(parse_u64(map.next_value()?)?);
+                    let found = parse_u64(map.next_value()?)?;
+                    if found == u64::from(SCHEMA_VERSION_V1)
+                        && (pipeline_hashes.is_some() || pipeline_pending.is_some())
+                    {
+                        return Err(store_typed(Error::UnknownField));
+                    }
+                    if found == u64::from(SCHEMA_VERSION) {
+                        if let Some(value) = pipeline_pending.take() {
+                            pipeline_hashes =
+                                Some(pipeline_from_value(value).map_err(store_typed)?);
+                        }
+                    }
+                    schema_version = Some(found);
                 }
                 "build_id" => {
                     let raw: RawBuildId = map.next_value()?;
@@ -392,6 +427,20 @@ impl<'de> Visitor<'de> for RawManifestVisitor {
                 "ownership" => {
                     ownership = Some(map.next_value::<RawOwnership>()?.0);
                 }
+                "pipeline_hashes" => match schema_version {
+                    Some(found) if found == u64::from(SCHEMA_VERSION_V1) => {
+                        return Err(store_typed(Error::UnknownField));
+                    }
+                    Some(found) if found == u64::from(SCHEMA_VERSION) => {
+                        pipeline_hashes = Some(map.next_value::<RawHashes>()?.0);
+                    }
+                    Some(_) => {
+                        let _ignored: serde_json::Value = map.next_value()?;
+                    }
+                    None => {
+                        pipeline_pending = Some(map.next_value()?);
+                    }
+                },
                 _ => return Err(store_typed(Error::UnknownField)),
             }
         }
@@ -404,8 +453,14 @@ impl<'de> Visitor<'de> for RawManifestVisitor {
                 .ok_or_else(|| store_typed(Error::MissingField))?,
             bytecode_hashes: bytecode_hashes.ok_or_else(|| store_typed(Error::MissingField))?,
             ownership: ownership.ok_or_else(|| store_typed(Error::MissingField))?,
+            pipeline_hashes,
         })
     }
+}
+
+fn pipeline_from_value(value: serde_json::Value) -> Result<Vec<Sha256Hex>, Error> {
+    let raw = RawHashes::deserialize(value).map_err(take_typed_error)?;
+    Ok(raw.0)
 }
 
 fn parse_u64<E: de::Error>(value: serde_json::Value) -> Result<u64, E> {
