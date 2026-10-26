@@ -16,9 +16,10 @@ use std::time::Instant;
 use crate::scan::ScanLimits;
 use crate::vdf::parse_vdf_with_limits;
 use crate::{
-    discover, discover_with_scan, parse_vdf, parse_vdf_file, AppId, BuildId, Error, GameIdentity,
-    GameListing, GameName, LocalPath, UploadSafeDiscovery, Warning, WarningKind, MAX_VDF_DEPTH,
-    MAX_VDF_TOKENS,
+    discover, discover_with_options, discover_with_scan, parse_vdf, parse_vdf_file,
+    scan_bound_summary, AppId, BuildId, DiscoverOptions, Error, FolderScanKind, GameIdentity,
+    GameListing, GameName, LocalPath, UploadSafeDiscovery, WalkBound, Warning, WarningKind,
+    MAX_VDF_DEPTH, MAX_VDF_TOKENS, NO_SODB_STEAM_NOTE,
 };
 use sodb::{SODB_APPLICATION_ID, SODB_USER_VERSION};
 
@@ -205,6 +206,12 @@ fn game_with_sodb_file() {
         SODB_APPLICATION_ID,
     );
     write_sodb_header(
+        &install.join("ALSO.SODB"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    // Header matches, extension does not: must not be opened or counted.
+    write_sodb_header(
         &install.join("also.db"),
         SODB_USER_VERSION,
         SODB_APPLICATION_ID,
@@ -219,6 +226,14 @@ fn game_with_sodb_file() {
         .find(|g| g.identity.app_id() == AppId(200))
         .unwrap();
     assert_eq!(game.sodb_files.len(), 2);
+    assert!(game
+        .sodb_files
+        .iter()
+        .any(|p| p.as_path().ends_with("cache.sodb")));
+    assert!(game
+        .sodb_files
+        .iter()
+        .any(|p| p.as_path().ends_with("ALSO.SODB")));
 }
 
 #[test]
@@ -420,7 +435,15 @@ fn serialized_payload_never_contains_paths() {
         ))
         .unwrap(),
     );
-    blobs.push(serde_json::to_string(&UploadSafeDiscovery::new(Vec::new(), Vec::new())).unwrap());
+    blobs.push(
+        serde_json::to_string(&UploadSafeDiscovery::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .unwrap(),
+    );
 
     let debugs = format!("{:?} {:?}", found, LocalPath::new(fx.base.clone()));
     assert!(
@@ -469,10 +492,21 @@ fn scan_file_count_bound_emits_warning() {
             ..ScanLimits::default()
         },
     );
-    assert!(found
+    let limited: Vec<_> = found
         .warnings
         .iter()
-        .any(|w| w.kind() == WarningKind::SodbScanLimited));
+        .filter(|w| w.kind() == WarningKind::SodbScanLimited)
+        .collect();
+    assert_eq!(limited.len(), 1);
+    assert_eq!(limited[0].app_id(), Some(AppId(100)));
+    assert_eq!(limited[0].message(), WalkBound::Files.message());
+    let summary = scan_bound_summary(&found.warnings).unwrap();
+    assert_eq!(
+        summary,
+        "stopped SODB scan after a walk bound (files=1, entries=0, time=0)"
+    );
+    assert!(!summary.contains(fx.base.to_string_lossy().as_ref()));
+    assert!(!summary.contains(LEAK_MARKER));
 }
 
 fn write_libraryfolders_keyed(steam: &Path, libraries: &[(&str, &Path)]) {
@@ -670,10 +704,19 @@ fn entry_count_bound_stops_walk() {
             ..ScanLimits::default()
         },
     );
-    assert!(found
+    let limited: Vec<_> = found
         .warnings
         .iter()
-        .any(|w| w.kind() == WarningKind::SodbScanLimited));
+        .filter(|w| w.kind() == WarningKind::SodbScanLimited)
+        .collect();
+    assert_eq!(limited.len(), 1);
+    assert_eq!(limited[0].message(), WalkBound::Entries.message());
+    let summary = scan_bound_summary(&found.warnings).unwrap();
+    assert_eq!(
+        summary,
+        "stopped SODB scan after a walk bound (files=0, entries=1, time=0)"
+    );
+    assert!(!summary.contains(LEAK_MARKER));
 }
 
 #[test]
@@ -690,10 +733,21 @@ fn deadline_bound_stops_walk() {
             ..ScanLimits::default()
         },
     );
-    assert!(found
+    let limited: Vec<_> = found
         .warnings
         .iter()
-        .any(|w| w.kind() == WarningKind::SodbScanLimited));
+        .filter(|w| w.kind() == WarningKind::SodbScanLimited)
+        .collect();
+    assert_eq!(limited.len(), 3, "each game hits the time bound");
+    assert!(limited
+        .iter()
+        .all(|w| w.message() == WalkBound::Time.message()));
+    let summary = scan_bound_summary(&found.warnings).unwrap();
+    assert_eq!(
+        summary,
+        "stopped SODB scan after a walk bound (files=0, entries=0, time=3)"
+    );
+    assert!(!summary.contains(LEAK_MARKER));
 }
 
 #[test]
@@ -940,6 +994,8 @@ fn walk_swap_race_never_counts_outside_file() {
                 max_duration: Duration::from_millis(50),
                 ..ScanLimits::default()
             },
+            None,
+            true,
         );
         assert!(
             out.files
@@ -950,4 +1006,426 @@ fn walk_swap_race_never_counts_outside_file() {
     }
     stop.store(true, AtomOrdering::Relaxed);
     let _ = handle.join();
+}
+
+#[test]
+fn no_sodb_note_is_once_for_the_whole_library() {
+    let fx = two_libs_three_games();
+    let found = discover(&fx.steam);
+    assert_eq!(
+        found
+            .notes
+            .iter()
+            .filter(|note| note.message() == NO_SODB_STEAM_NOTE)
+            .count(),
+        1
+    );
+    assert!(found
+        .warnings
+        .iter()
+        .all(|w| !w.message().contains("no SODB")));
+    let json = serde_json::to_string(&found.upload_safe()).unwrap();
+    assert_eq!(json.matches(NO_SODB_STEAM_NOTE).count(), 1);
+    assert!(!json.contains(LEAK_MARKER));
+}
+
+#[test]
+fn no_sodb_note_absent_when_a_game_has_a_file() {
+    let fx = two_libs_three_games();
+    let install = fx.lib2.join("steamapps").join("common").join("GameTwo");
+    write_sodb_header(
+        &install.join("cache.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let found = discover(&fx.steam);
+    assert!(found
+        .notes
+        .iter()
+        .all(|note| note.message() != NO_SODB_STEAM_NOTE));
+    assert!(!found.games.iter().all(|g| g.sodb_files.is_empty()));
+}
+
+#[test]
+fn stale_library_paths_collapse_to_one_note_without_paths() {
+    let fx = empty_fixture();
+    let gone = fx.base.join("gone-drive");
+    let also = fx.base.join("also-gone");
+    write_libraryfolders_keyed(&fx.steam, &[("0", &gone), ("1", &also), ("2", &fx.steam)]);
+    let sa = fx.steam.join("steamapps");
+    write_manifest(&sa, 100, "GameOne", "GameOne", Some(1), true, true, true);
+    fs::create_dir_all(sa.join("common").join("GameOne")).unwrap();
+    let found = discover(&fx.steam);
+    assert_eq!(
+        found
+            .notes
+            .iter()
+            .filter(|note| note.message().contains("library path"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        found.notes[0].message(),
+        "2 library paths listed in VDF are not directories"
+    );
+    assert!(found
+        .warnings
+        .iter()
+        .all(|w| w.message() != "a library path listed in VDF is not a directory"));
+    let rendered = format!("{found:?}");
+    let json = serde_json::to_string(&found.upload_safe()).unwrap();
+    for secret in ["gone-drive", "also-gone", LEAK_MARKER] {
+        assert!(
+            !rendered.contains(secret),
+            "debug leaked {secret}: {rendered}"
+        );
+        assert!(!json.contains(secret), "json leaked {secret}: {json}");
+        assert!(found
+            .notes
+            .iter()
+            .all(|note| !note.message().contains(secret)));
+        assert!(found.warnings.iter().all(|w| !w.message().contains(secret)));
+    }
+}
+
+#[test]
+fn breadth_first_finds_depth1_sodb_before_deep_tree_is_exhausted() {
+    let fx = empty_fixture();
+    write_libraryfolders(&fx.steam, &[&fx.steam]);
+    let sa = fx.steam.join("steamapps");
+    write_manifest(&sa, 100, "GameOne", "GameOne", Some(1), true, true, true);
+    let install = sa.join("common").join("GameOne");
+    fs::create_dir_all(&install).unwrap();
+    for side in ["aaa", "zzz"] {
+        let leaf = install.join(side).join("d1").join("d2");
+        fs::create_dir_all(&leaf).unwrap();
+        for i in 0..30 {
+            fs::write(leaf.join(format!("pad-{i}.txt")), b"x").unwrap();
+        }
+    }
+    write_sodb_header(
+        &install.join("mmm").join("hit.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let found = discover_with_scan(
+        &fx.steam,
+        ScanLimits {
+            max_files: 5,
+            ..ScanLimits::default()
+        },
+    );
+    let game = found
+        .games
+        .iter()
+        .find(|g| g.identity.app_id() == AppId(100))
+        .unwrap();
+    assert!(
+        game.sodb_files
+            .iter()
+            .any(|p| p.as_path().ends_with("hit.sodb")),
+        "depth-1 SODB missing; warnings={:?}",
+        found.warnings
+    );
+}
+
+#[test]
+fn exe_dir_is_scanned_before_sibling_files_exhaust_the_budget() {
+    let fx = empty_fixture();
+    write_libraryfolders(&fx.steam, &[&fx.steam]);
+    let sa = fx.steam.join("steamapps");
+    fs::create_dir_all(&sa).unwrap();
+    fs::write(
+        sa.join("appmanifest_100.acf"),
+        "\"AppState\"\n{\n\t\"appid\"\t\t\"100\"\n\t\"name\"\t\t\"GameOne\"\n\t\"installdir\"\t\t\"GameOne\"\n\t\"buildid\"\t\t\"1\"\n\t\"Executable\"\t\t\"zzz\\\\game.exe\"\n}\n",
+    )
+    .unwrap();
+    let install = sa.join("common").join("GameOne");
+    fs::create_dir_all(install.join("zzz")).unwrap();
+    fs::create_dir_all(install.join("aaa")).unwrap();
+    write_sodb_header(
+        &install.join("zzz").join("hit.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    for i in 0..20 {
+        fs::write(install.join("aaa").join(format!("pad-{i}.txt")), b"x").unwrap();
+    }
+    let found = discover_with_scan(
+        &fx.steam,
+        ScanLimits {
+            max_files: 3,
+            ..ScanLimits::default()
+        },
+    );
+    let game = found
+        .games
+        .iter()
+        .find(|g| g.identity.app_id() == AppId(100))
+        .unwrap();
+    assert!(
+        game.sodb_files
+            .iter()
+            .any(|p| p.as_path().ends_with("hit.sodb")),
+        "exe folder was not scanned before sibling files"
+    );
+}
+
+#[test]
+fn exe_dir_deeper_than_one_is_scanned_before_depth1_files() {
+    let fx = empty_fixture();
+    write_libraryfolders(&fx.steam, &[&fx.steam]);
+    let sa = fx.steam.join("steamapps");
+    fs::create_dir_all(&sa).unwrap();
+    fs::write(
+        sa.join("appmanifest_100.acf"),
+        "\"AppState\"\n{\n\t\"appid\"\t\t\"100\"\n\t\"name\"\t\t\"GameOne\"\n\t\"installdir\"\t\t\"GameOne\"\n\t\"buildid\"\t\t\"1\"\n\t\"Executable\"\t\t\"Content/Bin/game.exe\"\n}\n",
+    )
+    .unwrap();
+    let install = sa.join("common").join("GameOne");
+    fs::create_dir_all(install.join("Content").join("Bin")).unwrap();
+    fs::create_dir_all(install.join("aaa")).unwrap();
+    write_sodb_header(
+        &install.join("Content").join("Bin").join("hit.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    for i in 0..20 {
+        fs::write(install.join("aaa").join(format!("pad-{i}.txt")), b"x").unwrap();
+    }
+    let found = discover_with_scan(
+        &fx.steam,
+        ScanLimits {
+            max_files: 3,
+            ..ScanLimits::default()
+        },
+    );
+    let game = found
+        .games
+        .iter()
+        .find(|g| g.identity.app_id() == AppId(100))
+        .unwrap();
+    assert!(
+        game.sodb_files
+            .iter()
+            .any(|p| p.as_path().ends_with("hit.sodb")),
+        "executable directory was not read before depth-1 files"
+    );
+}
+
+#[test]
+fn huge_asset_dirs_are_skipped_and_a_shallow_sodb_is_kept() {
+    let fx = empty_fixture();
+    write_libraryfolders(&fx.steam, &[&fx.steam]);
+    let sa = fx.steam.join("steamapps");
+    write_manifest(&sa, 100, "GameOne", "GameOne", Some(1), true, true, true);
+    let install = sa.join("common").join("GameOne");
+    fs::create_dir_all(&install).unwrap();
+    for name in [
+        "Content",
+        "Paks",
+        "Movies",
+        "Videos",
+        "Audio",
+        "Sounds",
+        "Textures",
+        "Streaming",
+    ] {
+        let dir = install.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        write_sodb_header(
+            &dir.join("hidden.sodb"),
+            SODB_USER_VERSION,
+            SODB_APPLICATION_ID,
+        );
+        for i in 0..10 {
+            fs::write(dir.join(format!("pad-{i}.bin")), b"x").unwrap();
+        }
+    }
+    write_sodb_header(
+        &install.join("keep").join("hit.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let found = discover_with_scan(
+        &fx.steam,
+        ScanLimits {
+            max_files: 4,
+            ..ScanLimits::default()
+        },
+    );
+    let game = found
+        .games
+        .iter()
+        .find(|g| g.identity.app_id() == AppId(100))
+        .unwrap();
+    assert_eq!(game.sodb_files.len(), 1);
+    assert!(game
+        .sodb_files
+        .iter()
+        .any(|p| p.as_path().ends_with("hit.sodb")));
+    assert!(game
+        .sodb_files
+        .iter()
+        .all(|p| !p.as_path().ends_with("hidden.sodb")));
+}
+
+#[test]
+fn explicit_sodb_dir_and_xbox_roots_are_path_free_in_json() {
+    let fx = empty_fixture();
+    let capture = fx.base.join("capture");
+    write_sodb_header(
+        &capture.join("cap.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    write_sodb_header(
+        &capture.join("not.db"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let too_deep = capture.join("a").join("b").join("c").join("d").join("e");
+    write_sodb_header(
+        &too_deep.join("too-deep.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let drive_c = fx.base.join("C");
+    let drive_d = fx.base.join("D");
+    fs::create_dir_all(drive_c.join("XboxGames").join("Title")).unwrap();
+    write_sodb_header(
+        &drive_c.join("XboxGames").join("Title").join("game.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    fs::create_dir_all(drive_d.join("XboxGames")).unwrap();
+    let found = discover_with_options(
+        None,
+        &DiscoverOptions {
+            sodb_dirs: vec![capture],
+            xbox_dirs: vec![drive_c.join("XboxGames"), drive_d.join("XboxGames")],
+            ..DiscoverOptions::default()
+        },
+    );
+    assert!(found.games.is_empty());
+    assert!(found
+        .warnings
+        .iter()
+        .all(|w| w.kind() != WarningKind::MissingSteamRoot));
+    assert_eq!(found.folder_scans.len(), 3);
+    assert_eq!(found.folder_scans[0].kind, FolderScanKind::ExplicitDir);
+    assert_eq!(found.folder_scans[0].sodb_files.len(), 1);
+    assert_eq!(found.folder_scans[1].kind, FolderScanKind::XboxGames);
+    assert_eq!(found.folder_scans[1].sodb_files.len(), 1);
+    assert_eq!(found.folder_scans[2].sodb_files.len(), 0);
+    let json = serde_json::to_string(&found.upload_safe()).unwrap();
+    assert!(json.contains("explicit_dir"));
+    assert!(json.contains("xbox_games"));
+    assert!(!json.contains(LEAK_MARKER));
+    assert!(!json.contains("capture"));
+    assert!(!json.contains("XboxGames"));
+    let rendered = format!("{found:?}");
+    assert!(!rendered.contains(LEAK_MARKER));
+    assert!(!rendered.contains("capture"));
+}
+
+#[test]
+fn default_fixed_drive_roots_do_not_probe_drive_letters() {
+    assert!(crate::default_fixed_drive_roots().is_empty());
+}
+
+#[test]
+fn xbox_dir_walks_content_folders_inside_the_depth_bound() {
+    let fx = empty_fixture();
+    let root = fx.base.join("XboxGames");
+    write_sodb_header(
+        &root.join("A").join("Content").join("game.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    write_sodb_header(
+        &root.join("B").join("Content").join("Bin").join("x.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    write_sodb_header(
+        &root.join("C").join("x.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let found = discover_with_options(
+        None,
+        &DiscoverOptions {
+            xbox_dirs: vec![root],
+            ..DiscoverOptions::default()
+        },
+    );
+    assert!(found
+        .warnings
+        .iter()
+        .all(|w| w.kind() != WarningKind::SodbScanLimited));
+    assert_eq!(found.folder_scans.len(), 1);
+    let names: Vec<_> = found.folder_scans[0]
+        .sodb_files
+        .iter()
+        .map(|p| {
+            p.as_path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+        })
+        .collect();
+    assert_eq!(names, ["game.sodb", "x.sodb", "x.sodb"]);
+}
+
+#[test]
+fn sodb_dir_counts_a_file_under_audio() {
+    let fx = empty_fixture();
+    let capture = fx.base.join("capture");
+    write_sodb_header(
+        &capture.join("Audio").join("b.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let found = discover_with_options(
+        None,
+        &DiscoverOptions {
+            sodb_dirs: vec![capture],
+            ..DiscoverOptions::default()
+        },
+    );
+    assert_eq!(found.folder_scans.len(), 1);
+    assert_eq!(found.folder_scans[0].sodb_files.len(), 1);
+    assert!(found.folder_scans[0]
+        .sodb_files
+        .iter()
+        .any(|p| p.as_path().ends_with("b.sodb")));
+}
+
+#[test]
+fn missing_sodb_dir_warns_without_a_path() {
+    let fx = empty_fixture();
+    let missing = fx.base.join("no-such-capture");
+    let file = fx.base.join("one.sodb");
+    write_sodb_header(&file, SODB_USER_VERSION, SODB_APPLICATION_ID);
+    let found = discover_with_options(
+        None,
+        &DiscoverOptions {
+            sodb_dirs: vec![missing, file],
+            ..DiscoverOptions::default()
+        },
+    );
+    let messages: Vec<_> = found.warnings.iter().map(|w| w.message()).collect();
+    assert!(messages.contains(&"--sodb-dir folder not found or not a directory"));
+    assert!(messages.contains(&"--sodb-dir must be a folder"));
+    assert!(found
+        .folder_scans
+        .iter()
+        .all(|scan| scan.sodb_files.is_empty()));
+    let rendered = format!("{found:?}");
+    assert!(!rendered.contains("no-such-capture"));
+    assert!(!rendered.contains("one.sodb"));
+    let json = serde_json::to_string(&found.upload_safe()).unwrap();
+    assert!(!json.contains("no-such-capture"));
+    assert!(!json.contains("one.sodb"));
 }

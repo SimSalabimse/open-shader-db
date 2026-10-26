@@ -476,8 +476,8 @@ interface DataBundle {
 ## Upload flow
 
 1. **User runs client:** `open-shader-db scan`
-2. **Client discovers games:** Checks known install locations (Steam, Epic, etc.)
-3. **Client reads local SODB:** Parses SQLite database, extracts description hashes
+2. **Client discovers games:** Reads a Steam library list (and, when asked, a folder the user points at). A Steam install is not expected to contain an SODB today; see [docs/SODB_SOURCES.md](docs/SODB_SOURCES.md).
+3. **Client reads a local SODB when one exists:** Parses the SQLite database, extracts description hashes. No SODB on disk is a normal Steam result, not a failed read.
 4. **Client generates proof:** Challenge-response proving exe ownership
 5. **Client shows preview:** GUI displays what will be uploaded (no personal data)
 6. **User approves:** Explicitly confirms upload
@@ -645,9 +645,9 @@ interface DataBundle {
    - Skip compilation validation, rely on consensus only
 
 3. **What can SODB consumers do with an index?** If we publish description hashes but not bytecode:
-   - Users can verify their local SODB matches community consensus
+   - Users can verify a local SODB, when they have one, against community consensus
    - Users cannot build an SODB from our data alone
-   - Games still need to ship SODBs or generate them
+   - Developers submit SODBs to the store, and the store delivers precompiled shaders to players. Steam delivery was announced as "soon", with no date, and is not available today (see [docs/SODB_SOURCES.md](docs/SODB_SOURCES.md)). Where the Xbox app leaves the file on disk is **UNVERIFIED**
    - Our value: verification, coverage reporting, trust signal
 
 ### Consensus and validation

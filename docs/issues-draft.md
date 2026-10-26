@@ -118,7 +118,7 @@ Proposed issues for the six GitHub milestones. Create them after the documentati
 
 **Milestone:** M0 Index and coverage reports
 
-**Outcome:** The client finds Steam-installed games and any local SODB files without putting install paths in uploads.
+**Outcome:** The client finds Steam-installed games and reports `.sodb` files when a scan root actually contains them, without putting install paths in uploads. A Steam install is not expected to contain those files today (store delivery was announced as "soon", with no date). See [SODB_SOURCES.md](SODB_SOURCES.md).
 
 **Depends on:** Choose client language and framework
 
@@ -126,7 +126,8 @@ Proposed issues for the six GitHub milestones. Create them after the documentati
 
 - [ ] Client locates Steam library folders
 - [ ] Client lists installed games it can see
-- [ ] Client finds SODB files when present
+- [ ] Client finds SODB files when a scanned folder actually contains them
+- [ ] A Steam library with no `.sodb` files is a normal result, reported once, not an error per game
 - [ ] Missing Steam install is handled without a crash
 - [ ] Game paths never appear in an upload payload
 

@@ -48,19 +48,57 @@ pub fn default_steam_roots() -> Vec<PathBuf> {
 /// Discover using the first existing default root, or a missing-root result.
 #[must_use]
 pub fn discover_default() -> crate::Discovery {
+    discover_default_with_options(&crate::DiscoverOptions::default())
+}
+
+/// Like [`discover_default`], plus explicit SODB folders and Xbox folders from `options`.
+#[must_use]
+pub fn discover_default_with_options(options: &crate::DiscoverOptions) -> crate::Discovery {
     for root in default_steam_roots() {
         if root.is_dir() {
-            return crate::discover(&root);
+            return crate::discover_with_options(Some(&root), options);
         }
     }
-    crate::Discovery {
-        games: Vec::new(),
-        warnings: vec![crate::Warning::new(
-            crate::WarningKind::MissingSteamRoot,
-            None,
-            "no Steam install directory was found",
-        )],
+    let mut found = crate::discover_with_options(None, options);
+    found.warnings.push(crate::Warning::new(
+        crate::WarningKind::MissingSteamRoot,
+        None,
+        "no Steam install directory was found",
+    ));
+    found.warnings.sort_by(|a, b| {
+        a.app_id()
+            .cmp(&b.app_id())
+            .then_with(|| a.kind().cmp(&b.kind()))
+            .then_with(|| a.message().cmp(b.message()))
+    });
+    found
+}
+
+/// Drive roots this crate will scan on its own.
+///
+/// Always empty. Restricting the list to fixed local drives needs
+/// `GetDriveTypeW` (`DRIVE_FIXED`). That call is not in the standard library.
+/// This crate forbids `unsafe` and does not take a new dependency for it, so
+/// it does not probe `A:\`..`Z:\`. Pass the folder with `--xbox-games <dir>`.
+#[must_use]
+pub fn default_fixed_drive_roots() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// `XboxGames` directories that exist under `drive_roots`.
+///
+/// Read-only. No registry. The on-disk layout inside those folders is
+/// **UNVERIFIED** (no public document).
+#[must_use]
+pub fn xbox_games_dirs(drive_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for root in drive_roots {
+        let candidate = root.join("XboxGames");
+        if candidate.is_dir() {
+            out.push(candidate);
+        }
     }
+    out
 }
 
 fn home_dir() -> Option<PathBuf> {
