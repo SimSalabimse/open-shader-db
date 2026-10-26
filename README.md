@@ -18,7 +18,7 @@ This project consists of:
 
 ## Why open-shader-db?
 
-Shader compilation stutter is a significant problem in modern PC gaming. Microsoft's Advanced Shader Delivery (ASD) is a storefront pipeline: a developer creates an SODB and a store compiles a PSDB for players. Today that delivery is for games played in the Xbox app on PC. Steam and Epic support was announced as "soon", with no date. A Steam install is not expected to contain `.sodb` files today (inferred from those documents; see [docs/SODB_SOURCES.md](docs/SODB_SOURCES.md)). This project reads SODB files wherever they already exist (an Xbox app install, a file a developer or tester captured, or a later store delivery) and can rebuild a local SODB from pipeline-state records plus shaders the user points at.
+Shader compilation stutter is a significant problem in modern PC gaming. Microsoft's Advanced Shader Delivery (ASD) is a storefront pipeline: a developer creates an SODB and a store compiles a PSDB for players. Today that delivery is for games played in the Xbox app on PC. Steam and Epic support was announced as "soon", with no date. Steam installs are not expected to contain `.sodb` files today (inferred, not verified; see [docs/SODB_SOURCES.md](docs/SODB_SOURCES.md)). One user capture was tested once and worked (one game, one PC, Windows 11 25H2; [docs/CAPTURE_SODB.md#tested-results](docs/CAPTURE_SODB.md#tested-results)). Microsoft's d3dconfig samples readme names Windows 11 version 24H2 or newer for that tool. This project also reads an SODB that already exists (an Xbox app install, or a later store delivery) and can rebuild a local SODB from pipeline-state records plus shaders the user points at.
 
 **open-shader-db is:**
 - **Free and open:** No paywalls, no accounts, no tracking

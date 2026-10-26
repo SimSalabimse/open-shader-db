@@ -24,7 +24,7 @@ Community GUI, Epic/GOG discovery, and similar items are [later / unscheduled](#
 
 **Goal:** Ship foundations and index-only verification so a user can compare a local SODB against a community coverage index.
 
-Steam discovery lists installed games. It does not mean those installs contain `.sodb` files. Store delivery to Steam was announced as "soon", with no date, and is not available today. `sodb_files=0` on a Steam game is the expected result (inferred; see [docs/SODB_SOURCES.md](docs/SODB_SOURCES.md)). A local SODB for coverage still has to come from somewhere the file actually exists: an Xbox app install (on-disk layout **UNVERIFIED**), a developer or tester capture, or a later store delivery.
+Steam discovery lists installed games. It does not mean those installs contain `.sodb` files. Store delivery to Steam was announced as "soon", with no date, and is not available today. Steam installs are not expected to contain `.sodb` files today (inferred, not verified; see [docs/SODB_SOURCES.md](docs/SODB_SOURCES.md)). `sodb_files=0` on a Steam game is the expected result of that reading. A local SODB for coverage still has to come from somewhere the file actually exists: an Xbox app install (on-disk layout **UNVERIFIED**), a developer or tester capture, or a later store delivery. A user capture was tested once and works (one game; see [docs/CAPTURE_SODB.md](docs/CAPTURE_SODB.md)). That is not consensus, coverage, or the same result on every machine.
 
 **Status:** 🚧 In progress (Steam discovery and coverage CLI present; no published index yet)  
 **Ships:** Yes (first release)
@@ -105,6 +105,12 @@ Steam discovery lists installed games. It does not mean those installs contain `
 **Goal:** Turn staged uploads into a published coverage index or record set using an upload threshold, proof-of-ownership checks, and a review queue.
 
 **Status:** 📋 Planned
+
+### Held
+
+M3-B (consensus crate and proof-of-ownership challenge) and M3-C (anomaly detection and the review queue) are still held, pending an overlap check.
+
+One user-captured SODB was tested once and works. The next question is whether two captures of the same game build yield overlapping pipeline hashes. That overlap is needed before consensus can ever reach its threshold. Also open: whether captures from different GPUs or drivers agree. The one test shows neither. See [docs/CAPTURE_SODB.md](docs/CAPTURE_SODB.md).
 
 ### Deliverables
 

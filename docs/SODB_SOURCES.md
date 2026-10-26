@@ -1,8 +1,8 @@
 # Where do SODB files come from?
 
-An SODB (State Object Database) is a developer artifact. A storefront that integrates Advanced Shader Delivery takes that file, compiles it in the cloud into a PSDB (Precompiled Shader Database), and delivers the PSDB to players. This page records what public documents say. It does not add facts beyond those documents.
+An SODB (State Object Database) is a developer artifact. A storefront that integrates Advanced Shader Delivery takes that file, compiles it in the cloud into a PSDB (Precompiled Shader Database), and delivers the PSDB to players. This page records what public documents say. It does not add facts beyond those documents, except one local measurement labelled below.
 
-Labels: **verified** means the cited page says it. **Inferred** means a conclusion drawn from those pages, not a separate measurement. **UNVERIFIED** means no public document was found.
+Labels: **verified** means the cited page says it. **Inferred** means a conclusion drawn from those pages, not a separate measurement. **UNVERIFIED** means no public document was found. **Tested once** means one local run. It is not a document claim and it is not a result on every machine.
 
 ## What the documents say
 
@@ -18,7 +18,9 @@ Labels: **verified** means the cited page says it. **Inferred** means a conclusi
 - Steam delivery is not available today. It was announced as "soon", with no date. **Verified** from the 2026-10-21 post above; the lack of a date is part of that post.
 - **Inferred:** a normal Steam install has no `.sodb` file today, unless a developer shipped one inside the depot or someone captured one with `d3dconfig`. No public evidence was found that Steam depots ship `.sodb` files (**UNVERIFIED** either way). A read-only check of one Windows PC (about 30 Steam apps across 3 libraries) reported `sodb_files=0` for every game, which matches this reading. Raising the scan limit would not create a file the store never delivered.
 - This project reads SODB files wherever they already exist: an Xbox app install, if the file is on disk; a file a developer or tester captured with `d3dconfig`; or a later store delivery. The scan does not download files and does not attach to a game.
+- **Tested once, works:** on 2026-10-26, one PC running Windows 11 version 25H2 (build 26200) captured one single-player D3D12 game with no anti-cheat (Satisfactory, Unreal Engine 5, installed from the Epic Games Store). `d3dconfig.exe` version 10.0.26100.8521 was already in the Windows System32 folder. `checkpoint-db` was not run. `osdb-cli` read the file: `discover --sodb-dir` printed `sodb_files=1`, `records extract` ended without error and reported `skipped 1 root signature`, and `upload prepare` printed a preview and sent nothing. Counts are in [CAPTURE_SODB.md](CAPTURE_SODB.md). This measurement does not prove consensus, coverage, or the same hashes on another machine. Steam installs are not expected to contain `.sodb` files today (inferred, not verified; see the bullet above).
 - **UNVERIFIED:** where the Xbox app leaves SODB files on disk. No public document describes that layout. `discover --xbox-games` scans only a folder you pass. It does not probe drive letters, because telling a fixed drive from another volume needs a Windows API this project does not call. A directory name is not a confirmed SODB location.
+- **UNVERIFIED:** other landing places for a capture, other games, a Steam-installed game, a second capture of the same build, and a different GPU or driver.
 
 ## Safeguards
 
