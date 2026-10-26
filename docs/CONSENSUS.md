@@ -33,10 +33,12 @@ to the same canonical bytes. The manifest `build_id` must equal the
 directory (`game_id`, `version`, `exe_hash`). Identical canonical bytes
 appear once. Loaded objects are sorted by that hash.
 
-`list_builds` returns directory names that pass those rules. It does not
-open files. `load_build` reads one build. A missing build directory is an
-empty report. The functions do not create, rename, or delete anything
-under the root.
+`list_builds` returns build entries that pass those rules and are real
+directories. It does not open files. A symlink or a plain file with a
+build-shaped name is counted toward the entry cap and is not listed.
+`load_build` reads one build. A missing build directory is an empty
+report. The functions do not create, rename, or delete anything under
+the root.
 
 ## Walk bounds
 
@@ -58,16 +60,20 @@ entry cap. The library does not raise it on its own.
 
 Symlinks are not followed. A symlink at the root, the game component, or
 the build component is an error for `load_build` (an empty report would
-hide it). `list_builds` skips symlink entries. Unix opens use
-`O_NOFOLLOW`, `O_NONBLOCK`, and `O_NOCTTY`, then require a regular file
-on the handle, same idea as `osdb-coverage` and `osdb-records`. A FIFO
-must not block the process.
+hide it). `list_builds` counts a symlink or a plain file at build level
+and does not list it. Unix opens use `O_NOFOLLOW`, `O_NONBLOCK`, and
+`O_NOCTTY`, then require a regular file on the handle, same idea as
+`osdb-coverage` and `osdb-records`. A FIFO must not block the process.
+On targets without `O_NOFOLLOW`, a symlink can replace the path after the
+metadata check. The opened handle is still required to be a regular file,
+and the file name must equal the SHA-256 of the bytes that were read.
 
 Check order for one build-directory entry: symlink, non-regular file,
 bad file name, too large, over the file cap, then open and capped read,
 content hash, parse, canonical bytes, build id. The first match is the
-only reason counted. Reasons are counts. Paths and file bytes are not
-returned.
+only reason counted. A per-file I/O error is `io` and the rest of the
+build is still loaded. Directory-level failures stay errors. Reasons are
+counts. Paths and file bytes are not returned.
 
 | Reason | When |
 | --- | --- |
@@ -80,6 +86,7 @@ returned.
 | `build_id_mismatch` | Canonical manifest names a different build than the directory |
 | `too_large` | Larger than `max_file_bytes` |
 | `over_file_cap` | Past `max_files_per_build` after sorting names |
+| `io` | Opening or reading that file failed. Other files in the build are still loaded |
 
 `StagingRoot`'s `Debug` text is `<redacted>`. Error text does not include
 a path or a file body.
@@ -109,8 +116,15 @@ bytecode and descriptor tallies. An empty version 2 list is different:
 the upload carries the unit and raises the denominator without adding
 hashes.
 
-Each counted upload adds a hash at most once. Manifest lists are already
-unique.
+Each counted upload adds a hash at most once, because
+`osdb_upload::HashSet` is sorted and unique.
+
+`build_consensus` also collapses the input by object hash before any
+tally. The same canonical object passed several times is one upload, so
+it cannot meet `min_uploads` on its own. The same object hash on both
+`WorkerStaging` and `ReviewedPullRequest` is still one upload. A copy
+that is counted is kept; held copies of that hash are not also returned.
+`upload_count` is the number of distinct object hashes.
 
 ## Threshold
 
@@ -126,7 +140,7 @@ different build is held with `build_id_mismatch` and is not tallied.
 
 The library uses the threshold it is given. It does not lower either
 number when few uploads were counted. One upload cannot meet the default
-bar of 3.
+bar of 3, and repeating that upload does not change the count.
 
 A hash is accepted only when both of these hold, in integer arithmetic:
 

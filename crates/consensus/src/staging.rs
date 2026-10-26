@@ -144,6 +144,8 @@ pub enum SkipReason {
     TooLarge,
     /// Past [`LoadLimits::max_files_per_build`] after sorting names. Not opened.
     OverFileCap,
+    /// Opening or reading this file failed. Other files in the build are still loaded.
+    Io,
 }
 
 impl SkipReason {
@@ -160,6 +162,7 @@ impl SkipReason {
             Self::BuildIdMismatch => "build_id_mismatch",
             Self::TooLarge => "too_large",
             Self::OverFileCap => "over_file_cap",
+            Self::Io => "io",
         }
     }
 }
@@ -208,6 +211,9 @@ pub struct LoadReport {
 /// symlink, non-regular file, bad name, too large, over the file cap,
 /// then open (regular file, capped read), content hash, parse, canonical
 /// bytes, build id. The first matching reason is the one counted.
+/// A per-file I/O error is [`SkipReason::Io`]. Directory-level failures
+/// (the root, the game component, the build component, and `read_dir`)
+/// stay errors.
 pub fn load_build(
     root: &StagingRoot,
     build: &BuildId,
@@ -245,8 +251,7 @@ pub fn load_build(
             Ok(upload) => {
                 loaded.entry(upload.object_sha256).or_insert(upload);
             }
-            Err(CandidateFail::Skip(reason)) => bump(&mut report.skipped, reason),
-            Err(CandidateFail::Fatal(err)) => return Err(err),
+            Err(reason) => bump(&mut report.skipped, reason),
         }
     }
     report.loaded = loaded.into_values().collect();
@@ -256,9 +261,10 @@ pub fn load_build(
 /// List build directories under `root`.
 ///
 /// A directory is listed when its game component and its `version--exe_hash`
-/// component both match the worker key rules. Files are not opened. Symlinks
-/// are not followed and are not listed. Hostile names are ignored. The result
-/// is sorted and deduplicated.
+/// component both match the worker key rules and the build entry is a real
+/// directory. Files are not opened. A symlink or a plain file with a
+/// build-shaped name is counted toward the entry cap and is not listed.
+/// Hostile names are ignored. The result is sorted and deduplicated.
 ///
 /// `max_entries_scanned` counts every name at game level and build level.
 /// Names inside a build directory are not visited (`WALK_DEPTH`).
@@ -287,7 +293,10 @@ pub fn list_builds(root: &StagingRoot, limits: LoadLimits) -> Result<Vec<BuildId
                 continue;
             };
             if let Some(build) = build_from_components(game, build_name) {
-                builds.push(build);
+                let build_path = game_path.join(build_name);
+                if matches!(directory_component(&build_path)?, DirState::Dir) {
+                    builds.push(build);
+                }
             }
         }
     }
@@ -406,60 +415,55 @@ fn classify_cheap(dir: &Path, name: &std::ffi::OsString, max_file_bytes: u64) ->
     Cheap::Candidate(hash, path)
 }
 
-enum CandidateFail {
-    Skip(SkipReason),
-    Fatal(Error),
-}
-
 fn load_candidate(
     path: &Path,
     name_hash: Sha256Hex,
     build: &BuildId,
     via: IngestPath,
     limits: LoadLimits,
-) -> Result<StagedUpload, CandidateFail> {
+) -> Result<StagedUpload, SkipReason> {
     // Stat again so a swap to a symlink or fifo is not opened as a normal file.
-    let meta = std::fs::symlink_metadata(path).map_err(|_| CandidateFail::Fatal(Error::Io))?;
+    let meta = std::fs::symlink_metadata(path).map_err(|_| SkipReason::Io)?;
     if meta.file_type().is_symlink() {
-        return Err(CandidateFail::Skip(SkipReason::Symlink));
+        return Err(SkipReason::Symlink);
     }
     if !meta.file_type().is_file() {
-        return Err(CandidateFail::Skip(SkipReason::NotRegularFile));
+        return Err(SkipReason::NotRegularFile);
     }
     if meta.len() > limits.max_file_bytes {
-        return Err(CandidateFail::Skip(SkipReason::TooLarge));
+        return Err(SkipReason::TooLarge);
     }
     let mut file = match open_regular_nonblocking(path) {
         Ok(file) => file,
         // `O_NOFOLLOW` reports a raced symlink as `ELOOP` on Unix. Other
         // targets refuse symlinks with the `symlink_metadata` check above.
         #[cfg(unix)]
-        Err(OpenFail::Symlink) => return Err(CandidateFail::Skip(SkipReason::Symlink)),
-        Err(OpenFail::NotRegular) => return Err(CandidateFail::Skip(SkipReason::NotRegularFile)),
-        Err(OpenFail::Io) => return Err(CandidateFail::Fatal(Error::Io)),
+        Err(OpenFail::Symlink) => return Err(SkipReason::Symlink),
+        Err(OpenFail::NotRegular) => return Err(SkipReason::NotRegularFile),
+        Err(OpenFail::Io) => return Err(SkipReason::Io),
     };
     let bytes = match read_capped(&mut file, limits.max_file_bytes) {
         Ok(bytes) => bytes,
-        Err(ReadFail::TooLarge) => return Err(CandidateFail::Skip(SkipReason::TooLarge)),
-        Err(ReadFail::Io) => return Err(CandidateFail::Fatal(Error::Io)),
+        Err(ReadFail::TooLarge) => return Err(SkipReason::TooLarge),
+        Err(ReadFail::Io) => return Err(SkipReason::Io),
     };
     let digest = sha256_of(&bytes);
     if digest != name_hash {
-        return Err(CandidateFail::Skip(SkipReason::NameHashMismatch));
+        return Err(SkipReason::NameHashMismatch);
     }
     let manifest = match parse_with_limits(&bytes, limits.manifest) {
         Ok(manifest) => manifest,
-        Err(err) => return Err(CandidateFail::Skip(SkipReason::Parse(err.code()))),
+        Err(err) => return Err(SkipReason::Parse(err.code())),
     };
     let canonical = match manifest.to_canonical_bytes_with_limits(limits.manifest) {
         Ok(canonical) => canonical,
-        Err(err) => return Err(CandidateFail::Skip(SkipReason::Parse(err.code()))),
+        Err(err) => return Err(SkipReason::Parse(err.code())),
     };
     if canonical != bytes {
-        return Err(CandidateFail::Skip(SkipReason::NotCanonical));
+        return Err(SkipReason::NotCanonical);
     }
     if manifest.build_id != *build {
-        return Err(CandidateFail::Skip(SkipReason::BuildIdMismatch));
+        return Err(SkipReason::BuildIdMismatch);
     }
     Ok(StagedUpload {
         object_sha256: digest,
@@ -500,6 +504,10 @@ fn open_file(path: &Path) -> Result<File, OpenFail> {
     }
     #[cfg(not(unix))]
     {
+        // No `O_NOFOLLOW` on this target. A symlink can replace the path
+        // between the `symlink_metadata` check and `File::open`. The opened
+        // handle is then required to be a regular file, and the file name
+        // must equal the SHA-256 of the bytes that were read.
         File::open(path).map_err(|_| OpenFail::Io)
     }
 }

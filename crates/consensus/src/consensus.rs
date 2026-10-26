@@ -89,13 +89,15 @@ pub struct HashTally {
 /// Deterministic consensus for one build.
 ///
 /// Rejected hashes are counts per unit. The hashes themselves are not stored.
+/// Repeated [`crate::StagedUpload::object_sha256`] values are one upload, so
+/// `upload_count` is the number of distinct object hashes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsensusResult {
     /// The build the caller asked about.
     pub build: BuildId,
-    /// Uploads in the input slice, saturating at `u32::MAX`.
+    /// Distinct object hashes in the input, saturating at `u32::MAX`.
     pub upload_count: u32,
-    /// Uploads that entered a tally. Held uploads are not included.
+    /// Distinct uploads that entered a tally. Held uploads are not included.
     pub counted_uploads: u32,
     /// Hashes that met the threshold. Sorted by unit, then hash.
     pub accepted: Vec<HashTally>,
@@ -111,6 +113,10 @@ pub struct ConsensusResult {
 /// result does not depend on slice order. An upload whose manifest names a
 /// different build is held with [`HoldReason::BuildMismatch`].
 ///
+/// The same `object_sha256` is one upload no matter how many times it appears,
+/// including once on each [`IngestPath`]. A copy that is counted wins over a
+/// held copy of that hash. One object cannot meet `min_uploads` by itself.
+///
 /// The threshold is not reduced when `counted_uploads` is small.
 #[must_use]
 pub fn build_consensus(
@@ -119,24 +125,17 @@ pub fn build_consensus(
     threshold: AgreementThreshold,
     policy: CountingPolicy,
 ) -> ConsensusResult {
+    let unique = unique_uploads(build, uploads, policy);
     let mut held = Vec::new();
     let mut counted: Vec<&StagedUpload> = Vec::new();
-    for upload in uploads {
-        if upload.manifest.build_id != *build {
-            held.push(HeldUpload {
-                object_sha256: upload.object_sha256,
-                reason: HoldReason::BuildMismatch,
-            });
-            continue;
-        }
-        if let Some(reason) = hold_reason(upload, policy) {
-            held.push(HeldUpload {
+    for upload in unique {
+        match disposition(upload, build, policy) {
+            Disposition::Hold(reason) => held.push(HeldUpload {
                 object_sha256: upload.object_sha256,
                 reason,
-            });
-            continue;
+            }),
+            Disposition::Count => counted.push(upload),
         }
-        counted.push(upload);
     }
     held.sort_by(|left, right| {
         left.object_sha256
@@ -169,11 +168,80 @@ pub fn build_consensus(
 
     ConsensusResult {
         build: build.clone(),
-        upload_count: saturate_u32(uploads.len()),
+        upload_count: saturate_u32(counted.len().saturating_add(held.len())),
         counted_uploads: saturate_u32(counted.len()),
         accepted,
         rejected_counts,
         held,
+    }
+}
+
+enum Disposition {
+    Count,
+    Hold(HoldReason),
+}
+
+fn disposition(upload: &StagedUpload, build: &BuildId, policy: CountingPolicy) -> Disposition {
+    if upload.manifest.build_id != *build {
+        return Disposition::Hold(HoldReason::BuildMismatch);
+    }
+    match hold_reason(upload, policy) {
+        Some(reason) => Disposition::Hold(reason),
+        None => Disposition::Count,
+    }
+}
+
+/// One row per object hash. A counted copy is kept when any copy is counted.
+/// Ties break by hold reason, then ingest path, then canonical bytes, so the
+/// slice order does not matter.
+fn unique_uploads<'a>(
+    build: &BuildId,
+    uploads: &'a [StagedUpload],
+    policy: CountingPolicy,
+) -> Vec<&'a StagedUpload> {
+    let mut chosen: BTreeMap<Sha256Hex, &'a StagedUpload> = BTreeMap::new();
+    for upload in uploads {
+        let replace = match chosen.get(&upload.object_sha256) {
+            Some(incumbent) => replaces(upload, incumbent, build, policy),
+            None => true,
+        };
+        if replace {
+            chosen.insert(upload.object_sha256, upload);
+        }
+    }
+    chosen.into_values().collect()
+}
+
+fn replaces(
+    candidate: &StagedUpload,
+    incumbent: &StagedUpload,
+    build: &BuildId,
+    policy: CountingPolicy,
+) -> bool {
+    match (
+        disposition(candidate, build, policy),
+        disposition(incumbent, build, policy),
+    ) {
+        (Disposition::Count, Disposition::Hold(_)) => true,
+        (Disposition::Hold(_), Disposition::Count) => false,
+        (Disposition::Hold(left), Disposition::Hold(right)) if left != right => left < right,
+        _ => {
+            if candidate.via != incumbent.via {
+                return candidate.via < incumbent.via;
+            }
+            encoded_less(candidate, incumbent)
+        }
+    }
+}
+
+fn encoded_less(candidate: &StagedUpload, incumbent: &StagedUpload) -> bool {
+    match (
+        candidate.manifest.to_canonical_bytes(),
+        incumbent.manifest.to_canonical_bytes(),
+    ) {
+        (Ok(left), Ok(right)) => left < right,
+        (Ok(_), Err(_)) => true,
+        _ => false,
     }
 }
 
@@ -222,7 +290,8 @@ impl UnitAccumulator {
         }
     }
 
-    /// One counted upload that carries this unit. Each hash is added once.
+    /// One counted upload that carries this unit. Each hash is once per
+    /// upload because [`osdb_upload::HashSet`] is sorted and unique.
     fn observe(&mut self, hashes: &[Sha256Hex]) {
         self.denominator = self.denominator.saturating_add(1);
         for hash in hashes {

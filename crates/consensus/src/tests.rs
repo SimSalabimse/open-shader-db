@@ -1202,6 +1202,136 @@ fn empty_input_keeps_the_requested_build() {
 }
 
 #[test]
+fn repeated_object_hash_counts_once() {
+    let build_id = build("synthetic", "1", 31);
+    let pipe = h(0x91);
+    let reviewed = staged(
+        &build_id,
+        "0.1.0",
+        1,
+        Some(&[pipe]),
+        &[h(0x92)],
+        &[h(0x93)],
+        OwnershipProof::unchallenged(),
+    );
+    let tripled = [reviewed.clone(), reviewed.clone(), reviewed.clone()];
+    let result = build_consensus(
+        &build_id,
+        &tripled,
+        AgreementThreshold::default(),
+        CountingPolicy::default(),
+    );
+    assert_eq!(result.upload_count, 1);
+    assert_eq!(result.counted_uploads, 1);
+    assert!(result.held.is_empty());
+    assert!(result.accepted.is_empty());
+    assert_eq!(
+        result.rejected_counts.get(&AgreementUnit::PipelineHash),
+        Some(&1)
+    );
+
+    let worker = with_via(reviewed.clone(), IngestPath::WorkerStaging);
+    let forward = build_consensus(
+        &build_id,
+        &[worker.clone(), reviewed.clone()],
+        AgreementThreshold::new(1, 1000).unwrap(),
+        CountingPolicy::default(),
+    );
+    let backward = build_consensus(
+        &build_id,
+        &[reviewed, worker],
+        AgreementThreshold::new(1, 1000).unwrap(),
+        CountingPolicy::default(),
+    );
+    assert_eq!(forward, backward);
+    assert_eq!(forward.upload_count, 1);
+    assert_eq!(forward.counted_uploads, 1);
+    assert!(forward.held.is_empty());
+    let tally = forward
+        .accepted
+        .iter()
+        .find(|tally| tally.unit == AgreementUnit::PipelineHash)
+        .unwrap();
+    assert_eq!(tally.hash, pipe);
+    assert_eq!(tally.uploads, 1);
+}
+
+#[test]
+fn list_builds_counts_files_and_symlinks_but_does_not_list_them() {
+    let temp = Temp::new("list-kinds");
+    let real = build("synthetic", "1.0.0", 32);
+    build_dir(temp.path(), &real);
+    let game = temp.path().join(real.game_id.as_str());
+    let exe = real.exe_hash.to_hex();
+    std::fs::write(game.join(format!("9.9.9--{exe}")), b"not-a-directory").unwrap();
+    #[cfg(unix)]
+    let non_dirs = {
+        let real_name = format!("{}--{exe}", real.version.as_str());
+        std::os::unix::fs::symlink(game.join(&real_name), game.join(format!("8.8.8--{exe}")))
+            .unwrap();
+        2_u64
+    };
+    #[cfg(not(unix))]
+    let non_dirs = 1_u64;
+    let root = StagingRoot::new(temp.path());
+    // One game name plus the real build directory plus the non-directories.
+    let names = 2 + non_dirs;
+    let err = list_builds(&root, limits(64, 1024, names - 1)).unwrap_err();
+    assert_eq!(err, Error::TooManyEntries { max: names - 1 });
+    let listed = list_builds(&root, limits(64, 1024, names)).unwrap();
+    assert_eq!(listed, vec![real]);
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_file_is_a_skip_and_the_valid_manifest_loads() {
+    let temp = Temp::new("mode0");
+    let build_id = build("synthetic", "1", 33);
+    let dir = build_dir(temp.path(), &build_id);
+    let manifest = manifest_for(
+        &build_id,
+        "0.1.0",
+        1,
+        Some(&[h(1)]),
+        &[],
+        &[],
+        OwnershipProof::unchallenged(),
+    );
+    let good = write_manifest(&dir, &manifest);
+    let blocked = write_named(&dir, &format!("{}.json", h(0x44).to_hex()), b"blocked");
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o644));
+        }
+    }
+    let restore = Restore(blocked.clone());
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&blocked).unwrap().permissions();
+        perms.set_mode(0o0);
+        std::fs::set_permissions(&blocked, perms).unwrap();
+    }
+    if std::fs::File::open(&blocked).is_ok() {
+        drop(restore);
+        return;
+    }
+    let root = StagingRoot::new(temp.path());
+    let report = load_build(
+        &root,
+        &build_id,
+        IngestPath::ReviewedPullRequest,
+        limits(8, 1_000_000, 8),
+    )
+    .unwrap();
+    assert_eq!(report.loaded.len(), 1);
+    assert_eq!(report.loaded[0].object_sha256, good);
+    assert_eq!(skipped(&report, SkipReason::Io), 1);
+    drop(restore);
+}
+
+#[test]
 fn ratio_math_does_not_wrap_u32() {
     let full = AgreementThreshold::new(1, 1000).unwrap();
     assert!(threshold::hash_accepted(u32::MAX, u32::MAX, full));
@@ -1217,6 +1347,15 @@ fn ratio_math_does_not_wrap_u32() {
     let just_under = AgreementThreshold::new(1, 501).unwrap();
     assert!(!threshold::hash_accepted(1, 2, just_under));
     assert!(!threshold::hash_accepted(5, 0, full));
+}
+
+#[test]
+fn ratio_500_rejects_999_of_1999_and_accepts_1000() {
+    let ratio = AgreementThreshold::new(1, 500).unwrap();
+    // 999 * 1000 = 999_000 and 500 * 1999 = 999_500. Replacing 1000 with 1001
+    // would accept 999 of 1999 (999 * 1001 = 999_999).
+    assert!(!threshold::hash_accepted(999, 1999, ratio));
+    assert!(threshold::hash_accepted(1000, 1999, ratio));
 }
 
 #[test]
