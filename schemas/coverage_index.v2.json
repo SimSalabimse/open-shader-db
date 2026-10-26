@@ -1,0 +1,70 @@
+{
+  "$id": "https://github.com/SimSalabimse/open-shader-db/schemas/coverage_index.v2.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Coverage index format_version 2. hashes are pipeline content hashes (64 lowercase hex), sorted unique. Unsigned local staging, not a release. No per-upload hashes and no paths.",
+  "properties": {
+    "build_id": {
+      "additionalProperties": false,
+      "properties": {
+        "exe_hash": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "game_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^(?!\\.\\.?$)[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^(?!\\.\\.?$)[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$",
+          "type": "string"
+        }
+      },
+      "required": ["exe_hash", "game_id", "version"],
+      "type": "object"
+    },
+    "consensus_count": { "minimum": 0, "type": "integer" },
+    "format_version": { "const": 2, "type": "integer" },
+    "generated_at": {
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "type": "string"
+    },
+    "hashes": {
+      "items": {
+        "maxLength": 64,
+        "minLength": 64,
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "rejected_count": { "minimum": 0, "type": "integer" },
+    "threshold": {
+      "additionalProperties": false,
+      "properties": {
+        "min_ratio_per_mille": { "maximum": 1000, "minimum": 0, "type": "integer" },
+        "min_uploads": { "minimum": 1, "type": "integer" }
+      },
+      "required": ["min_ratio_per_mille", "min_uploads"],
+      "type": "object"
+    },
+    "upload_count": { "minimum": 0, "type": "integer" }
+  },
+  "required": [
+    "build_id",
+    "consensus_count",
+    "format_version",
+    "generated_at",
+    "hashes",
+    "rejected_count",
+    "threshold",
+    "upload_count"
+  ],
+  "type": "object"
+}

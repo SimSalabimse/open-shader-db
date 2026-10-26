@@ -274,6 +274,7 @@ name = "osdb-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "osdb-consensus",
  "osdb-coverage",
  "osdb-rebuild",
  "osdb-records",
@@ -283,6 +284,7 @@ dependencies = [
  "rusqlite",
  "same-file",
  "serde_json",
+ "sha2",
  "sodb",
 ]
 
@@ -291,7 +293,11 @@ name = "osdb-consensus"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "osdb-coverage",
+ "osdb-records",
  "osdb-upload",
+ "same-file",
+ "serde_json",
  "sha2",
  "thiserror",
 ]

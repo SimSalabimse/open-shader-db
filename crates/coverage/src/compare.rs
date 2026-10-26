@@ -3,10 +3,11 @@
 //! Compare local SODB description hashes to a coverage index.
 
 use crate::hash::DescriptionHash;
-use crate::index::{CoverageIndex, UNSIGNED_INDEX_NOTE};
+use crate::index::{CoverageIndex, FORMAT_VERSION, UNSIGNED_INDEX_NOTE};
 use crate::report::{
     CoverageReport, MatchRate, BUILD_IDENTITY_NOT_COMPARED, BUILD_IDENTITY_REASON,
 };
+use crate::Error;
 
 /// Unique, sorted description hashes from a parsed SODB.
 #[must_use]
@@ -36,19 +37,32 @@ pub(crate) fn unique_sorted(mut hashes: Vec<DescriptionHash>) -> Vec<Description
 /// `max_unmatched` caps [`CoverageReport::unmatched_hashes`]. The omitted count
 /// is always recorded. Build ids are not compared: an SODB has no build
 /// identifier yet.
-#[must_use]
+///
+/// Format version 2 stores pipeline content hashes, not SODB description
+/// hashes. Comparing those lists would report a false miss, so this function
+/// refuses version 2.
 pub fn compare(
     local: &sodb::SodbSummary,
     index: &CoverageIndex,
     max_unmatched: usize,
-) -> CoverageReport {
+) -> Result<CoverageReport, Error> {
     let local_hashes = local_description_hashes(local);
     compare_hashes(&local_hashes, index, max_unmatched)
 }
 
 /// Compare already-extracted local hashes to an index.
-#[must_use]
 pub fn compare_hashes(
+    local_hashes: &[DescriptionHash],
+    index: &CoverageIndex,
+    max_unmatched: usize,
+) -> Result<CoverageReport, Error> {
+    if index.format_version != FORMAT_VERSION {
+        return Err(Error::NotADescriptionIndex);
+    }
+    Ok(compare_hashes_v1(local_hashes, index, max_unmatched))
+}
+
+fn compare_hashes_v1(
     local_hashes: &[DescriptionHash],
     index: &CoverageIndex,
     max_unmatched: usize,

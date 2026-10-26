@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-//! Thin CLI: inspect, discover, coverage, records, local shader scan, rebuild, and upload preview.
+//! Thin CLI: inspect, discover, coverage, records, local shader scan, rebuild,
+//! upload preview, and offline consensus staging.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
@@ -16,6 +17,7 @@ use osdb_steam::{
     Discovery, FolderScanKind, WarningKind,
 };
 
+mod consensus_cmd;
 mod output;
 
 const DEFAULT_MAX_UNMATCHED: usize = 100;
@@ -119,6 +121,11 @@ enum Command {
         /// Cap on the rebuilt file in bytes (default 8 GiB, hard maximum 8 GiB).
         #[arg(long, default_value_t = osdb_rebuild::DEFAULT_MAX_OUTPUT_BYTES)]
         max_output_bytes: u64,
+    },
+    /// Tally a local staging tree. Offline. Nothing is uploaded or signed.
+    Consensus {
+        #[command(subcommand)]
+        command: ConsensusCommand,
     },
 }
 
@@ -231,8 +238,63 @@ impl fmt::Debug for Cli {
                     .field("allow_oversize", allow_oversize)
                     .finish(),
             },
+            Command::Consensus { command } => match command {
+                ConsensusCommand::Build {
+                    shared,
+                    out: _,
+                    records: _,
+                } => f
+                    .debug_struct("ConsensusBuild")
+                    .field("staging", &"<redacted>")
+                    .field("game_id", &shared.game_id)
+                    .field("version", &shared.version)
+                    .field("exe_hash", &shared.exe_hash)
+                    .field("min_uploads", &shared.min_uploads)
+                    .field("min_ratio_per_mille", &shared.min_ratio_per_mille)
+                    .field("out", &"<redacted>")
+                    .field("records", &"<redacted>")
+                    .field("count_worker_exe_binding", &shared.count_worker_exe_binding)
+                    .field("ingest_path", &shared.ingest_path)
+                    .finish(),
+                ConsensusCommand::Report { shared } => f
+                    .debug_struct("ConsensusReport")
+                    .field("staging", &"<redacted>")
+                    .field("game_id", &shared.game_id)
+                    .field("version", &shared.version)
+                    .field("exe_hash", &shared.exe_hash)
+                    .field("min_uploads", &shared.min_uploads)
+                    .field("min_ratio_per_mille", &shared.min_ratio_per_mille)
+                    .field("count_worker_exe_binding", &shared.count_worker_exe_binding)
+                    .field("ingest_path", &shared.ingest_path)
+                    .finish(),
+            },
         }
     }
+}
+
+#[derive(Subcommand)]
+enum ConsensusCommand {
+    /// Write unsigned staging files when pipeline hashes meet the threshold.
+    ///
+    /// The threshold is not lowered when few uploads were counted. Worker
+    /// `exe_binding_v1` uploads are held unless `--count-worker-exe-binding`
+    /// is set. That flag does not verify a binding and does not show that
+    /// uploaders are different people or machines.
+    Build {
+        #[command(flatten)]
+        shared: consensus_cmd::SharedArgs,
+        /// Directory for unsigned staging output. Not a release.
+        #[arg(long)]
+        out: PathBuf,
+        /// Record file. Only records whose pipeline hash reached consensus are written.
+        #[arg(long)]
+        records: Option<PathBuf>,
+    },
+    /// Print consensus counts. Writes nothing.
+    Report {
+        #[command(flatten)]
+        shared: consensus_cmd::SharedArgs,
+    },
 }
 
 #[derive(Subcommand)]
@@ -406,7 +468,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let summary = sodb::open(&sodb)?;
             let coverage = osdb_coverage::load(&index)?;
-            let report = osdb_coverage::compare(&summary, &coverage, max_unmatched);
+            let report = osdb_coverage::compare(&summary, &coverage, max_unmatched)?;
             let mut out = std::io::stdout().lock();
             if json {
                 serde_json::to_writer_pretty(&mut out, &report)?;
@@ -545,6 +607,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 eprint!("{}", report.format_human());
             }
         }
+        Command::Consensus { command } => consensus_cmd::run(command)?,
     }
     Ok(())
 }
@@ -768,5 +831,31 @@ mod tests {
         assert!(!text.contains("os-user"));
         assert!(text.contains("synthetic"));
         assert!(text.contains("yes_i_reviewed: true"));
+
+        let consensus = Cli {
+            command: Command::Consensus {
+                command: ConsensusCommand::Build {
+                    shared: consensus_cmd::SharedArgs {
+                        staging: PathBuf::from("/home/os-user/staging"),
+                        game_id: String::from("synthetic"),
+                        version: String::from("1.0.0"),
+                        exe_hash: String::from(
+                            "1111111111111111111111111111111111111111111111111111111111111111",
+                        ),
+                        min_uploads: 3,
+                        min_ratio_per_mille: 500,
+                        count_worker_exe_binding: false,
+                        ingest_path: consensus_cmd::IngestArg::ReviewedPr,
+                    },
+                    out: PathBuf::from("/tmp/os-user-publish"),
+                    records: Some(PathBuf::from("/home/os-user/records.json")),
+                },
+            },
+        };
+        let text = format!("{consensus:?}");
+        assert!(text.contains("<redacted>"));
+        assert!(!text.contains("os-user"));
+        assert!(text.contains("synthetic"));
+        assert!(text.contains("min_uploads: 3"));
     }
 }

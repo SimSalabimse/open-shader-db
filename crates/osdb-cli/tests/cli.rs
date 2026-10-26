@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
+use sha2::Digest;
 use sodb::{SODB_APPLICATION_ID, SODB_USER_VERSION};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -48,6 +49,7 @@ fn help_lists_inspect_discover_coverage_records_shaders_rebuild() {
     assert!(stdout.contains("shaders"));
     assert!(stdout.contains("rebuild"));
     assert!(stdout.contains("upload"));
+    assert!(stdout.contains("consensus"));
 }
 
 #[test]
@@ -1356,4 +1358,207 @@ fn upload_prepare_refuses_symlink_out() {
     let _ = std::fs::remove_file(&link);
     assert!(!out.status.success());
     assert_eq!(std::fs::read(&target.path).unwrap(), b"keep");
+}
+
+const EXE_ONES: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const PATH_CANARY: &str = "CANARYPATH9f3a";
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(label: &str) -> Self {
+        let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "osdb-cli-{PATH_CANARY}-{label}-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self { path }
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn hash_set(items: &[osdb_upload::Sha256Hex]) -> osdb_upload::HashSet {
+    let mut owned = items.to_vec();
+    owned.sort();
+    owned.dedup();
+    osdb_upload::HashSet::from_sorted_unique(owned, 100).unwrap()
+}
+
+fn synthetic_manifest(
+    hour: u8,
+    pipelines: &[osdb_upload::Sha256Hex],
+) -> osdb_upload::UploadManifest {
+    let build = osdb_upload::BuildId::new(
+        osdb_upload::GameId::parse("synthetic").unwrap(),
+        osdb_upload::GameVersion::parse("1.0.0").unwrap(),
+        osdb_upload::ExeHash::parse(EXE_ONES).unwrap(),
+    );
+    osdb_upload::UploadManifest {
+        schema_version: 2,
+        build_id: build,
+        client_version: osdb_upload::ClientVersion::parse("0.1.0").unwrap(),
+        collected_hour: osdb_upload::UtcHour::from_ymd_h(2026, 10, 26, hour).unwrap(),
+        description_hashes: hash_set(&[osdb_upload::Sha256Hex::from_bytes([0x22; 32])]),
+        bytecode_hashes: hash_set(&[osdb_upload::Sha256Hex::from_bytes([0x33; 32])]),
+        ownership: osdb_upload::OwnershipProof::unchallenged(),
+        pipeline_hashes: Some(hash_set(pipelines)),
+    }
+}
+
+fn write_staging(root: &Path, manifests: &[osdb_upload::UploadManifest]) -> Vec<String> {
+    let dir = root.join("synthetic").join(format!("1.0.0--{EXE_ONES}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut names = Vec::new();
+    for manifest in manifests {
+        let bytes = manifest.to_canonical_bytes().unwrap();
+        let digest = sha2::Sha256::digest(&bytes);
+        let mut hex = String::with_capacity(64);
+        for byte in digest {
+            hex.push_str(&format!("{byte:02x}"));
+        }
+        std::fs::write(dir.join(format!("{hex}.json")), bytes).unwrap();
+        names.push(hex);
+    }
+    names
+}
+
+fn consensus_tail(staging: &Path) -> Vec<String> {
+    vec![
+        "--staging".to_string(),
+        staging.display().to_string(),
+        "--game-id".to_string(),
+        "synthetic".to_string(),
+        "--version".to_string(),
+        "1.0.0".to_string(),
+        "--exe-hash".to_string(),
+        EXE_ONES.to_string(),
+    ]
+}
+
+fn assert_no_canary(text: &str, object_hashes: &[String], extra: &str) {
+    assert!(!text.contains(PATH_CANARY), "{text}");
+    assert!(!text.contains(extra), "{text}");
+    for hash in object_hashes {
+        assert!(!text.contains(hash), "{text}");
+    }
+}
+
+#[test]
+fn consensus_build_three_uploads_writes_counts_only() {
+    let agreed = osdb_upload::Sha256Hex::from_bytes([0x44; 32]);
+    let rejected = osdb_upload::Sha256Hex::from_bytes([0x55; 32]);
+    let manifests = [
+        synthetic_manifest(1, &[agreed, rejected]),
+        synthetic_manifest(2, &[agreed]),
+        synthetic_manifest(3, &[agreed]),
+    ];
+    let staging = TempDir::new("stage-3");
+    let names = write_staging(&staging.path, &manifests);
+    let out_dir = TempDir::new("out-3");
+    let mut args = vec!["consensus".to_string(), "build".to_string()];
+    args.extend(consensus_tail(&staging.path));
+    args.push("--out".to_string());
+    args.push(out_dir.path.display().to_string());
+    let out = bin().args(&args).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(out.status.success(), "{stderr}");
+    assert!(stdout.contains("upload_count: 3"));
+    assert!(stdout.contains("counted_uploads: 3"));
+    assert!(stdout.contains("accepted_pipeline_hash: 1"));
+    assert!(stdout.contains("rejected_pipeline_hash: 1"));
+    assert!(stdout.contains(osdb_consensus::UNSIGNED_STAGING_LINE));
+    assert!(!stdout.contains(osdb_consensus::WAITING_FOR_DATA_LINE));
+    assert_no_canary(&stdout, &names, &rejected.to_hex());
+    assert_no_canary(&stderr, &names, &rejected.to_hex());
+    let written = out_dir
+        .path
+        .join("synthetic")
+        .join(format!("1.0.0--{EXE_ONES}"));
+    let coverage = std::fs::read_to_string(written.join("coverage.v2.json")).unwrap();
+    let report = std::fs::read_to_string(written.join("consensus-report.json")).unwrap();
+    assert!(coverage.contains(&agreed.to_hex()));
+    assert!(!coverage.contains(&rejected.to_hex()));
+    assert!(!report.contains(&agreed.to_hex()));
+    assert!(!report.contains(&rejected.to_hex()));
+    for hash in &names {
+        assert!(!coverage.contains(hash));
+        assert!(!report.contains(hash));
+    }
+    assert!(!coverage.contains(PATH_CANARY));
+    assert!(!report.contains(PATH_CANARY));
+    assert!(!written.join("records.json").exists());
+}
+
+#[test]
+fn consensus_two_uploads_wait_and_write_nothing() {
+    let agreed = osdb_upload::Sha256Hex::from_bytes([0x44; 32]);
+    let manifests = [
+        synthetic_manifest(1, &[agreed]),
+        synthetic_manifest(2, &[agreed]),
+    ];
+    let staging = TempDir::new("stage-2");
+    let names = write_staging(&staging.path, &manifests);
+    let out_dir = TempDir::new("out-2");
+    let mut args = vec!["consensus".to_string(), "build".to_string()];
+    args.extend(consensus_tail(&staging.path));
+    args.push("--out".to_string());
+    args.push(out_dir.path.display().to_string());
+    let out = bin().args(&args).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(out.status.success(), "{stderr}");
+    assert!(stdout.contains("counted_uploads: 2"));
+    assert!(stdout.contains(osdb_consensus::WAITING_FOR_DATA_LINE));
+    assert!(!stdout.contains(osdb_consensus::UNSIGNED_STAGING_LINE));
+    assert_no_canary(&stdout, &names, &agreed.to_hex());
+    assert_no_canary(&stderr, &names, &agreed.to_hex());
+    assert!(std::fs::read_dir(&out_dir.path).unwrap().next().is_none());
+
+    let mut report_args = vec!["consensus".to_string(), "report".to_string()];
+    report_args.extend(consensus_tail(&staging.path));
+    let reported = bin().args(&report_args).output().unwrap();
+    let report_out = String::from_utf8(reported.stdout).unwrap();
+    let report_err = String::from_utf8(reported.stderr).unwrap();
+    assert!(reported.status.success(), "{report_err}");
+    assert!(report_out.contains(osdb_consensus::WAITING_FOR_DATA_LINE));
+    assert!(!report_out.contains(osdb_consensus::UNSIGNED_STAGING_LINE));
+    assert_no_canary(&report_out, &names, &agreed.to_hex());
+    assert!(std::fs::read_dir(&out_dir.path).unwrap().next().is_none());
+}
+
+#[test]
+fn consensus_refuses_output_inside_staging_and_bad_args() {
+    let agreed = osdb_upload::Sha256Hex::from_bytes([0x44; 32]);
+    let manifests = [
+        synthetic_manifest(1, &[agreed]),
+        synthetic_manifest(2, &[agreed]),
+        synthetic_manifest(3, &[agreed]),
+    ];
+    let staging = TempDir::new("stage-in");
+    let names = write_staging(&staging.path, &manifests);
+    let inside = staging.path.join("nested-out");
+    let mut args = vec!["consensus".to_string(), "build".to_string()];
+    args.extend(consensus_tail(&staging.path));
+    args.push("--out".to_string());
+    args.push(inside.display().to_string());
+    let out = bin().args(&args).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stderr.contains("inside the staging input"));
+    assert_no_canary(&stderr, &names, &agreed.to_hex());
+    assert_no_canary(&stdout, &names, &agreed.to_hex());
+    assert!(!inside.exists());
+
+    let missing = bin().arg("consensus").arg("build").output().unwrap();
+    assert_eq!(missing.status.code(), Some(2));
 }

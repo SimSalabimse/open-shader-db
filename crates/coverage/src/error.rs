@@ -17,9 +17,9 @@ pub enum Error {
     #[error("index hash count exceeds limit of {max} (got {got})")]
     TooManyHashes { max: u64, got: u64 },
 
-    /// `format_version` was not the supported value.
-    #[error("unsupported coverage index format_version {found} (expected {expected})")]
-    UnsupportedFormatVersion { found: u64, expected: u32 },
+    /// `format_version` was not 1 or 2.
+    #[error("unsupported coverage index format_version {found}")]
+    UnsupportedFormatVersion { found: u64 },
 
     /// A hash string contained a non-lowercase-hex character.
     #[error("malformed hex in coverage index")]
@@ -60,6 +60,36 @@ pub enum Error {
     /// The file began with a UTF-8 byte-order mark.
     #[error("coverage index begins with a UTF-8 byte order mark")]
     ByteOrderMark,
+
+    /// Format version 2 `hashes` were not strictly ascending.
+    #[error("hashes are not sorted")]
+    UnsortedHashes,
+
+    /// Format version 2 `hashes` listed the same value twice.
+    #[error("duplicate hash")]
+    DuplicateHash,
+
+    /// A threshold field was outside the documented range.
+    #[error("invalid agreement threshold")]
+    InvalidThreshold,
+
+    /// A count or threshold field was not a JSON integer in range.
+    #[error("invalid integer")]
+    InvalidInteger,
+
+    /// Canonical encoding failed.
+    #[error("coverage index JSON is not in canonical form")]
+    CanonicalJson,
+
+    /// A raw JSON string is longer than any field this format allows.
+    ///
+    /// The check runs before the string is copied. See issue #29.
+    #[error("json string exceeds limit")]
+    StringTooLong,
+
+    /// `osdb-cli coverage` compares SODB description hashes, which are format version 1.
+    #[error("coverage comparison accepts format_version 1 description hashes only")]
+    NotADescriptionIndex,
 
     /// Filesystem error. The message never includes the path.
     #[error("I/O error")]

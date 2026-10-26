@@ -594,7 +594,7 @@ pub(crate) fn object_hash_from_name(name: &str) -> Option<Sha256Hex> {
     Sha256Hex::parse(hex).ok()
 }
 
-fn build_dir_name(build: &BuildId) -> Result<String, Error> {
+pub(crate) fn build_dir_name(build: &BuildId) -> Result<String, Error> {
     let version = build.version.as_str();
     let exe = build.exe_hash.to_hex();
     if !is_safe_ident(build.game_id.as_str()) || !is_safe_ident(version) {

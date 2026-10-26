@@ -108,22 +108,22 @@ Steam discovery lists installed games. It does not mean those installs contain `
 
 ### Library slice
 
-`crates/consensus` (`osdb-consensus`) loads a read-only staging tree and applies an upload threshold. See [docs/CONSENSUS.md](docs/CONSENSUS.md). It is not wired to `osdb-cli`, does not write a coverage index, and is not deployed. M3-B2 (publish writers, coverage format v2, and the CLI) is not done. Server proof-of-ownership, anomaly detection, and the review queue are not done.
+`crates/consensus` (`osdb-consensus`) loads a staging tree, applies an upload threshold, and can write unsigned local staging (coverage format v2, a count report, and an optional record file). `osdb-cli consensus build` and `consensus report` call it. See [docs/CONSENSUS.md](docs/CONSENSUS.md). That output is not a release and is not signed. Nothing is deployed, and no real upload set has been published. Server proof-of-ownership, anomaly detection, and the review queue (M3-C) are not done. Signing is M4 and is not done.
 
 One same-PC, same-GPU check exists. Two separate sessions of the same game gave 6416 of 6416 shared app keys, 6416 identical full records, and 2580 shared vertex/pixel shader pairs (session 2 had 12 extra records). That is likely the easy case: the game compiles most pipelines at load. Cross-GPU and cross-driver agreement of pipeline hashes is **UNPROVEN**. Games that compile pipelines lazily are untested. There is no set of real uploads from 3 or more sources; consensus tests use synthetic manifests. The counts are not a count of people (no accounts).
 
 ### Deliverables
 
-- [x] Staging data loader (`osdb-consensus`, read-only; no CLI; not deployed)
-- [x] Consensus builder (library threshold only; not lowered for a small build; no publish writer)
+- [x] Staging data loader (`osdb-consensus`; CLI can read a local tree; not deployed)
+- [x] Consensus builder (threshold is not lowered for a small build; local CLI; not deployed)
 - [ ] Server-side proof-of-ownership checks
 - [ ] Anomaly detection and manual review queue
-- [ ] Generation of CoverageIndex (M0) and PipelineStateRecord sets (M1)
+- [x] Generation of CoverageIndex format v2 and PipelineStateRecord sets as unsigned local files (`osdb-cli consensus build`). Not deployed. No real data published. Not a signed release
 - [ ] Publishing to a staging area for M4 to sign
 
 ### Success criteria
 
-- [x] A library call loads the staging manifests for one build (no CLI pipeline, not deployed)
+- [x] A library call loads the staging manifests for one build (CLI can point at a local tree; not deployed)
 - [x] Consensus uses a documented upload threshold (no weakening for low-population games)
 - [ ] Anomalies are queued for human review
 - [ ] Validated data is published to staging, not as unsigned production releases

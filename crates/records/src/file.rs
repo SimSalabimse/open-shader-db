@@ -85,6 +85,26 @@ pub fn load(path: impl AsRef<Path>) -> Result<RecordFile, Error> {
     load_with_limits(path, Limits::DEFAULT)
 }
 
+/// Parse already-read bytes with the same checks as [`load`].
+///
+/// Callers that built the bytes in memory (a filtered record set) use this
+/// so root signatures, descriptor hashes, and the no-DXIL rule run again.
+pub fn load_slice(bytes: &[u8]) -> Result<RecordFile, Error> {
+    load_slice_with_limits(bytes, Limits::DEFAULT)
+}
+
+/// [`load_slice`] with caller-supplied caps.
+pub fn load_slice_with_limits(bytes: &[u8], limits: Limits) -> Result<RecordFile, Error> {
+    let got = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if got > limits.max_file_bytes {
+        return Err(Error::FileTooLarge {
+            max: limits.max_file_bytes,
+            got,
+        });
+    }
+    parse_record_bytes(bytes.to_vec(), limits)
+}
+
 /// Load a record file with caller-supplied resource caps.
 pub fn load_with_limits(path: impl AsRef<Path>, limits: Limits) -> Result<RecordFile, Error> {
     let path = path.as_ref();
