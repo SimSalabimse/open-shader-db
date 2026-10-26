@@ -11,6 +11,7 @@ import { repoRoot, type VectorFile, vectorPayload } from "./helpers.js";
 const SKIP_CASES = [
   "invalid/v2-pipeline-hashes-number-before-version.json",
   "invalid/v2-pipeline-hashes-two-numbers-before-version.json",
+  "invalid/v2-pipeline-hashes-typed-values-before-version.json",
   "invalid/v2-pipeline-hashes-fraction-before-version.json",
   "invalid/v2-pipeline-hashes-exponent-before-version.json",
   "invalid/v2-pipeline-hashes-object-keys-before-version.json",
@@ -56,7 +57,7 @@ test(
       if (file.verdict === "reject") {
         assert.equal(parsed.ok, false, rel);
         if (!parsed.ok) {
-          assert.equal(parsed.code, "INVALID_JSON", rel);
+          assert.equal(parsed.code, file.error_code, rel);
         }
         continue;
       }

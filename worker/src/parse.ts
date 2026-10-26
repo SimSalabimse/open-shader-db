@@ -286,9 +286,13 @@ function parseRootObject(cur: Cursor, limits: ParseLimits): Result<RootFields> {
         }
         if (schemaVersion === SCHEMA_VERSION_V2 && pipelineSpan !== undefined) {
           const slice = cur.bytes.subarray(pipelineSpan.start, pipelineSpan.end);
-          const parsedList = parseHashList(new Cursor(slice), limits.maxPipelineHashes);
+          const listCur = new Cursor(slice);
+          const parsedList = parseHashList(listCur, limits.maxPipelineHashes);
           if (!parsedList.ok) {
             return parsedList;
+          }
+          if (!listCur.atEnd) {
+            return { ok: false, code: "INVALID_JSON" };
           }
           pipeline = parsedList.value;
           pipelineSpan = undefined;

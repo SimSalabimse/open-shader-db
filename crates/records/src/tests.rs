@@ -249,6 +249,26 @@ fn extract_round_trip_and_no_bytecode() {
 }
 
 #[test]
+fn loader_reads_widened_f32_bits_exactly() {
+    let widened = f64::from(f32::from_bits(0x3005_d789));
+    let pow2 = f64::from(f32::from_bits(0x3380_0000));
+    assert_eq!(widened.to_bits(), 0x3e00_baf1_2000_0000);
+    assert_eq!(pow2.to_bits(), 0x3e70_0000_0000_0000);
+    let json = concat!(
+        r#"{"format_version":1,"build":{},"records":[{"app_key":"01","version":0,"bytecode_hashes":{},"rasterizer":{"#,
+        r#""fill_mode":0,"cull_mode":0,"front_counter_clockwise":0,"depth_bias":4.869141201346849e-10,"#,
+        r#""depth_bias_clamp":5.9604644775390625e-8,"slope_scaled_depth_bias":0.0,"depth_clip_enable":0,"#,
+        r#""line_rasterization_mode":0,"forced_sample_count":0,"conservative_raster":0}}]}"#
+    );
+    let path = write_temp(".json", json);
+    let loaded = load(path.path()).unwrap();
+    let raster = loaded.records[0].rasterizer.as_ref().unwrap();
+    assert_eq!(raster.depth_bias.to_bits(), widened.to_bits());
+    assert_eq!(raster.depth_bias_clamp.to_bits(), pow2.to_bits());
+    assert_eq!(raster.slope_scaled_depth_bias.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
 fn extract_is_deterministic_across_insert_order() {
     let make = |keys: &[&[u8]]| {
         create_sodb(|conn| {

@@ -196,21 +196,19 @@ The encoder reads those bits. It does not parse a JSON number.
 which is already binary64. A D3D bias is often binary32; widening
 (`f32 as f64`) is exact, and that exact binary64 is what extract holds.
 The record **file** writer still emits JSON with `serde_json`. The
-record **loader** parses those decimals with `serde_json`'s concise
-parser, which is not correctly rounded: for some widened values it
-returns a binary64 one ulp away from the widened bits. That is a
-pre-existing loader limitation (the hash function does not change it).
-`pipeline_content_hash` hashes the bits on the struct it is given — the
-exact widened value on an extracted record, the loader's value on a
-loaded record. An outside tool reproduces the hash from those bits
-using the rules below. Re-parsing the decimal with a different
+record **loader** parses those decimals with `serde_json` built with
+the `float_roundtrip` feature, so a token this encoder spells loads
+back to the same bits. `pipeline_content_hash` hashes the bits on the
+struct it is given. An outside tool reproduces the hash from those
+bits using the rules below. Re-parsing the decimal with a different
 converter does not.
 
-Pinned misread (also the widened golden vector below): f32 bits
+Pinned widened value (also the widened golden vector below): f32 bits
 `3005d789` widen to f64 bits `3e00baf120000000`. Both this encoder and
 the record-file writer spell that value `4.869141201346849e-10`. The
-loader parses that token as bits `3e00baf11fffffff`, which this encoder
-spells `4.869141201346848e-10`.
+loader returns those same bits. The next-lower f64
+(`3e00baf11fffffff`) spells `4.869141201346848e-10`. The widened golden
+vector hashes both in-memory values. It is not a loaded file.
 
 Procedure for one finite value. An implementation that follows it and
 checks candidates with a correctly rounded round-ties-to-even
@@ -233,7 +231,7 @@ binary64 parser (IEEE-754 default) produces the same token.
    - Scientific exponent `k` is `F - 1` when power ≥ 0, and
      `F - 1 + power` when power < 0. The value is `d0.d1… × 10^k`.
      Dropping trailing zeros does not change `k`.
-5. Shortest round trip. For length `L` from 1 through `min(17, digit count)`,
+5. First round-tripping digit count. For length `L` from 1 through `min(17, digit count)`,
    round the exact digits to `L` digits, half to even:
    - first dropped digit `< 5`: truncate;
    - `> 5`, or `= 5` with any later non-zero digit: round up;
@@ -243,7 +241,12 @@ binary64 parser (IEEE-754 default) produces the same token.
      and `k` increases by 1.
    - Spell that candidate (step 6). Accept the smallest `L` whose spelling
      converts back to the original bits, sign bit included. A finite
-     binary64 always has such an `L` of at most 17.
+     binary64 always has such an `L` of at most 17. This is the first
+     length that round-trips, not always the shortest token. At a power
+     of two a shorter token can exist that this step does not try.
+     `2^-24` (bits `3e70000000000000`, the widening of f32 bits
+     `33800000`) spells `5.9604644775390625e-8`. The shorter token
+     `5.960464477539063e-8` is the same bits; this step does not emit it.
 6. Spelling of digits `d0…d(L-1)` and exponent `k`. A negative original
    value gets one leading `-`.
    - Plain form when `-4 ≤ k ≤ 15`:
@@ -353,13 +356,13 @@ contain no exponent, and `1.5`, `0.0`, and `-0.0` spell the same way.
 
 SHA-256: `1cf3ea8044bef955acd52a0f9ed19eabf6a4a1f9742ad3b9e023be859e29e16d`
 
-#### Widened f32, exact bits and the loader's bits
+#### Widened f32, exact bits and the adjacent ulp
 
 `depth_bias` is f32 `3005d789` widened to f64 `3e00baf120000000`
-(`4.869141201346849e-10`). `depth_bias_clamp` is the value the record
-loader returns for that token, f64 `3e00baf11fffffff`
-(`4.869141201346848e-10`). `slope_scaled_depth_bias` is `0.0`. The hash
-is of those in-memory bits.
+(`4.869141201346849e-10`). `depth_bias_clamp` is the next-lower f64,
+`3e00baf11fffffff` (`4.869141201346848e-10`). `slope_scaled_depth_bias`
+is `0.0`. The hash is of those in-memory bits. The loader reads the
+`4.869141201346849e-10` token as the exact widened bits.
 
 ```json
 {"blend":null,"bytecode_hashes":{},"depth_stencil":null,"dsv_format":null,"flags":null,"ib_strip_cut_value":null,"input_layout":null,"node_mask":null,"primitive_topology":null,"rasterizer":{"conservative_raster":0,"cull_mode":0,"depth_bias":4.869141201346849e-10,"depth_bias_clamp":4.869141201346848e-10,"depth_clip_enable":0,"fill_mode":0,"forced_sample_count":0,"front_counter_clockwise":0,"line_rasterization_mode":0,"slope_scaled_depth_bias":0.0},"render_target_formats":null,"root_signature":null,"sample_desc":null,"sample_mask":null,"stream_out":null,"view_instancing":null}
@@ -370,6 +373,25 @@ is of those in-memory bits.
 ```
 
 SHA-256: `762d76dbfc66de83ea604a198a728bdd8f1b5c711abd98190c55c739cd486332`
+
+#### Power of two, first round-tripping length
+
+`depth_bias` is `2^-24`, f64 bits `3e70000000000000` (f32 bits
+`33800000` widened). Step 5 spells it `5.9604644775390625e-8`.
+`depth_bias_clamp` and `slope_scaled_depth_bias` are `0.0`. Every
+integer rasterizer field is `0`. The shorter token
+`5.960464477539063e-8` is the same bits and is not the spelling this
+step emits. The six digests above are unchanged.
+
+```json
+{"blend":null,"bytecode_hashes":{},"depth_stencil":null,"dsv_format":null,"flags":null,"ib_strip_cut_value":null,"input_layout":null,"node_mask":null,"primitive_topology":null,"rasterizer":{"conservative_raster":0,"cull_mode":0,"depth_bias":5.9604644775390625e-8,"depth_bias_clamp":0.0,"depth_clip_enable":0,"fill_mode":0,"forced_sample_count":0,"front_counter_clockwise":0,"line_rasterization_mode":0,"slope_scaled_depth_bias":0.0},"render_target_formats":null,"root_signature":null,"sample_desc":null,"sample_mask":null,"stream_out":null,"view_instancing":null}
+```
+
+```text
+7b22626c656e64223a6e756c6c2c2262797465636f64655f686173686573223a7b7d2c2264657074685f7374656e63696c223a6e756c6c2c226473765f666f726d6174223a6e756c6c2c22666c616773223a6e756c6c2c2269625f73747269705f6375745f76616c7565223a6e756c6c2c22696e7075745f6c61796f7574223a6e756c6c2c226e6f64655f6d61736b223a6e756c6c2c227072696d69746976655f746f706f6c6f6779223a6e756c6c2c22726173746572697a6572223a7b22636f6e7365727661746976655f726173746572223a302c2263756c6c5f6d6f6465223a302c2264657074685f62696173223a352e39363034363434373735333930363235652d382c2264657074685f626961735f636c616d70223a302e302c2264657074685f636c69705f656e61626c65223a302c2266696c6c5f6d6f6465223a302c22666f726365645f73616d706c655f636f756e74223a302c2266726f6e745f636f756e7465725f636c6f636b77697365223a302c226c696e655f726173746572697a6174696f6e5f6d6f6465223a302c22736c6f70655f7363616c65645f64657074685f62696173223a302e307d2c2272656e6465725f7461726765745f666f726d617473223a6e756c6c2c22726f6f745f7369676e6174757265223a6e756c6c2c2273616d706c655f64657363223a6e756c6c2c2273616d706c655f6d61736b223a6e756c6c2c2273747265616d5f6f7574223a6e756c6c2c22766965775f696e7374616e63696e67223a6e756c6c7d
+```
+
+SHA-256: `2c0d22eaf23a6c63b357548f678f61d198a1e3825b5026ebb9e05cadc1633de3`
 
 ## Which fields are copied as raw bytes
 

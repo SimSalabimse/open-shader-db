@@ -876,8 +876,9 @@ fn default_caps_cover_a_full_record_file() {
     let slots =
         DEFAULT_MAX_DESCRIPTION_HASHES + DEFAULT_MAX_BYTECODE_HASHES + DEFAULT_MAX_PIPELINE_HASHES;
     let worst = empty + slots * (per_hash + 1);
-    // `worst` counts a separator for every hash, including the first of each
-    // list. A real build of these three lists is 40 200 346 bytes.
+    // `per_hash` (67) already includes the separating comma. `+ 1` is one
+    // extra byte per slot on top of that. A real build of these three lists
+    // is 40 200 346 bytes.
     assert_eq!(worst, 40_800_349, "upper bound of a max valid v2 document");
     assert!(
         worst <= DEFAULT_MAX_JSON_BYTES,

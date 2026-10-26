@@ -235,7 +235,7 @@ boundary. Typed errors never echo rejected field values.
 
 | Limit | Default | Purpose |
 | --- | ---: | --- |
-| Local JSON bytes | 64 MiB | Client preview. The largest version 2 document this tree builds (150 000 description hashes, 400 000 bytecode hashes, and 50 000 pipeline hashes, from the empty synthetic manifest) is 40 200 346 bytes. The closed-form upper bound `empty + slots * (per_hash + 1)` is 40 800 349 bytes; it counts a comma for every hash, including the first of each list. Both are under this cap. |
+| Local JSON bytes | 64 MiB | Client preview. The largest version 2 document this tree builds (150 000 description hashes, 400 000 bytecode hashes, and 50 000 pipeline hashes, from the empty synthetic manifest) is 40 200 346 bytes. The closed-form upper bound `empty + slots * (per_hash + 1)` is 40 800 349 bytes. The per-hash figure (67) already includes the separating comma; the `+ 1` is one extra byte per slot on top of that. Both are under this cap. |
 | Wire JSON bytes | 8 MiB | Worker request body, before parse (128 MB isolate). That full version 2 document does not fit on the wire. |
 | Description hashes | 150 000 | `records.max_records` (50 000) × 3 keys |
 | Bytecode hashes | 400 000 | `records.max_records` (50 000) × 8 stages |

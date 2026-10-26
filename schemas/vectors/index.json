@@ -1,5 +1,5 @@
 {
-  "count": 138,
+  "count": 139,
   "vectors": [
     {
       "path": "invalid/april-31.json",
@@ -453,6 +453,11 @@
     },
     {
       "path": "invalid/v2-pipeline-hashes-two-numbers-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-typed-values-before-version.json",
       "verdict": "reject",
       "error_code": "INVALID_JSON"
     },
