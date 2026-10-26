@@ -9,6 +9,7 @@ import {
   LOCAL_MAX_JSON_BYTES,
   MAX_BYTECODE_HASHES,
   MAX_DESCRIPTION_HASHES,
+  MAX_PIPELINE_HASHES,
   MAX_JSON_NESTING,
   MAX_NUMBER_TOKEN_CHARS,
   PER_BUILD_UPLOAD_CAP,
@@ -24,6 +25,7 @@ test("Worker constants match schemas/limits.v1.json", () => {
     wire_max_json_bytes: number;
     max_description_hashes: number;
     max_bytecode_hashes: number;
+    max_pipeline_hashes: number;
     max_json_nesting: number;
     max_number_token_chars: number;
     per_build_upload_cap: number;
@@ -32,6 +34,7 @@ test("Worker constants match schemas/limits.v1.json", () => {
   assert.equal(WIRE_MAX_JSON_BYTES, limits.wire_max_json_bytes);
   assert.equal(MAX_DESCRIPTION_HASHES, limits.max_description_hashes);
   assert.equal(MAX_BYTECODE_HASHES, limits.max_bytecode_hashes);
+  assert.equal(MAX_PIPELINE_HASHES, limits.max_pipeline_hashes);
   assert.equal(MAX_JSON_NESTING, limits.max_json_nesting);
   assert.equal(MAX_NUMBER_TOKEN_CHARS, limits.max_number_token_chars);
   assert.equal(PER_BUILD_UPLOAD_CAP, limits.per_build_upload_cap);
@@ -39,9 +42,11 @@ test("Worker constants match schemas/limits.v1.json", () => {
   assert.equal(LOCAL_MAX_JSON_BYTES, 64 * 1024 * 1024);
   assert.equal(MAX_DESCRIPTION_HASHES, 150_000);
   assert.equal(MAX_BYTECODE_HASHES, 400_000);
+  assert.equal(MAX_PIPELINE_HASHES, 50_000);
   assert.equal(DEFAULT_PARSE_LIMITS.maxJsonBytes, LOCAL_MAX_JSON_BYTES);
   assert.equal(DEFAULT_PARSE_LIMITS.maxDescriptionHashes, MAX_DESCRIPTION_HASHES);
   assert.equal(DEFAULT_PARSE_LIMITS.maxBytecodeHashes, MAX_BYTECODE_HASHES);
+  assert.equal(DEFAULT_PARSE_LIMITS.maxPipelineHashes, MAX_PIPELINE_HASHES);
 });
 
 test("per-build cap parser fails closed on bad or missing values", () => {

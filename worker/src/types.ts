@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-export type SchemaVersion = 1;
+export type SchemaVersion = 1 | 2;
 
 export type Sha256Hex = string;
 
@@ -26,6 +26,8 @@ export interface UploadManifest {
   readonly description_hashes: readonly Sha256Hex[];
   readonly bytecode_hashes: readonly Sha256Hex[];
   readonly ownership: OwnershipProof;
+  /** Present on schema version 2. Absent on version 1. */
+  readonly pipeline_hashes?: readonly Sha256Hex[];
 }
 
 export interface UploadReceipt {
@@ -37,6 +39,7 @@ export interface UploadReceipt {
   readonly collected_hour: string;
   readonly description_hash_count: number;
   readonly bytecode_hash_count: number;
+  readonly pipeline_hash_count: number;
   readonly canonical_sha256: Sha256Hex;
   readonly object_key: string;
 }

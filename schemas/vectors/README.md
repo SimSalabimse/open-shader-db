@@ -26,3 +26,10 @@ escaped, unsorted-key, and other non-compact inputs; stored bytes
 still pin the canonical form. Invalid cases are hand-written. Both
 language test suites walk this directory and run every file. The JSON
 Schema is **not** the oracle; several reject cases are schema-valid.
+
+Schema version 1 fixtures omit `pipeline_hashes`. Schema version 2
+fixtures include that array (sorted unique lowercase hex, cap
+50 000). A version 1 document that carries the field is
+`UNKNOWN_FIELD`. Any other `schema_version` is
+`UNSUPPORTED_SCHEMA_VERSION`. Version 2 without the field is
+`MISSING_FIELD`.

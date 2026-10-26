@@ -301,6 +301,7 @@ fn rebuild_from_typed(parsed: &UploadManifest) -> UploadManifest {
         collected_hour: UtcHour::parse(parsed.collected_hour.as_str()).unwrap(),
         description_hashes: parsed.description_hashes.clone(),
         bytecode_hashes: parsed.bytecode_hashes.clone(),
+        pipeline_hashes: parsed.pipeline_hashes.clone(),
         ownership: match &parsed.ownership {
             OwnershipProof::Unchallenged { .. } => OwnershipProof::unchallenged(),
             OwnershipProof::ExeBindingV1 {

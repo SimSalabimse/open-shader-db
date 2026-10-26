@@ -1,6 +1,6 @@
 {
   "verdict": "reject",
-  "error_code": "UNSUPPORTED_SCHEMA_VERSION",
+  "error_code": "UNKNOWN_FIELD",
   "body": {
     "bytecode_hashes": [],
     "build_id": {
@@ -15,6 +15,10 @@
       "kind": "unchallenged",
       "reason": "no_server_challenge"
     },
-    "schema_version": 2
+    "pipeline_hashes": [
+      "2222222222222222222222222222222222222222222222222222222222222222",
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "schema_version": 1
   }
 }

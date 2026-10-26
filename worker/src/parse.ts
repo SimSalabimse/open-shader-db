@@ -9,7 +9,9 @@ import {
   MAX_DESCRIPTION_HASHES,
   MAX_JSON_NESTING,
   MAX_NUMBER_TOKEN_CHARS,
-  SCHEMA_VERSION,
+  MAX_PIPELINE_HASHES,
+  SCHEMA_VERSION_V1,
+  SCHEMA_VERSION_V2,
 } from "./limits.js";
 import type { OwnershipProof, Sha256Hex, UploadManifest } from "./types.js";
 
@@ -20,6 +22,7 @@ export type ParseResult =
       readonly storedBytes: Uint8Array;
       readonly descriptionHashCount: number;
       readonly bytecodeHashCount: number;
+      readonly pipelineHashCount: number;
     }
   | { readonly ok: false; readonly code: ErrorCode };
 
@@ -27,12 +30,14 @@ export interface ParseLimits {
   readonly maxJsonBytes: number;
   readonly maxDescriptionHashes: number;
   readonly maxBytecodeHashes: number;
+  readonly maxPipelineHashes: number;
 }
 
 export const DEFAULT_PARSE_LIMITS: ParseLimits = {
   maxJsonBytes: LOCAL_MAX_JSON_BYTES,
   maxDescriptionHashes: MAX_DESCRIPTION_HASHES,
   maxBytecodeHashes: MAX_BYTECODE_HASHES,
+  maxPipelineHashes: MAX_PIPELINE_HASHES,
 };
 
 type Fail = { readonly ok: false; readonly code: ErrorCode };
@@ -54,6 +59,7 @@ const ROOT_KEYS = new Set([
   "description_hashes",
   "bytecode_hashes",
   "ownership",
+  "pipeline_hashes",
 ]);
 const BUILD_KEYS = new Set(["game_id", "version", "exe_hash"]);
 const OWNERSHIP_KEYS = new Set(["kind", "reason", "challenge", "response"]);
@@ -144,8 +150,10 @@ export function parseManifest(bytes: Uint8Array, limits: ParseLimits = DEFAULT_P
   }
   const descriptionHashes = cur.compact ? EMPTY_HASHES : hexList(parsed.value.desc.raw, parsed.value.desc.count);
   const bytecodeHashes = cur.compact ? EMPTY_HASHES : hexList(parsed.value.code.raw, parsed.value.code.count);
+  const schemaVersion = parsed.value.schemaVersion;
+  const pipelineCount = parsed.value.pipeline?.count ?? 0;
   const manifest: UploadManifest = {
-    schema_version: SCHEMA_VERSION,
+    schema_version: schemaVersion,
     build_id: parsed.value.buildId,
     client_version: parsed.value.clientVersion,
     collected_hour: parsed.value.collectedHour,
@@ -153,6 +161,19 @@ export function parseManifest(bytes: Uint8Array, limits: ParseLimits = DEFAULT_P
     bytecode_hashes: bytecodeHashes,
     ownership: parsed.value.ownership,
   };
+  if (schemaVersion === SCHEMA_VERSION_V2) {
+    const pipelineHashes = cur.compact
+      ? EMPTY_HASHES
+      : hexList(parsed.value.pipeline?.raw ?? new Uint8Array(), pipelineCount);
+    return {
+      ok: true,
+      manifest: { ...manifest, pipeline_hashes: pipelineHashes },
+      storedBytes: cur.compact ? bytes : canonicalize({ ...manifest, pipeline_hashes: pipelineHashes }),
+      descriptionHashCount: parsed.value.desc.count,
+      bytecodeHashCount: parsed.value.code.count,
+      pipelineHashCount: pipelineCount,
+    };
+  }
   const storedBytes = cur.compact ? bytes : canonicalize(manifest);
   return {
     ok: true,
@@ -160,6 +181,7 @@ export function parseManifest(bytes: Uint8Array, limits: ParseLimits = DEFAULT_P
     storedBytes,
     descriptionHashCount: parsed.value.desc.count,
     bytecodeHashCount: parsed.value.code.count,
+    pipelineHashCount: 0,
   };
 }
 
@@ -204,25 +226,29 @@ interface HashList {
 }
 
 interface RootFields {
+  readonly schemaVersion: 1 | 2;
   readonly buildId: UploadManifest["build_id"];
   readonly clientVersion: string;
   readonly collectedHour: string;
   readonly desc: HashList;
   readonly code: HashList;
   readonly ownership: OwnershipProof;
+  readonly pipeline: HashList | undefined;
 }
 
 function parseRootObject(cur: Cursor, limits: ParseLimits): Result<RootFields> {
   cur.consume();
   const seen = new Set<string>();
   let lastKey = "";
-  let schemaOk = false;
+  let schemaVersion: 1 | 2 | undefined;
   let buildId: UploadManifest["build_id"] | undefined;
   let clientVersion: string | undefined;
   let collectedHour: string | undefined;
   let desc: HashList | undefined;
   let code: HashList | undefined;
   let ownership: OwnershipProof | undefined;
+  let pipeline: HashList | undefined;
+  let pipelineSpan: { readonly start: number; readonly end: number } | undefined;
   cur.skipWs();
   if (cur.peek() === 0x7d) {
     cur.consume();
@@ -254,7 +280,19 @@ function parseRootObject(cur: Cursor, limits: ParseLimits): Result<RootFields> {
         if (!value.ok) {
           return value;
         }
-        schemaOk = true;
+        schemaVersion = value.value;
+        if (schemaVersion === SCHEMA_VERSION_V1 && (pipeline !== undefined || pipelineSpan !== undefined)) {
+          return { ok: false, code: "UNKNOWN_FIELD" };
+        }
+        if (schemaVersion === SCHEMA_VERSION_V2 && pipelineSpan !== undefined) {
+          const slice = cur.bytes.subarray(pipelineSpan.start, pipelineSpan.end);
+          const parsedList = parseHashList(new Cursor(slice), limits.maxPipelineHashes);
+          if (!parsedList.ok) {
+            return parsedList;
+          }
+          pipeline = parsedList.value;
+          pipelineSpan = undefined;
+        }
         break;
       }
       case "build_id": {
@@ -305,6 +343,26 @@ function parseRootObject(cur: Cursor, limits: ParseLimits): Result<RootFields> {
         ownership = value.value;
         break;
       }
+      case "pipeline_hashes": {
+        if (schemaVersion === SCHEMA_VERSION_V1) {
+          return { ok: false, code: "UNKNOWN_FIELD" };
+        }
+        if (schemaVersion === SCHEMA_VERSION_V2) {
+          const value = parseHashList(cur, limits.maxPipelineHashes);
+          if (!value.ok) {
+            return value;
+          }
+          pipeline = value.value;
+          break;
+        }
+        const start = cur.pos;
+        const skipped = skipJsonValue(cur);
+        if (!skipped.ok) {
+          return skipped;
+        }
+        pipelineSpan = { start, end: cur.pos };
+        break;
+      }
       default:
         return { ok: false, code: "UNKNOWN_FIELD" };
     }
@@ -317,7 +375,7 @@ function parseRootObject(cur: Cursor, limits: ParseLimits): Result<RootFields> {
     if (next === 0x7d) {
       cur.consume();
       if (
-        !schemaOk ||
+        schemaVersion === undefined ||
         buildId === undefined ||
         clientVersion === undefined ||
         collectedHour === undefined ||
@@ -327,9 +385,15 @@ function parseRootObject(cur: Cursor, limits: ParseLimits): Result<RootFields> {
       ) {
         return { ok: false, code: "MISSING_FIELD" };
       }
+      if (schemaVersion === SCHEMA_VERSION_V2 && pipeline === undefined) {
+        return { ok: false, code: "MISSING_FIELD" };
+      }
+      if (schemaVersion === SCHEMA_VERSION_V1 && (pipeline !== undefined || pipelineSpan !== undefined)) {
+        return { ok: false, code: "UNKNOWN_FIELD" };
+      }
       return {
         ok: true,
-        value: { buildId, clientVersion, collectedHour, desc, code, ownership },
+        value: { schemaVersion, buildId, clientVersion, collectedHour, desc, code, ownership, pipeline },
       };
     }
     return { ok: false, code: "INVALID_JSON" };
@@ -347,7 +411,7 @@ function parseObjectKey(cur: Cursor, allowed: ReadonlySet<string>): Result<strin
   return parsed;
 }
 
-function parseSchemaVersion(cur: Cursor): Result<void> {
+function parseSchemaVersion(cur: Cursor): Result<1 | 2> {
   const num = parseNumber(cur);
   if (!num.ok) {
     return num;
@@ -355,8 +419,155 @@ function parseSchemaVersion(cur: Cursor): Result<void> {
   if (num.value.kind === "float") {
     return { ok: false, code: "INVALID_INTEGER" };
   }
-  if (num.value.value !== SCHEMA_VERSION) {
-    return { ok: false, code: "UNSUPPORTED_SCHEMA_VERSION" };
+  if (num.value.value === SCHEMA_VERSION_V1 || num.value.value === SCHEMA_VERSION_V2) {
+    return { ok: true, value: num.value.value };
+  }
+  return { ok: false, code: "UNSUPPORTED_SCHEMA_VERSION" };
+}
+
+function skipJsonValue(cur: Cursor): Result<void> {
+  cur.skipWs();
+  const ch = cur.peek();
+  if (ch === 0x22) {
+    return skipString(cur);
+  }
+  if (ch === 0x7b) {
+    return skipContainer(cur, 0x7b, 0x7d);
+  }
+  if (ch === 0x5b) {
+    return skipContainer(cur, 0x5b, 0x5d);
+  }
+  if (ch === 0x74) {
+    return skipLiteral(cur, "true");
+  }
+  if (ch === 0x66) {
+    return skipLiteral(cur, "false");
+  }
+  if (ch === 0x6e) {
+    return skipLiteral(cur, "null");
+  }
+  if (ch === 0x2d || (ch >= 0x30 && ch <= 0x39)) {
+    return skipNumber(cur);
+  }
+  return { ok: false, code: "INVALID_JSON" };
+}
+
+function skipContainer(cur: Cursor, open: number, close: number): Result<void> {
+  if (cur.peek() !== open) {
+    return { ok: false, code: "INVALID_JSON" };
+  }
+  cur.consume();
+  cur.skipWs();
+  if (cur.peek() === close) {
+    cur.consume();
+    return { ok: true, value: undefined };
+  }
+  for (;;) {
+    if (open === 0x7b) {
+      const key = skipString(cur);
+      if (!key.ok) {
+        return key;
+      }
+      cur.skipWs();
+      if (cur.peek() !== 0x3a) {
+        return { ok: false, code: "INVALID_JSON" };
+      }
+      cur.consume();
+    }
+    const value = skipJsonValue(cur);
+    if (!value.ok) {
+      return value;
+    }
+    cur.skipWs();
+    const next = cur.peek();
+    if (next === 0x2c) {
+      cur.consume();
+      cur.skipWs();
+      continue;
+    }
+    if (next === close) {
+      cur.consume();
+      return { ok: true, value: undefined };
+    }
+    return { ok: false, code: "INVALID_JSON" };
+  }
+}
+
+function skipString(cur: Cursor): Result<void> {
+  if (cur.peek() !== 0x22) {
+    return { ok: false, code: "INVALID_JSON" };
+  }
+  cur.consume();
+  while (!cur.atEnd) {
+    const code = cur.peek();
+    if (code === 0x22) {
+      cur.consume();
+      return { ok: true, value: undefined };
+    }
+    if (code === 0x5c) {
+      cur.compact = false;
+      cur.consume();
+      if (!consumeEscape(cur)) {
+        return { ok: false, code: "INVALID_JSON" };
+      }
+      continue;
+    }
+    if (code < 0x20) {
+      return { ok: false, code: "INVALID_JSON" };
+    }
+    const width = utf8Width(code);
+    if (width < 1 || !consumeUtf8(cur, width)) {
+      return { ok: false, code: "INVALID_JSON" };
+    }
+  }
+  return { ok: false, code: "INVALID_JSON" };
+}
+
+function skipLiteral(cur: Cursor, ascii: string): Result<void> {
+  if (!cur.startsWith(ascii)) {
+    return { ok: false, code: "INVALID_JSON" };
+  }
+  cur.advance(ascii.length);
+  return { ok: true, value: undefined };
+}
+
+function skipNumber(cur: Cursor): Result<void> {
+  if (cur.peek() === 0x2d) {
+    cur.consume();
+  }
+  if (cur.atEnd || cur.peek() < 0x30 || cur.peek() > 0x39) {
+    return { ok: false, code: "INVALID_JSON" };
+  }
+  if (cur.peek() === 0x30) {
+    cur.consume();
+    if (!cur.atEnd && cur.peek() >= 0x30 && cur.peek() <= 0x39) {
+      return { ok: false, code: "INVALID_JSON" };
+    }
+  } else {
+    while (!cur.atEnd && cur.peek() >= 0x30 && cur.peek() <= 0x39) {
+      cur.consume();
+    }
+  }
+  if (!cur.atEnd && cur.peek() === 0x2e) {
+    cur.consume();
+    if (cur.atEnd || cur.peek() < 0x30 || cur.peek() > 0x39) {
+      return { ok: false, code: "INVALID_JSON" };
+    }
+    while (!cur.atEnd && cur.peek() >= 0x30 && cur.peek() <= 0x39) {
+      cur.consume();
+    }
+  }
+  if (!cur.atEnd && (cur.peek() === 0x65 || cur.peek() === 0x45)) {
+    cur.consume();
+    if (!cur.atEnd && (cur.peek() === 0x2b || cur.peek() === 0x2d)) {
+      cur.consume();
+    }
+    if (cur.atEnd || cur.peek() < 0x30 || cur.peek() > 0x39) {
+      return { ok: false, code: "INVALID_JSON" };
+    }
+    while (!cur.atEnd && cur.peek() >= 0x30 && cur.peek() <= 0x39) {
+      cur.consume();
+    }
   }
   return { ok: true, value: undefined };
 }

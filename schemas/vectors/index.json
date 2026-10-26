@@ -1,5 +1,5 @@
 {
-  "count": 106,
+  "count": 138,
   "vectors": [
     {
       "path": "invalid/april-31.json",
@@ -267,7 +267,7 @@
       "error_code": "UNSUPPORTED_SCHEMA_VERSION"
     },
     {
-      "path": "invalid/schema-version-2.json",
+      "path": "invalid/schema-version-3.json",
       "verdict": "reject",
       "error_code": "UNSUPPORTED_SCHEMA_VERSION"
     },
@@ -360,6 +360,136 @@
       "path": "invalid/uppercase-low-nibble.json",
       "verdict": "reject",
       "error_code": "MALFORMED_HEX"
+    },
+    {
+      "path": "invalid/v1-pipeline-hashes-after-version.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/v1-pipeline-hashes.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/v1-pipeline-unsorted-before-version.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/v2-duplicate-pipeline-hashes.json",
+      "verdict": "reject",
+      "error_code": "UNSORTED_OR_DUPLICATE_HASHES"
+    },
+    {
+      "path": "invalid/v2-missing-pipeline-hashes-compact.json",
+      "verdict": "reject",
+      "error_code": "MISSING_FIELD"
+    },
+    {
+      "path": "invalid/v2-missing-pipeline-hashes.json",
+      "verdict": "reject",
+      "error_code": "MISSING_FIELD"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-array-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-bad-escape-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-bad-literal-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-exponent-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-fraction-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-leading-zero-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-literal-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-nested-escape-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-number-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-object-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-object-keys-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-over-cap.json",
+      "verdict": "reject",
+      "error_code": "TOO_MANY_HASHES"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-two-numbers-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-pipeline-hashes-unterminated-before-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/v2-unsorted-pipeline-hashes.json",
+      "verdict": "reject",
+      "error_code": "UNSORTED_OR_DUPLICATE_HASHES"
+    },
+    {
+      "path": "invalid/v2-unsorted-version-first.json",
+      "verdict": "reject",
+      "error_code": "UNSORTED_OR_DUPLICATE_HASHES"
+    },
+    {
+      "path": "invalid/v2-uppercase-pipeline-hash.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
+      "path": "invalid/v2-wrong-length-pipeline-hash.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
+    },
+    {
+      "path": "invalid/v3-pipeline-hashes-first.json",
+      "verdict": "reject",
+      "error_code": "UNSUPPORTED_SCHEMA_VERSION"
+    },
+    {
+      "path": "invalid/v3-version-first.json",
+      "verdict": "reject",
+      "error_code": "UNSUPPORTED_SCHEMA_VERSION"
     },
     {
       "path": "invalid/year-0000.json",
@@ -468,6 +598,30 @@
       "stored": "stored/valid-text/uppercase-u-escape.json"
     },
     {
+      "path": "valid-text/v2-pipeline-hash-escape-before-version.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/v2-pipeline-hash-escape-before-version.json"
+    },
+    {
+      "path": "valid-text/v2-pretty-printed.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/v2-pretty-printed.json"
+    },
+    {
+      "path": "valid-text/v2-sorted-root-unsorted-build-id.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/v2-sorted-root-unsorted-build-id.json"
+    },
+    {
+      "path": "valid-text/v2-unsorted-keys.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/v2-unsorted-keys.json"
+    },
+    {
       "path": "valid-text/ws-before-colon-comma.json",
       "verdict": "accept",
       "error_code": null,
@@ -550,6 +704,18 @@
       "verdict": "accept",
       "error_code": null,
       "stored": "stored/valid/sorted-hashes.json"
+    },
+    {
+      "path": "valid/v2-minimal.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/v2-minimal.json"
+    },
+    {
+      "path": "valid/v2-pipeline-hashes.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/v2-pipeline-hashes.json"
     },
     {
       "path": "valid/year-1970.json",

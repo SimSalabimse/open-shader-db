@@ -215,6 +215,15 @@ then `Canonical JSON:` and the compact JSON. To write that JSON locally
 `--out "$env:USERPROFILE\osdb-test\preview.json" --yes-i-reviewed`
 only after you have read the preview.
 
+If the canonical manifest is larger than the 8 MiB upload wire cap
+(8388608 bytes), the command prints an error and writes nothing. The
+error names both sizes and says this manifest would be rejected by the
+upload server; nothing was written. It does not print the preview and
+it does not include a path. That cap is the same limit the upload
+server enforces. For a local copy of an over-cap manifest, add
+`--allow-oversize`. Stderr then says the manifest is over the wire
+limit and nothing was sent. The server would still reject the file.
+
 ## Success
 
 - The `.exe` hash matches the maintainer's message.

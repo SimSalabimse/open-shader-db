@@ -1,0 +1,5 @@
+{
+  "verdict": "reject",
+  "error_code": "UNSORTED_OR_DUPLICATE_HASHES",
+  "body_text": "{\"schema_version\":2,\"bytecode_hashes\":[],\"build_id\":{\"exe_hash\":\"00000000000000000000000000000000000000000000000000000000000000ee\",\"game_id\":\"synthetic\",\"version\":\"1.0.0\"},\"client_version\":\"0.1.0\",\"collected_hour\":\"2026-10-25T14:00:00Z\",\"description_hashes\":[],\"ownership\":{\"kind\":\"unchallenged\",\"reason\":\"no_server_challenge\"},\"pipeline_hashes\":[\"2222222222222222222222222222222222222222222222222222222222222222\",\"1111111111111111111111111111111111111111111111111111111111111111\"]}"
+}

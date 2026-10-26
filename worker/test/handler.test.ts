@@ -28,6 +28,7 @@ const RECEIPT_KEYS = [
   "collected_hour",
   "description_hash_count",
   "bytecode_hash_count",
+  "pipeline_hash_count",
   "canonical_sha256",
   "object_key",
 ].sort();
@@ -56,6 +57,7 @@ test("valid upload stores only canonical manifest bytes", async () => {
   assert.equal(body.idempotent, false);
   assert.equal(body.ownership_state, "UNVERIFIED");
   assert.equal(body.schema_version, 1);
+  assert.equal(body.pipeline_hash_count, 0);
   const stored = await store.read(body.object_key);
   assert.ok(stored);
   const parsed = parseManifest(stored);
@@ -75,6 +77,48 @@ test("valid upload stores only canonical manifest bytes", async () => {
   const storedText = new TextDecoder().decode(stored);
   assert.equal(storedText.includes("CF-Connecting-IP"), false);
   assert.equal(JSON.stringify(body).includes("203.0.113"), false);
+});
+
+test("schema version 2 receipt reports pipeline_hash_count", async () => {
+  const store = new MemoryStore();
+  const deps = testDeps({ store });
+  const hex = (n: number): string => n.toString(16).padStart(64, "0");
+  const body = {
+    bytecode_hashes: [hex(1)],
+    build_id: {
+      exe_hash: "0".repeat(62) + "ee",
+      game_id: "synthetic",
+      version: "1.0.0",
+    },
+    client_version: "0.1.0",
+    collected_hour: "2026-10-25T14:00:00Z",
+    description_hashes: [],
+    ownership: { kind: "unchallenged", reason: "no_server_challenge" },
+    pipeline_hashes: [hex(2), hex(3)],
+    schema_version: 2,
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(body));
+  const response = await handleUpload(uploadRequest(bytes), deps);
+  assert.equal(response.status, 200);
+  const receipt = (await readJson(response)) as UploadReceipt;
+  assert.deepEqual(Object.keys(receipt).sort(), RECEIPT_KEYS);
+  assert.equal(receipt.schema_version, 2);
+  assert.equal(receipt.pipeline_hash_count, 2);
+  assert.equal(receipt.description_hash_count, 0);
+  assert.equal(receipt.bytecode_hash_count, 1);
+  const stored = await store.read(receipt.object_key);
+  assert.ok(stored);
+  const parsed = parseManifest(stored);
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.equal(parsed.pipelineHashCount, 2);
+    assert.equal(parsed.manifest.schema_version, 2);
+    assert.ok(parsed.manifest.pipeline_hashes);
+  }
+  const storedText = new TextDecoder().decode(stored);
+  assert.equal(storedText.includes(hex(2)), true);
+  assert.equal(storedText.includes(hex(3)), true);
+  assert.equal(storedText.includes('"schema_version":2'), true);
 });
 
 test("same canonical bytes are idempotent and do not use a second slot", async () => {
@@ -544,6 +588,7 @@ test("hash-list cap accepts max and refuses max plus one", () => {
     maxJsonBytes: 64 * 1024 * 1024,
     maxDescriptionHashes: 2,
     maxBytecodeHashes: 2,
+    maxPipelineHashes: 2,
   });
   assert.equal(two.ok, true);
   base.bytecode_hashes = [hex(1), hex(2), hex(3)];
@@ -551,6 +596,7 @@ test("hash-list cap accepts max and refuses max plus one", () => {
     maxJsonBytes: 64 * 1024 * 1024,
     maxDescriptionHashes: 2,
     maxBytecodeHashes: 2,
+    maxPipelineHashes: 2,
   });
   assert.equal(three.ok, false);
   if (!three.ok) {

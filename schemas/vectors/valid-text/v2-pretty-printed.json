@@ -1,0 +1,5 @@
+{
+  "verdict": "accept",
+  "error_code": null,
+  "body_text": "{\n  \"build_id\": {\n    \"exe_hash\": \"00000000000000000000000000000000000000000000000000000000000000ee\",\n    \"game_id\": \"synthetic\",\n    \"version\": \"1.0.0\"\n  },\n  \"bytecode_hashes\": [],\n  \"client_version\": \"0.1.0\",\n  \"collected_hour\": \"2026-10-25T14:00:00Z\",\n  \"description_hashes\": [],\n  \"ownership\": {\n    \"kind\": \"unchallenged\",\n    \"reason\": \"no_server_challenge\"\n  },\n  \"pipeline_hashes\": [\n    \"1111111111111111111111111111111111111111111111111111111111111111\",\n    \"2222222222222222222222222222222222222222222222222222222222222222\"\n  ],\n  \"schema_version\": 2\n}"
+}

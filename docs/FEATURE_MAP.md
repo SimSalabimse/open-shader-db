@@ -79,7 +79,7 @@ This document tracks the implementation status of planned features. Milestone na
 |---------|--------|--------------|-----------|-------|
 | CoverageIndex schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | format_version 1 JSON in docs/COVERAGE_INDEX_FORMAT.md; logical DescriptionHash objects still M3 |
 | PipelineStateRecord schema | ⚠️ Partial | crates/records | M1 Pipeline-state records | format_version 1 JSON in docs/RECORD_FORMAT.md (local files). Legal review done (see docs/LEGAL_RISK_NOTES.md). State objects not included. **Untested:** real game SODBs, rebuild fidelity, non-SODB engines |
-| UploadManifest schema | ⚠️ Partial | crates/upload | M2 Upload preview and submission | schema_version 1 in docs/UPLOAD_MANIFEST.md and schemas/upload_manifest.v1.json. Drift-tested against Rust types |
+| UploadManifest schema | ⚠️ Partial | crates/upload | M2 Upload preview and submission | schema_version 1 and 2 in docs/UPLOAD_MANIFEST.md, schemas/upload_manifest.v1.json, and schemas/upload_manifest.v2.json. Version 2 adds pipeline_hashes. Drift-tested against Rust types |
 | BuildId schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | On-disk game_id / version / exe_hash on the index. SODB has no build identifier yet; coverage reports `build_identity: not_compared` |
 
 ## Security and privacy

@@ -21,9 +21,9 @@ pub enum Error {
     #[error("upload manifest JSON is not in canonical form")]
     NonCanonicalJson,
 
-    /// `schema_version` was not the supported value.
-    #[error("unsupported upload manifest schema_version {found} (expected {expected})")]
-    UnsupportedSchemaVersion { found: u64, expected: u32 },
+    /// `schema_version` was not 1 or 2.
+    #[error("unsupported upload manifest schema_version {found} (supported versions: 1, 2)")]
+    UnsupportedSchemaVersion { found: u64 },
 
     /// A hex string contained a non-lowercase-hex character.
     #[error("malformed hex in upload manifest")]

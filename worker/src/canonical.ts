@@ -11,7 +11,7 @@ export function canonicalize(manifest: UploadManifest): Uint8Array {
           kind: "exe_binding_v1",
           response: manifest.ownership.response,
         };
-  const value = {
+  const value: Record<string, unknown> = {
     build_id: {
       exe_hash: manifest.build_id.exe_hash,
       game_id: manifest.build_id.game_id,
@@ -22,8 +22,11 @@ export function canonicalize(manifest: UploadManifest): Uint8Array {
     collected_hour: manifest.collected_hour,
     description_hashes: [...manifest.description_hashes],
     ownership,
-    schema_version: manifest.schema_version,
   };
+  if (manifest.schema_version === 2) {
+    value.pipeline_hashes = [...(manifest.pipeline_hashes ?? [])];
+  }
+  value.schema_version = manifest.schema_version;
   return new TextEncoder().encode(JSON.stringify(value));
 }
 

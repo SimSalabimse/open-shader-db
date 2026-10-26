@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use osdb_records::RecordFile;
+use osdb_records::{pipeline_content_hash, RecordFile};
 use osdb_steam::GameIdentity;
 
 use crate::build::{BuildId, ExeHash, GameId, GameVersion};
@@ -20,8 +20,9 @@ use crate::{Error, Limits};
 ///
 /// Description hashes are the SHA-256 keys already stored on each record
 /// for `root_signature`, `input_layout`, and `stream_out`. Bytecode hashes
-/// are the per-stage SHA-256 values in `bytecode_hashes`. No other record
-/// field is read. Shader bytes, paths, and `app_key` are never copied.
+/// are the per-stage SHA-256 values in `bytecode_hashes`. `pipeline_hashes`
+/// is one `osdb_records::pipeline_content_hash` per record (sorted unique). Shader
+/// bytes, paths, `app_key`, and `version` are never copied onto the wire.
 pub struct ManifestBuilder<'a> {
     records: &'a RecordFile,
     build_id: Option<BuildId>,
@@ -154,6 +155,8 @@ impl<'a> ManifestBuilder<'a> {
             self.limits.max_description_hashes,
             self.limits.max_bytecode_hashes,
         )?;
+        let pipeline_hashes =
+            collect_pipeline_hashes(self.records, self.limits.max_pipeline_hashes)?;
         Ok(UploadManifest {
             schema_version: SCHEMA_VERSION,
             build_id,
@@ -162,6 +165,7 @@ impl<'a> ManifestBuilder<'a> {
             description_hashes,
             bytecode_hashes,
             ownership: self.ownership,
+            pipeline_hashes: Some(pipeline_hashes),
         })
     }
 
@@ -231,6 +235,15 @@ fn collect_hashes(
         HashSet::from_capped_set(description.into_iter().collect()),
         HashSet::from_capped_set(bytecode.into_iter().collect()),
     ))
+}
+
+fn collect_pipeline_hashes(file: &RecordFile, max_hashes: u64) -> Result<HashSet, Error> {
+    let mut hashes = BTreeSet::new();
+    for record in &file.records {
+        let digest = pipeline_content_hash(file, record);
+        insert_hash(&mut hashes, Sha256Hex::from_records(digest), max_hashes)?;
+    }
+    Ok(HashSet::from_capped_set(hashes.into_iter().collect()))
 }
 
 fn insert_hash(

@@ -41,7 +41,10 @@ let report = match_local_hashes(&loaded, &local);
 
 On-disk JSON is documented in
 [docs/RECORD_FORMAT.md](../../docs/RECORD_FORMAT.md)
-(`format_version: 1`).
+(`format_version: 1`). `pipeline_content_hash` is the SHA-256 defined
+there: one record, `app_key` and `version` removed, descriptor
+references left as content hashes. Descriptor table bodies are not
+read. This crate still has no network client.
 
 ## Security limits
 
