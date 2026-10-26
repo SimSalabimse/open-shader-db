@@ -287,6 +287,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "osdb-consensus"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "osdb-upload",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "osdb-coverage"
 version = "0.1.0"
 dependencies = [
