@@ -32,4 +32,36 @@ pub enum Error {
     /// [`crate::AgreementThreshold::new`] rejected the numbers.
     #[error("invalid agreement threshold")]
     InvalidThreshold,
+
+    /// The publish directory is the staging input or a path inside it.
+    #[error("output path is inside the staging input")]
+    InsideStaging,
+
+    /// An output file is already present. This writer does not overwrite.
+    #[error("output file already exists")]
+    AlreadyExists,
+
+    /// The output path is the same file as an input.
+    #[error("output path is the same file as an input")]
+    SameAsInput,
+
+    /// The output path is a directory, fifo, or other non-regular file.
+    #[error("output path is not a regular file")]
+    NotRegular,
+
+    /// `write_record_set` had no record whose pipeline hash reached consensus.
+    #[error("no records reached consensus")]
+    NoConsensusRecords,
+
+    /// The candidate record file failed the strict record loader.
+    #[error("record file rejected")]
+    RecordRejected,
+
+    /// The record file's build labels are not the consensus build.
+    #[error("record build does not match the consensus build")]
+    RecordBuildMismatch,
+
+    /// The coverage index could not be encoded.
+    #[error("coverage index rejected")]
+    CoverageRejected,
 }

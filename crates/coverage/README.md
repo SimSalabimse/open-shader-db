@@ -33,9 +33,12 @@ identifier yet.
 
 On-disk JSON is documented in
 [docs/COVERAGE_INDEX_FORMAT.md](../../docs/COVERAGE_INDEX_FORMAT.md)
-(`format_version: 1`). Hashes are 64-character lowercase hex SHA-256
-values identical to `sodb` description hashes. Lists are sorted and
-deduplicated at load.
+(`format_version` 1 and 2). Version 1 hashes are 64-character lowercase
+hex SHA-256 values identical to `sodb` description hashes. The loader
+sorts and deduplicates those. Version 2 hashes are pipeline content
+hashes, already sorted and unique, plus `rejected_count` and
+`threshold`. `compare` accepts version 1 only. Version 2 is unsigned
+local staging from consensus. No index is published.
 
 ## Security limits
 

@@ -132,11 +132,13 @@ The preimage rules and golden vectors (hex inputs and the SHA-256)
 are in [RECORD_FORMAT.md](RECORD_FORMAT.md). Two records that differ
 only in `app_key` and `version` collapse to one hash.
 
-The SODB parser's CanonicalHasher description hash (used by coverage
-indexes) is **not** stored on a format-1 record and is **not** this
-hash. Consensus that needs those SODB description hashes is
-**UNVERIFIED**. A version 1 manifest remains hash-set-only evidence:
-the two hash arrays, with no combined description-plus-shader hash.
+The SODB parser's CanonicalHasher description hash is **not** stored on
+a format-1 record and is **not** this hash. Coverage format version 1
+still stores those description hashes. Coverage format version 2 stores
+`pipeline_content_hash` values. Consensus that needs the SODB
+description hashes is **UNVERIFIED**. A version 1 manifest remains
+hash-set-only evidence: the two hash arrays, with no combined
+description-plus-shader hash.
 
 Steam discovery (`osdb-steam`) can supply a `GameIdentity`. That
 identity is upload-safe (no paths) but is still **not** copied into

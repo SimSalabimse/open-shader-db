@@ -132,8 +132,9 @@ the descriptor tables are not hashed. `root_signature`, `input_layout`,
 and `stream_out` stay the 64-character lowercase content hashes already
 stored on the record (or JSON `null`). Table bodies are not read.
 
-This is **not** the SODB CanonicalHasher `desc_hash` used by coverage
-indexes. It is only the encoding below.
+This is **not** the SODB CanonicalHasher `desc_hash` stored by coverage
+format version 1. Coverage format version 2 stores this
+`pipeline_content_hash` instead. The encoding is only the text below.
 
 ### Preimage bytes
 

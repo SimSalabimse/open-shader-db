@@ -21,8 +21,8 @@ pub use compare::{compare, compare_hashes, local_description_hashes};
 pub use error::Error;
 pub use hash::DescriptionHash;
 pub use index::{
-    load, load_with_limits, CoverageIndex, GeneratedAt, IndexHashes, RedactedPath, FORMAT_VERSION,
-    UNSIGNED_INDEX_LINE, UNSIGNED_INDEX_NOTE,
+    load, load_with_limits, CoverageIndex, GeneratedAt, IndexHashes, IndexThreshold, RedactedPath,
+    FORMAT_VERSION, FORMAT_VERSION_V2, UNSIGNED_INDEX_LINE, UNSIGNED_INDEX_NOTE,
 };
 pub use limits::Limits;
 pub use report::{CoverageReport, MatchRate, BUILD_IDENTITY_NOT_COMPARED, BUILD_IDENTITY_REASON};

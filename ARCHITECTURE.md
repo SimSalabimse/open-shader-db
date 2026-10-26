@@ -310,18 +310,23 @@ interface DescriptionHash {
 }
 
 interface CoverageIndex {
-  format_version: 1       // on-disk field; reject any other value
+  format_version: 1 | 2   // on-disk; any other value is rejected
   buildId: BuildId
-  descriptions: DescriptionHash[] // logical model (M1+ / consensus)
-  hashes: string[]        // M0 on-disk: sorted unique descHash hex
+  descriptions: DescriptionHash[] // logical model; not stored on disk
+  hashes: string[]        // v1: SODB descHash; v2: pipeline content hash
   uploadCount: number
   consensusCount: number
-  generatedAt: string     // ISO 8601
+  rejectedCount?: number  // v2 only
+  threshold?: { minUploads: number; minRatioPerMille: number } // v2 only
+  generatedAt: string     // ISO 8601 UTC second, Z
 }
 
-// M0 on-disk JSON uses snake_case field names and `hashes` only.
-// See docs/COVERAGE_INDEX_FORMAT.md. DescriptionHash objects are not
-// stored in format_version 1.
+// On-disk JSON uses snake_case. See docs/COVERAGE_INDEX_FORMAT.md.
+// format_version 1 stores sorted unique SODB description hashes.
+// format_version 2 stores sorted unique pipeline content hashes plus
+// rejected_count and threshold. DescriptionHash objects are not stored.
+// osdb-cli coverage compares version 1 only. Version 2 is unsigned
+// local staging from consensus build. Nothing is deployed.
 ```
 
 ### M1 Pipeline-state records (without bytecode)

@@ -1,12 +1,13 @@
 # osdb-consensus
 
-Read-only staging loader and upload-threshold consensus for open-shader-db
-(Simsalabim).
+Staging loader, upload-threshold consensus, and unsigned publish staging
+for open-shader-db (Simsalabim).
 
 The crate reads a directory of canonical upload manifests and reports which
-hashes meet a documented threshold. It does not send bytes, write a coverage
-index, publish records, or talk to the Worker. Those steps are not in this
-crate.
+hashes meet a documented threshold. It can write an unsigned local directory
+(`coverage.v2.json`, a count report, and an optional record file). It does
+not send bytes, sign anything, or talk to the Worker. Nothing is deployed.
+Counts do not prove that uploaders are independent.
 
 The implementation is written from this repository's architecture notes.
 It does not reuse code from SCSKiller.
@@ -30,6 +31,10 @@ let consensus = build_consensus(
 );
 // consensus holds hashes and counts only
 ```
+
+`write_index` and `write_record_set` write unsigned local staging. See
+[docs/CONSENSUS.md](../../docs/CONSENSUS.md). `Debug` of `PublishStagingDir`
+is always `<redacted>`.
 
 `StagingRoot`'s `Debug` output is always `<redacted>`.
 

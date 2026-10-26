@@ -27,7 +27,10 @@ pub use extract::{
     extract_with_report, extract_with_sodb_limits, skipped_root_signatures_message,
     ExtractedRecordFile,
 };
-pub use file::{load, load_with_limits, RecordFile, RedactedPath, FORMAT_VERSION};
+pub use file::{
+    load, load_slice, load_slice_with_limits, load_with_limits, RecordFile, RedactedPath,
+    FORMAT_VERSION,
+};
 pub use hash::Sha256;
 pub use limits::Limits;
 pub use matching::{match_local_hashes, CoverageKind, MatchReport, RecordMatch};

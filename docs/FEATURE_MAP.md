@@ -55,12 +55,12 @@ This document tracks the implementation status of planned features. Milestone na
 
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
-| Staging data loader | ⚠️ Partial | crates/consensus (osdb-consensus) | M3 Consensus and publishing | Library `load_build` / `list_builds` only. Read-only, hashes and skip counts, no CLI, not deployed. See docs/CONSENSUS.md |
-| Consensus builder | ⚠️ Partial | crates/consensus (osdb-consensus) | M3 Consensus and publishing | Library threshold only (default 3 uploads and 500 per mille; not lowered for a small build). No CLI, no coverage writer, not deployed. Does not claim independent uploaders. Cross-GPU pipeline agreement is UNPROVEN. See docs/CONSENSUS.md |
+| Staging data loader | ⚠️ Partial | crates/consensus (osdb-consensus) | M3 Consensus and publishing | `load_build` / `list_builds`, also used by `osdb-cli consensus`. Read-only input tree, hashes and skip counts. Not deployed. See docs/CONSENSUS.md |
+| Consensus builder | ⚠️ Partial | crates/consensus (osdb-consensus) | M3 Consensus and publishing | Threshold default 3 uploads and 500 per mille; not lowered for a small build. Local CLI `consensus build` / `report`. Unsigned files only. Not deployed. Counts do not prove independent uploaders. Cross-GPU pipeline agreement is UNPROVEN. See docs/CONSENSUS.md |
 | Proof-of-ownership checks (server) | 📋 Planned | Validator | M3 Consensus and publishing | Not implemented. The consensus library holds Worker `unchallenged` and `exe_binding_v1` uploads by default because the challenge endpoint does not exist |
 | Anomaly detection | 📋 Planned | Validator | M3 Consensus and publishing | Not started. M3-C is not done |
 | Manual review queue | 📋 Planned | Validator | M3 Consensus and publishing | Not started. Reviewed pull requests are an ingest path the loader can be pointed at; there is no queue |
-| CoverageIndex / record generation | 📋 Planned | Validator | M3 Consensus and publishing | M3-B2 (publish writers, coverage format v2, CLI) is not done |
+| CoverageIndex / record generation | ⚠️ Partial | crates/consensus, crates/coverage, crates/osdb-cli | M3 Consensus and publishing | Local unsigned staging only (`coverage.v2.json`, count report, optional records). Tooling exists. Nothing deployed. No real data published. M3-C and signing are not done |
 | Windows + GPU compile validation | 💭 Proposed | Validator | M5 Windows validation | Deferred |
 
 ## Distribution
@@ -77,7 +77,7 @@ This document tracks the implementation status of planned features. Milestone na
 
 | Feature | Status | Owner module | Milestone | Notes |
 |---------|--------|--------------|-----------|-------|
-| CoverageIndex schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | format_version 1 JSON in docs/COVERAGE_INDEX_FORMAT.md; logical DescriptionHash objects still M3 |
+| CoverageIndex schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | format_version 1 (SODB description hashes) and format_version 2 (pipeline content hashes) in docs/COVERAGE_INDEX_FORMAT.md. Logical DescriptionHash objects are still not stored. v2 is unsigned local staging; no index is published |
 | PipelineStateRecord schema | ⚠️ Partial | crates/records | M1 Pipeline-state records | format_version 1 JSON in docs/RECORD_FORMAT.md (local files). Legal review done (see docs/LEGAL_RISK_NOTES.md). State objects not included. One user-captured SODB produced a records file (tested once, works; see docs/CAPTURE_SODB.md). A second session of the same game on the same PC and GPU matched 6416 of 6416 app keys and 6416 identical full records (session 2 had 12 extra records; see docs/CONSENSUS.md). **Untested:** rebuild fidelity, non-SODB engines, lazy pipeline compile, cross-GPU and cross-driver agreement |
 | UploadManifest schema | ⚠️ Partial | crates/upload | M2 Upload preview and submission | schema_version 1 and 2 in docs/UPLOAD_MANIFEST.md, schemas/upload_manifest.v1.json, and schemas/upload_manifest.v2.json. Version 2 adds pipeline_hashes. Drift-tested against Rust types |
 | BuildId schema | ⚠️ Partial | crates/coverage | M0 Index and coverage reports | On-disk game_id / version / exe_hash on the index. SODB has no build identifier yet; coverage reports `build_identity: not_compared` |
@@ -89,7 +89,7 @@ This document tracks the implementation status of planned features. Milestone na
 | No user accounts | 📋 Planned | Privacy | M0 Index and coverage reports | Design decision |
 | Upload preview | ⚠️ Partial | crates/upload, crates/osdb-cli | M2 Upload preview and submission | Local preview; canary tests. No send |
 | No game paths collected | ⚠️ Partial | crates/upload, crates/osdb-cli, worker/ | M2 Upload preview and submission | Manifest, preview, errors, Debug, stored object, and Worker receipt omit paths (tested). Worker not deployed |
-| Multi-upload consensus | ⚠️ Partial | crates/consensus (osdb-consensus) | M3 Consensus and publishing | Library threshold only. No accounts, so counts are uploads, not people. One same-PC same-GPU check: 6416 of 6416 shared app keys, 6416 identical full records, 2580 shared vertex/pixel shader pairs (session 2 had 12 extra records). Cross-GPU and cross-driver pipeline agreement is UNPROVEN. Lazy pipeline compile is untested. No real 3+ uploads; tests are synthetic. M3-B2 is not done. See docs/CONSENSUS.md |
+| Multi-upload consensus | ⚠️ Partial | crates/consensus (osdb-consensus) | M3 Consensus and publishing | Local threshold and unsigned publish staging. No accounts, so counts are uploads, not people, and do not prove uploader independence. One same-PC same-GPU check: 6416 of 6416 shared app keys, 6416 identical full records, 2580 shared vertex/pixel shader pairs (session 2 had 12 extra records). Cross-GPU and cross-driver pipeline agreement is UNPROVEN. Lazy pipeline compile is untested. No real 3+ uploads; tests are synthetic. Nothing deployed. M3-C and signing are not done. See docs/CONSENSUS.md |
 | Signed releases (Minisign) | 📋 Planned | Security | M4 Signed releases | Approved |
 | Compile validation | 💭 Proposed | Security | M5 Windows validation | Deferred |
 

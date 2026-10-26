@@ -1,14 +1,19 @@
-# Staging loader and threshold consensus
+# Staging loader, threshold consensus, and unsigned publish staging
 
-Library only: `crates/consensus`, package `osdb-consensus`. It loads a
-staging tree and tallies hashes. It does not wire `osdb-cli`, write a
-coverage index, publish records, or change the Worker. Those are M3-B2
-(publish writers, coverage format v2, CLI) and later, and they are not
-done. Nothing in this crate is deployed.
+`crates/consensus` (`osdb-consensus`) loads a staging tree, tallies
+hashes, and can write an unsigned local staging directory. `osdb-cli
+consensus build` and `osdb-cli consensus report` call that library.
+The files are not a release and are not signed. Nothing is uploaded.
+The Worker is unchanged. Nothing here is deployed, and no real upload
+set has been published.
+
+M3-C (challenge checks, anomaly detection, review queue) is not done.
+Signing is M4 and is not done.
 
 The numbers below are hashes and counts. They do not show that uploads
 came from different people, machines, GPUs, or drivers. There are no
-accounts.
+accounts. A consensus count does not prove that the uploaders are
+independent.
 
 ## Staging layout
 
@@ -181,6 +186,106 @@ not tallied, so a held hash is neither accepted nor rejected.
 A build mismatch is held as `build_id_mismatch` even when the upload
 would also have been held for ownership. One upload is one held row.
 
+## Publish layout
+
+`write_index` writes under a directory the caller names. That directory
+is unsigned staging. It is not a release. The command prints
+`unsigned staging, not a release` only after files are written.
+
+```text
+<out>/<game_id>/<version>--<exe_hash>/coverage.v2.json
+<out>/<game_id>/<version>--<exe_hash>/consensus-report.json
+<out>/<game_id>/<version>--<exe_hash>/records.json
+```
+
+`records.json` is written only when the caller passes a candidate record
+file and at least one record's pipeline content hash is in the accepted
+set. The record format stays version 1. The writer keeps those records,
+drops the rest, drops descriptor tables nothing references, and loads
+the result again with the strict record loader (root signatures checked,
+no DXIL, no bytecode). Zero qualifying records refuses the write. A
+record the loader rejects refuses the write, and the index files are
+removed if they were created in the same command.
+
+When no pipeline hash is accepted, nothing is created. The CLI prints
+the counts and the line `waiting for data`, then exits 0.
+
+The output directory must not be the staging input or a path inside it.
+A symlinked output directory is refused and not followed. An existing
+output file is left as it is (there is no overwrite flag). A destination
+that is the same file as an input is refused. Each file is written by
+creating a new temp file in the same directory, writing, flushing,
+`fsync`, and renaming. The temp file is removed if the rename does not
+happen.
+
+`consensus-report.json` is counts only. It has `upload_count`,
+`counted_uploads`, `accepted_counts` (distinct accepted hashes per
+unit), `rejected_counts`, `held_counts` (per reason), `threshold`, and
+`generated_at`. It has no path and no hash of one upload. The accepted
+pipeline hashes live only in `coverage.v2.json`.
+
+## Coverage index format version 2
+
+Format version 1 is unchanged: `hashes` are SODB description hashes, the
+loader sorts and deduplicates them, and `osdb-cli coverage` still
+compares those hashes. A version 1 file that adds version 2 fields is
+rejected.
+
+Format version 2 uses the same build id and the same size caps. `hashes`
+are `pipeline_content_hash` values: 64 lowercase hex, sorted, unique.
+Unsorted or duplicate version 2 hashes are rejected (they are not
+silently sorted). The file also has `rejected_count` and `threshold`
+(`min_uploads`, `min_ratio_per_mille`). `consensus_count` is the number
+of accepted pipeline hashes. `upload_count` is the consensus result's
+upload count, which includes held uploads. `generated_at` is
+`YYYY-MM-DDTHH:MM:SSZ`. Canonical bytes use sorted keys and no trailing
+newline. Unknown fields are rejected. A JSON string whose raw form is
+longer than any field allows is rejected before that string is copied.
+
+Version 2 is not a description-hash index. `compare` refuses it.
+Signing is not part of either version.
+
+## CLI
+
+Offline. Defaults are `--min-uploads 3` and `--min-ratio-per-mille 500`.
+`--ingest-path` is `reviewed-pr` (counted) or `worker` (held unless
+`--count-worker-exe-binding` is set). That flag is a policy switch. It
+does not verify a binding, it does not show that uploaders are different
+people or machines, and it does not lower the threshold. Unchallenged
+Worker uploads stay held. There is no flag that counts them.
+
+`consensus report` takes the same inputs except `--out` and `--records`.
+It prints counts and writes nothing.
+
+`consensus build` adds `--out`. `--records` is optional. Counts go to
+stdout. Paths of uploads and hashes of individual uploads are not
+printed. Exit 0 is success, including `waiting for data`. Exit 1 is a
+rejected input or a refused write. Exit 2 is clap (missing or bad
+arguments).
+
+Worked example, synthetic data only. Three manifests for game
+`synthetic`, version `1.0.0`, and an exe hash of 64 `1` characters.
+Two of them list one pipeline hash. The third lists that hash and a
+second hash. With the default bar the first hash is accepted and the
+second is not. No real upload is involved.
+
+```text
+osdb-cli consensus report --staging <staging> --game-id synthetic --version 1.0.0 --exe-hash 1111111111111111111111111111111111111111111111111111111111111111
+```
+
+Stdout is counts, including `upload_count: 3`, `counted_uploads: 3`,
+`accepted_pipeline_hash: 1`, and `rejected_pipeline_hash: 1`. The same
+inputs with only two manifests print `counted_uploads: 2` and
+`waiting for data`, and `consensus build` creates no files.
+
+```text
+osdb-cli consensus build --staging <staging> --game-id synthetic --version 1.0.0 --exe-hash 1111111111111111111111111111111111111111111111111111111111111111 --out <publish-staging>
+```
+
+That writes `coverage.v2.json` and `consensus-report.json` and prints
+`unsigned staging, not a release`. The directory is still unsigned. It
+is not deployed and it is not a release.
+
 ## What these numbers do not prove
 
 - They are not a count of people. Nothing in the manifest is an account.
@@ -188,8 +293,11 @@ would also have been held for ownership. One upload is one held row.
 - A Worker ownership field is not evidence. Unchallenged means no server
   challenge. `exe_binding_v1` is stored unverified until a later check
   exists. That check is not this crate.
-- Meeting the threshold is not a signed release and not a coverage index.
-  Publishing is M3-B2 and is not done.
+- Meeting the threshold writes unsigned local staging when the publish
+  command is run. That directory is not a signed release, not a deployed
+  index, and not proof that the uploaders are independent.
+- M3-C (challenge, anomaly detection, review queue) is not done.
+  Signing is not done. No real upload set has been published.
 - Cross-GPU and cross-driver agreement of pipeline hashes is unproven.
   See [Open questions](#open-questions).
 
@@ -209,7 +317,9 @@ would also have been held for ownership. One upload is one held row.
 The [ARCHITECTURE.md](../ARCHITECTURE.md) sketch of `AgreementThreshold`
 talks about description hashes plus bytecode hashes. This crate tallies
 those lists and uses version 2 `pipeline_hashes` as the pipeline unit.
-It still does not emit a `ConsensusIndex` or a coverage file.
+The publish writer emits coverage format version 2 (pipeline content
+hashes) and an optional record file. It does not emit the logical
+`DescriptionHash` object list, and it does not sign the directory.
 
 ## Safeguards
 
