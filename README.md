@@ -18,7 +18,7 @@ This project consists of:
 
 ## Why open-shader-db?
 
-Shader compilation stutter is a significant problem in modern PC gaming. Microsoft's Advanced Shader Delivery (ASD) provides a technical solution, but requires games to ship SODB files. This project enables the community to build and share these databases for games that don't provide them officially.
+Shader compilation stutter is a significant problem in modern PC gaming. Microsoft's Advanced Shader Delivery (ASD) is a storefront pipeline: a developer creates an SODB and a store compiles a PSDB for players. Today that delivery is for games played in the Xbox app on PC. Steam and Epic support was announced as "soon", with no date. A Steam install is not expected to contain `.sodb` files today (inferred from those documents; see [docs/SODB_SOURCES.md](docs/SODB_SOURCES.md)). This project reads SODB files wherever they already exist (an Xbox app install, a file a developer or tester captured, or a later store delivery) and can rebuild a local SODB from pipeline-state records plus shaders the user points at.
 
 **open-shader-db is:**
 - **Free and open:** No paywalls, no accounts, no tracking
@@ -69,7 +69,7 @@ already has these commands (synthetic / fixture tested; not a full
 product):
 
 - `inspect <file.sodb>` — print SODB hashes as JSON
-- `discover` — list Steam games and SODB counts (JSON never includes paths)
+- `discover` — list Steam games and SODB counts (JSON never includes paths). `sodb_files=0` is the expected Steam result today. `--sodb-dir` scans a folder you already have; `--xbox-games` also looks for a directory named `XboxGames` on drive roots (on-disk layout **UNVERIFIED**)
 - `coverage --sodb <file> --index <file>` — compare a local SODB to an
   unsigned coverage index (hashes and counts only)
 - `records extract --sodb <file>` — write local pipeline-state records
@@ -126,6 +126,7 @@ See [LICENSE-PROPOSAL.md](LICENSE-PROPOSAL.md) for rationale.
 
 ## References
 
+- [Where do SODB files come from?](docs/SODB_SOURCES.md)
 - [Microsoft: Advanced Shader Delivery overview](https://learn.microsoft.com/en-us/windows/win32/direct3d12/advanced-shader-delivery)
 - [Microsoft: State Object Database specification](https://microsoft.github.io/DirectX-Specs/d3d/StateObjectDatabase.html)
 - [Microsoft: DirectX Graphics Samples - Advanced Shader Delivery](https://github.com/microsoft/DirectX-Graphics-Samples/tree/master/Samples/Desktop/D3D12AdvancedShaderDelivery)

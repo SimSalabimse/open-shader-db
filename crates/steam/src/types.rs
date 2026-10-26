@@ -199,21 +199,95 @@ pub enum WarningKind {
     SodbScanLimited,
 }
 
+/// One path-free sentence about a discovery pass (counts only, never a path).
+///
+/// Built only inside this crate. [`Debug`] and JSON therefore cannot grow a
+/// filesystem path unless this crate formats one into the message.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+#[serde(transparent)]
+pub struct Note(String);
+
+impl Note {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Why an extra folder was scanned (not a Steam app manifest).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderScanKind {
+    /// `discover --sodb-dir` (a developer or tester capture).
+    ExplicitDir,
+    /// A directory named `XboxGames` on a drive root the caller supplied.
+    XboxGames,
+}
+
+/// One extra folder walk. **Not** `Serialize` because it carries [`LocalPath`]s.
+#[derive(Clone, Debug)]
+pub struct FolderScan {
+    pub kind: FolderScanKind,
+    pub root: LocalPath,
+    pub sodb_files: Vec<LocalPath>,
+}
+
 /// Full local discovery result. **Not** `Serialize`.
 #[derive(Clone, Debug)]
 pub struct Discovery {
     pub games: Vec<InstalledGame>,
     pub warnings: Vec<Warning>,
+    /// Path-free info lines (missing libraries, expected absence of SODB files).
+    pub notes: Vec<Note>,
+    /// Explicit folders and `XboxGames` roots. Empty unless the caller asked.
+    pub folder_scans: Vec<FolderScan>,
 }
 
 impl Discovery {
-    /// Identities and SODB counts only. Safe to write to an upload preview.
+    /// Identities, SODB counts, notes, and folder counts only. No paths.
     #[must_use]
     pub fn upload_safe(&self) -> UploadSafeDiscovery {
         UploadSafeDiscovery::new(
             self.games.iter().map(GameListing::from).collect(),
             self.warnings.clone(),
+            self.notes.clone(),
+            self.folder_scans
+                .iter()
+                .map(FolderScanCount::from)
+                .collect(),
         )
+    }
+}
+
+/// One extra folder as it may appear in JSON (no path).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct FolderScanCount {
+    kind: FolderScanKind,
+    sodb_file_count: usize,
+}
+
+impl FolderScanCount {
+    #[must_use]
+    pub fn kind(&self) -> FolderScanKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub fn sodb_file_count(&self) -> usize {
+        self.sodb_file_count
+    }
+}
+
+impl From<&FolderScan> for FolderScanCount {
+    fn from(scan: &FolderScan) -> Self {
+        Self {
+            kind: scan.kind,
+            sodb_file_count: scan.sodb_files.len(),
+        }
     }
 }
 
@@ -255,12 +329,24 @@ impl From<&InstalledGame> for GameListing {
 pub struct UploadSafeDiscovery {
     games: Vec<GameListing>,
     warnings: Vec<Warning>,
+    notes: Vec<Note>,
+    folder_scans: Vec<FolderScanCount>,
 }
 
 impl UploadSafeDiscovery {
     #[must_use]
-    pub(crate) fn new(games: Vec<GameListing>, warnings: Vec<Warning>) -> Self {
-        Self { games, warnings }
+    pub(crate) fn new(
+        games: Vec<GameListing>,
+        warnings: Vec<Warning>,
+        notes: Vec<Note>,
+        folder_scans: Vec<FolderScanCount>,
+    ) -> Self {
+        Self {
+            games,
+            warnings,
+            notes,
+            folder_scans,
+        }
     }
 
     #[must_use]
@@ -271,5 +357,15 @@ impl UploadSafeDiscovery {
     #[must_use]
     pub fn warnings(&self) -> &[Warning] {
         &self.warnings
+    }
+
+    #[must_use]
+    pub fn notes(&self) -> &[Note] {
+        &self.notes
+    }
+
+    #[must_use]
+    pub fn folder_scans(&self) -> &[FolderScanCount] {
+        &self.folder_scans
     }
 }

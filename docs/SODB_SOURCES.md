@@ -1,0 +1,25 @@
+# Where do SODB files come from?
+
+An SODB (State Object Database) is a developer artifact. A storefront that integrates Advanced Shader Delivery takes that file, compiles it in the cloud into a PSDB (Precompiled Shader Database), and delivers the PSDB to players. This page records what public documents say. It does not add facts beyond those documents.
+
+Labels: **verified** means the cited page says it. **Inferred** means a conclusion drawn from those pages, not a separate measurement. **UNVERIFIED** means no public document was found.
+
+## What the documents say
+
+- Advanced Shader Delivery has three stages: create an SODB, test it by compiling it to a PSDB locally, and deploy the SODB to a storefront. It needs storefront integration. **Verified.** [Advanced Shader Delivery overview](https://learn.microsoft.com/en-us/windows/win32/direct3d12/advanced-shader-delivery) (Microsoft Learn).
+- A developer submits the SODB alongside the game package. The store compiles a PSDB and delivers that to players. **Verified.** [DirectX-Graphics-Samples Advanced Shader Delivery readme](https://github.com/microsoft/DirectX-Graphics-Samples/blob/master/Samples/Desktop/D3D12AdvancedShaderDelivery/readme.md).
+- An SODB is produced either by the title through an API, or by a developer capture (`d3dconfig.exe` with `device pso-db-path=<file>.sodb` and `enable-pso-db=true`, then `D3D12StateObjectCompiler.exe checkpoint-db`). The extension is `.sodb`, at a path the developer chooses. **Verified.** [D3D12 State Object Database sample](https://learn.microsoft.com/en-us/samples/microsoft/directx-graphics-samples/d3d12-state-object-database-sample-win32/) and the readme above.
+- The shader-cache registration API describes SODBs as part of the game content an installer registers, after which a PSDB is fetched to a disk location the installer chooses. The runtime finds files by executable path. The spec says the API is intended for installers such as the Xbox Store and Steam. That describes the design, including a Steam integration, not a Steam delivery that exists today. **Verified** as a spec statement. [ShaderCacheRegistrationAPI.md](https://github.com/microsoft/DirectX-Specs/blob/master/d3d/ShaderCacheRegistrationAPI.md).
+- As of 2026-09-15, delivery was described as currently only available for games played in the Xbox app on PC, using the Xbox Game Package Manager, with SODB packages uploaded side by side with game packages. **Verified.** [Prepare your game for Advanced Shader Delivery](https://developer.microsoft.com/en-us/games/articles/2026/09/prepare-your-game-for-advanced-shader-delivery-asd/).
+- On 2026-10-21, Advanced Shader Delivery was described as broadly available on Windows 11 version 24H2 and later with recent drivers, and as something that will soon expand beyond the Microsoft Store and the Xbox PC app to the Epic Games Store and Steam. No date was given. **Verified.** [Advanced Shader Delivery is available now across hardware](https://devblogs.microsoft.com/directx/advanced-shader-delivery-is-available-now-across-hardware/).
+
+## What that means here
+
+- Steam delivery is not available today. It was announced as "soon", with no date. **Verified** from the 2026-10-21 post above; the lack of a date is part of that post.
+- **Inferred:** a normal Steam install has no `.sodb` file today, unless a developer shipped one inside the depot or someone captured one with `d3dconfig`. No public evidence was found that Steam depots ship `.sodb` files (**UNVERIFIED** either way). A read-only check of one Windows PC (about 30 Steam apps across 3 libraries) reported `sodb_files=0` for every game, which matches this reading. Raising the scan limit would not create a file the store never delivered.
+- This project reads SODB files wherever they already exist: an Xbox app install, if the file is on disk; a file a developer or tester captured with `d3dconfig`; or a later store delivery. The scan does not download files and does not attach to a game.
+- **UNVERIFIED:** where the Xbox app leaves SODB files on disk. No public document describes that layout. `discover --xbox-games` only checks for a directory named `XboxGames` on a drive root (`C:\XboxGames`, and the same name on other drive roots). That name is not a confirmed SODB location.
+
+## Safeguards
+
+The scan is offline. It has no network code. It never hooks or attaches to a process, and it is not for anti-cheat games. Bytecode and hash keys stay on the PC. Errors and debug output do not print paths or file bytes. See [ARCHITECTURE.md](../ARCHITECTURE.md#legal-and-tos-doubts) for the project safeguards; those rules are unchanged.

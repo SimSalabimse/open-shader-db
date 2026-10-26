@@ -20,15 +20,23 @@ mod scan;
 mod types;
 mod vdf;
 
-pub use discover::{discover, discover_with_scan};
+pub use discover::{
+    discover, discover_with_options, discover_with_scan, scan_bound_summary, DiscoverOptions,
+    NO_SODB_STEAM_NOTE,
+};
 pub use error::Error;
-pub use roots::{default_steam_roots, discover_default};
+pub use roots::{
+    default_fixed_drive_roots, default_steam_roots, discover_default,
+    discover_default_with_options, xbox_games_dirs,
+};
 pub use scan::{
-    ScanLimits, DEFAULT_MAX_DURATION, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_FILES, DEFAULT_SODB_DEPTH,
+    ScanLimits, WalkBound, DEFAULT_MAX_DURATION, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_FILES,
+    DEFAULT_SODB_DEPTH,
 };
 pub use types::{
-    AppId, BuildId, Discovery, GameIdentity, GameListing, GameName, InstalledGame, LocalPath,
-    UploadSafeDiscovery, Warning, WarningKind,
+    AppId, BuildId, Discovery, FolderScan, FolderScanCount, FolderScanKind, GameIdentity,
+    GameListing, GameName, InstalledGame, LocalPath, Note, UploadSafeDiscovery, Warning,
+    WarningKind,
 };
 pub use vdf::{
     parse_vdf, parse_vdf_file, VdfDocument, VdfValue, MAX_VDF_BYTES, MAX_VDF_DEPTH, MAX_VDF_TOKENS,

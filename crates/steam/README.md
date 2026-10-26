@@ -3,7 +3,10 @@
 Steam library discovery for open-shader-db (Simsalabim).
 
 This crate finds Steam library folders and installed games, and looks for
-local SODB files **inside each game install directory**. It is written
+local `.sodb` files under each game install directory. Steam does not
+deliver those files today (announced as "soon", no date). A library with
+zero `.sodb` files is the expected result, not an error. See
+[docs/SODB_SOURCES.md](../../docs/SODB_SOURCES.md). The crate is written
 from scratch (Valve KeyValues text parser included). It does not scrape
 or reuse any third-party shader-cache project.
 
@@ -54,19 +57,41 @@ disagree, the manifest value is used.
 
 ## SODB detection
 
-Candidate files are regular files whose SQLite header is SODB v2
-(`user_version=2`, `application_id=0xD3D50DB`). Confirmation uses
-`sodb::is_sodb` (100-byte header only). This crate does not parse
-pipeline tables or retain bytecode.
+Only regular files whose extension is `.sodb` (any letter case) are
+opened. Confirmation uses `sodb::is_sodb` (100-byte header only:
+`user_version=2`, `application_id=0xD3D50DB`). A matching header with
+another extension is ignored. This crate does not parse pipeline
+tables or retain bytecode.
 
-The install-dir walk is bounded by **depth** (default 4), **regular
-files considered** (default 10 000), **every directory entry**
-(default 50 000), and **wall-clock time per game** (default 2 s; not
-per whole `discover` run). Folder symlinks inside an install dir are
-followed only when `canonicalize` succeeds and the target stays under
-the canonical install dir. File symlinks are never followed. Loops
-(`self -> .`, `a -> b -> a`) are skipped after the first visit. A
-target reached by two paths is counted once.
+The walk is breadth-first. Files in the install root are checked
+first, then files in the directory of the manifest `Executable` (when
+that key is a plain relative path), then every other depth-1
+directory, then depth 2, before anything deeper. Directory names
+`Content`, `Paks`, `Movies`, `Videos`, `Audio`, `Sounds`, `Textures`,
+and `Streaming` are not entered. That skip is a heuristic (inferred)
+so a large asset tree does not spend the file budget; it is not a
+claim that an SODB cannot exist there. The executable directory and
+its parents are still entered.
+
+The walk is bounded by **depth** (default 4), **regular files
+considered** (default 10 000), **every directory entry** (default
+50 000), and **wall-clock time per game** (default 2 s; not per whole
+`discover` run). A stop names the bound that was hit (files, entries,
+or time). Human output sums those stops in one line and does not print
+a path. Folder symlinks inside an install dir are followed only when
+`canonicalize` succeeds and the target stays under the canonical
+install dir. File symlinks are never followed. Loops (`self -> .`,
+`a -> b -> a`) are skipped after the first visit. A target reached by
+two paths is counted once.
+
+Library paths listed in `libraryfolders.vdf` that are not directories
+become one info line with a count. The line does not include the paths.
+
+`discover --sodb-dir` (repeatable) scans a folder with the same reader
+and the same bounds. `discover --xbox-games` also scans a directory
+named `XboxGames` on each existing drive root. On non-Windows tests the
+drive list is injected; the default list is empty. Where an Xbox app
+install leaves SODB files is **UNVERIFIED**.
 
 On Unix, candidate files are opened with `O_NOFOLLOW | O_NONBLOCK |
 O_NOCTTY`. The opened handle's metadata must report a regular file;
@@ -74,17 +99,22 @@ FIFOs and devices are opened non-blocking, then rejected.
 
 ## CLI
 
-`osdb-cli` exposes three commands:
+`osdb-cli` exposes these commands:
 
 - `inspect <file.sodb>` — print SODB hashes as JSON
-- `discover` — list Steam games and SODB counts (this crate)
+- `discover` — list Steam games and SODB counts (this crate). Optional
+  `--sodb-dir` and `--xbox-games`
 - `coverage --sodb <file> --index <file>` — compare local hashes to an
   unsigned coverage index
 - `records extract --sodb <file>` — local pipeline-state records (no bytecode)
 
 ## What is not verified
 
-- Real Steam installs and real game folders
+- Real Steam installs beyond one Windows check that found no `.sodb`
+  files, which is the expected result today (see
+  [docs/SODB_SOURCES.md](../../docs/SODB_SOURCES.md))
+- Whether any Steam depot ships a `.sodb` anyway (no evidence either way)
+- Where the Xbox app leaves SODB files on disk (no public document)
 - Windows registry lookups (`winreg` is compiled for Windows CI but
   not exercised against a live Steam key)
 - Flatpak or macOS Application Support trees on this project's

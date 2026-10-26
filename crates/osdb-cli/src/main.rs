@@ -11,7 +11,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use osdb_steam::{discover, discover_default, Discovery};
+use osdb_steam::{
+    default_fixed_drive_roots, discover_default_with_options, discover_with_options,
+    scan_bound_summary, DiscoverOptions, Discovery, FolderScanKind, WarningKind,
+};
 
 mod output;
 
@@ -36,6 +39,10 @@ enum Command {
         file: PathBuf,
     },
     /// List Steam-installed games and how many local SODB files each has.
+    ///
+    /// Steam installs are not expected to contain `.sodb` files today. Pass
+    /// `--sodb-dir` for a folder a developer or tester already captured, or
+    /// `--xbox-games` to also look for a `XboxGames` directory on each drive root.
     Discover {
         /// Steam install root. When omitted, platform default locations are tried.
         #[arg(long)]
@@ -46,6 +53,12 @@ enum Command {
         /// Print identities, SODB counts, and warnings as JSON (no paths).
         #[arg(long)]
         json: bool,
+        /// Folder of `.sodb` files to scan (repeatable). Same bounds as a game walk.
+        #[arg(long)]
+        sodb_dir: Vec<PathBuf>,
+        /// Also scan a `XboxGames` folder on each existing drive root (read-only).
+        #[arg(long)]
+        xbox_games: bool,
     },
     /// Extract pipeline-state records from a local SODB (hashes only, never bytecode).
     Records {
@@ -116,11 +129,15 @@ impl fmt::Debug for Cli {
                 steam_root: _,
                 show_paths,
                 json,
+                sodb_dir: _,
+                xbox_games,
             } => f
                 .debug_struct("Discover")
                 .field("steam_root", &"<redacted>")
                 .field("show_paths", show_paths)
                 .field("json", json)
+                .field("sodb_dir", &"<redacted>")
+                .field("xbox_games", xbox_games)
                 .finish(),
             Command::Coverage {
                 sodb: _,
@@ -318,10 +335,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             steam_root,
             show_paths,
             json,
+            sodb_dir,
+            xbox_games,
         } => {
+            let options = DiscoverOptions {
+                sodb_dirs: sodb_dir,
+                xbox_drive_roots: if xbox_games {
+                    default_fixed_drive_roots()
+                } else {
+                    Vec::new()
+                },
+                ..DiscoverOptions::default()
+            };
             let found = match steam_root.as_deref() {
-                Some(root) => discover(root),
-                None => discover_default(),
+                Some(root) => discover_with_options(Some(root), &options),
+                None => discover_default_with_options(&options),
             };
             if json {
                 write_json(&found)?;
@@ -531,6 +559,9 @@ fn write_json(found: &Discovery) -> Result<(), Box<dyn std::error::Error>> {
 fn write_human(found: &Discovery, show_paths: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut err = std::io::stderr().lock();
     for warning in &found.warnings {
+        if warning.kind() == WarningKind::SodbScanLimited {
+            continue;
+        }
         if let Some(app) = warning.app_id() {
             writeln!(err, "warning: {} (app {app})", warning.message())?;
         } else {
@@ -539,9 +570,8 @@ fn write_human(found: &Discovery, show_paths: bool) -> Result<(), Box<dyn std::e
     }
 
     let mut out = std::io::stdout().lock();
-    if found.games.is_empty() {
+    if found.games.is_empty() && found.folder_scans.is_empty() {
         writeln!(out, "No games found.")?;
-        return Ok(());
     }
     for game in &found.games {
         writeln!(
@@ -558,6 +588,25 @@ fn write_human(found: &Discovery, show_paths: bool) -> Result<(), Box<dyn std::e
                 writeln!(out, "  sodb: {}", sodb.as_path().display())?;
             }
         }
+    }
+    for scan in &found.folder_scans {
+        let label = match scan.kind {
+            FolderScanKind::ExplicitDir => "explicit SODB folder",
+            FolderScanKind::XboxGames => "folder named XboxGames",
+        };
+        writeln!(out, "{label}  sodb_files={}", scan.sodb_files.len())?;
+        if show_paths {
+            writeln!(out, "  root: {}", scan.root.as_path().display())?;
+            for sodb in &scan.sodb_files {
+                writeln!(out, "  sodb: {}", sodb.as_path().display())?;
+            }
+        }
+    }
+    for note in &found.notes {
+        writeln!(out, "info: {}", note.message())?;
+    }
+    if let Some(summary) = scan_bound_summary(&found.warnings) {
+        writeln!(out, "info: {summary}")?;
     }
     Ok(())
 }
@@ -576,6 +625,8 @@ mod tests {
                 sodb_files: vec![LocalPath::new(install.join("a.sodb"))],
             }],
             warnings: Vec::new(),
+            notes: Vec::new(),
+            folder_scans: Vec::new(),
         }
     }
 
@@ -607,11 +658,14 @@ mod tests {
                 steam_root: Some(PathBuf::from("/home/os-user/.steam")),
                 show_paths: false,
                 json: true,
+                sodb_dir: vec![PathBuf::from("/home/os-user/capture")],
+                xbox_games: false,
             },
         };
         let text = format!("{discover:?}");
         assert!(text.contains("<redacted>"));
         assert!(!text.contains("os-user"));
+        assert!(text.contains("xbox_games: false"));
 
         let coverage = Cli {
             command: Command::Coverage {

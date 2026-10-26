@@ -48,19 +48,70 @@ pub fn default_steam_roots() -> Vec<PathBuf> {
 /// Discover using the first existing default root, or a missing-root result.
 #[must_use]
 pub fn discover_default() -> crate::Discovery {
+    discover_default_with_options(&crate::DiscoverOptions::default())
+}
+
+/// Like [`discover_default`], plus explicit SODB folders and drive roots from `options`.
+#[must_use]
+pub fn discover_default_with_options(options: &crate::DiscoverOptions) -> crate::Discovery {
     for root in default_steam_roots() {
         if root.is_dir() {
-            return crate::discover(&root);
+            return crate::discover_with_options(Some(&root), options);
         }
     }
-    crate::Discovery {
-        games: Vec::new(),
-        warnings: vec![crate::Warning::new(
-            crate::WarningKind::MissingSteamRoot,
-            None,
-            "no Steam install directory was found",
-        )],
+    let mut found = crate::discover_with_options(None, options);
+    found.warnings.push(crate::Warning::new(
+        crate::WarningKind::MissingSteamRoot,
+        None,
+        "no Steam install directory was found",
+    ));
+    found.warnings.sort_by(|a, b| {
+        a.app_id()
+            .cmp(&b.app_id())
+            .then_with(|| a.kind().cmp(&b.kind()))
+            .then_with(|| a.message().cmp(b.message()))
+    });
+    found
+}
+
+/// Drive roots to join with `XboxGames`.
+///
+/// On Windows this is every `A:\`..`Z:\` that is currently a directory (inferred
+/// stand-in for "local fixed drives"; this crate does not call a drive-type
+/// API). Other platforms return an empty list so tests inject their own roots.
+#[must_use]
+pub fn default_fixed_drive_roots() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut out = Vec::new();
+        for letter in b'A'..=b'Z' {
+            let root = PathBuf::from(format!("{}:\\", letter as char));
+            if root.is_dir() {
+                out.push(root);
+            }
+        }
+        out
     }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+/// `XboxGames` directories that exist under `drive_roots`.
+///
+/// Read-only. No registry. The on-disk layout inside those folders is
+/// **UNVERIFIED** (no public document).
+#[must_use]
+pub fn xbox_games_dirs(drive_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for root in drive_roots {
+        let candidate = root.join("XboxGames");
+        if candidate.is_dir() {
+            out.push(candidate);
+        }
+    }
+    out
 }
 
 fn home_dir() -> Option<PathBuf> {

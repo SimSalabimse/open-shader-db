@@ -8,11 +8,27 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::scan::{find_sodb_files, ScanLimits};
 use crate::types::{
-    AppId, BuildId, Discovery, GameIdentity, GameName, InstalledGame, LocalPath, Warning,
-    WarningKind,
+    AppId, BuildId, Discovery, FolderScan, FolderScanKind, GameIdentity, GameName, InstalledGame,
+    LocalPath, Note, Warning, WarningKind,
 };
 use crate::vdf::{parse_vdf_file, VdfDocument, VdfValue};
 use crate::Error;
+
+/// Sentence printed once when a Steam library has games and none of them
+/// contain a `.sodb` file. Steam does not deliver those files today.
+pub const NO_SODB_STEAM_NOTE: &str = "no SODB files found (expected for games from Steam today)";
+
+/// Extra inputs for [`discover_with_options`].
+#[derive(Clone, Debug, Default)]
+pub struct DiscoverOptions {
+    pub scan: ScanLimits,
+    /// Folders of `.sodb` files captured outside a Steam install.
+    pub sodb_dirs: Vec<PathBuf>,
+    /// Drive roots to check for a `XboxGames` directory. Empty skips that scan.
+    /// Tests pass a temp list; the CLI passes [`crate::default_fixed_drive_roots`]
+    /// only when asked.
+    pub xbox_drive_roots: Vec<PathBuf>,
+}
 
 /// Discover games under `steam_root`.
 ///
@@ -31,22 +47,85 @@ pub fn discover(steam_root: &Path) -> Discovery {
 
 #[must_use]
 pub fn discover_with_scan(steam_root: &Path, scan: ScanLimits) -> Discovery {
-    let mut warnings = Vec::new();
+    discover_with_options(
+        Some(steam_root),
+        &DiscoverOptions {
+            scan,
+            ..DiscoverOptions::default()
+        },
+    )
+}
 
-    if !steam_root.is_dir() {
-        warnings.push(Warning::new(
-            WarningKind::MissingSteamRoot,
-            None,
-            "Steam root does not exist or is not a directory",
-        ));
-        sort_warnings(&mut warnings);
-        return Discovery {
-            games: Vec::new(),
-            warnings,
-        };
+/// Discover Steam games and any extra folders named in `options`.
+///
+/// `steam_root == None` skips Steam entirely (no missing-root warning). Callers
+/// that tried the platform defaults and found nothing should add that warning
+/// themselves. Never panics.
+#[must_use]
+pub fn discover_with_options(steam_root: Option<&Path>, options: &DiscoverOptions) -> Discovery {
+    let mut warnings = Vec::new();
+    let mut notes = Vec::new();
+    let mut games = Vec::new();
+    let mut stale_libraries = 0_u32;
+
+    if let Some(steam_root) = steam_root {
+        if !steam_root.is_dir() {
+            warnings.push(Warning::new(
+                WarningKind::MissingSteamRoot,
+                None,
+                "Steam root does not exist or is not a directory",
+            ));
+        } else {
+            games = discover_steam(
+                steam_root,
+                options.scan,
+                &mut warnings,
+                &mut stale_libraries,
+            );
+        }
     }
 
-    let libraries = collect_libraries(steam_root, &mut warnings);
+    if stale_libraries > 0 {
+        notes.push(Note::new(stale_library_message(stale_libraries)));
+    }
+    if !games.is_empty() && games.iter().all(|game| game.sodb_files.is_empty()) {
+        notes.push(Note::new(NO_SODB_STEAM_NOTE));
+    }
+
+    let mut folder_scans = Vec::new();
+    for dir in &options.sodb_dirs {
+        folder_scans.push(scan_extra_folder(
+            dir,
+            FolderScanKind::ExplicitDir,
+            options.scan,
+            &mut warnings,
+        ));
+    }
+    for dir in crate::roots::xbox_games_dirs(&options.xbox_drive_roots) {
+        folder_scans.push(scan_extra_folder(
+            &dir,
+            FolderScanKind::XboxGames,
+            options.scan,
+            &mut warnings,
+        ));
+    }
+
+    sort_warnings(&mut warnings);
+    Discovery {
+        games,
+        warnings,
+        notes,
+        folder_scans,
+    }
+}
+
+fn discover_steam(
+    steam_root: &Path,
+    scan: ScanLimits,
+    warnings: &mut Vec<Warning>,
+    stale_libraries: &mut u32,
+) -> Vec<InstalledGame> {
+    let libraries = collect_libraries(steam_root, warnings, stale_libraries);
     let mut chosen: BTreeMap<AppId, ChosenGame> = BTreeMap::new();
 
     for (library_index, library) in libraries.iter().enumerate() {
@@ -76,7 +155,7 @@ pub fn discover_with_scan(steam_root: &Path, scan: ScanLimits) -> Discovery {
         for path in manifests {
             match load_game(&path, &steamapps, scan) {
                 Ok(LoadOutcome::Game(game)) => {
-                    record_game(&mut chosen, &mut warnings, game, library_index);
+                    record_game(&mut chosen, warnings, game, library_index);
                 }
                 Ok(LoadOutcome::Skipped(extra)) => warnings.extend(extra),
                 Err(err) => warnings.push(vdf_warning(err, WarningKind::UnreadableManifest, None)),
@@ -86,8 +165,65 @@ pub fn discover_with_scan(steam_root: &Path, scan: ScanLimits) -> Discovery {
 
     let mut games: Vec<InstalledGame> = chosen.into_values().map(|c| c.installed).collect();
     games.sort_by_key(|g| g.identity.app_id());
-    sort_warnings(&mut warnings);
-    Discovery { games, warnings }
+    games
+}
+
+fn stale_library_message(count: u32) -> String {
+    if count == 1 {
+        String::from("1 library path listed in VDF is not a directory")
+    } else {
+        format!("{count} library paths listed in VDF are not directories")
+    }
+}
+
+fn scan_extra_folder(
+    dir: &Path,
+    kind: FolderScanKind,
+    scan: ScanLimits,
+    warnings: &mut Vec<Warning>,
+) -> FolderScan {
+    let outcome = find_sodb_files(dir, scan, None);
+    warnings.extend(outcome.warnings);
+    FolderScan {
+        kind,
+        root: LocalPath::new(dir.to_path_buf()),
+        sodb_files: outcome.files,
+    }
+}
+
+/// Count of walk-bound stops, with no paths and no per-game lines.
+///
+/// `None` when no scan hit a bound. The wording names files, entries, and time.
+#[must_use]
+pub fn scan_bound_summary(warnings: &[Warning]) -> Option<String> {
+    let mut files = 0_u32;
+    let mut entries = 0_u32;
+    let mut time = 0_u32;
+    for warning in warnings {
+        if warning.kind() != WarningKind::SodbScanLimited {
+            continue;
+        }
+        match warning.message() {
+            msg if msg == crate::scan::WalkBound::Files.message() => {
+                files = files.saturating_add(1);
+            }
+            msg if msg == crate::scan::WalkBound::Entries.message() => {
+                entries = entries.saturating_add(1);
+            }
+            msg if msg == crate::scan::WalkBound::Time.message() => {
+                time = time.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    let total = files.saturating_add(entries).saturating_add(time);
+    if total == 0 {
+        None
+    } else {
+        Some(format!(
+            "stopped SODB scan after a walk bound (files={files}, entries={entries}, time={time})"
+        ))
+    }
 }
 
 struct ChosenGame {
@@ -168,7 +304,11 @@ fn list_manifests(steamapps: &Path) -> Result<Vec<PathBuf>, ()> {
     Ok(out)
 }
 
-fn collect_libraries(steam_root: &Path, warnings: &mut Vec<Warning>) -> Vec<PathBuf> {
+fn collect_libraries(
+    steam_root: &Path,
+    warnings: &mut Vec<Warning>,
+    stale_libraries: &mut u32,
+) -> Vec<PathBuf> {
     let mut keyed = Vec::new();
     let candidates = [
         steam_root.join("steamapps").join("libraryfolders.vdf"),
@@ -183,7 +323,12 @@ fn collect_libraries(steam_root: &Path, warnings: &mut Vec<Warning>) -> Vec<Path
         match parse_vdf_file(vdf_path) {
             Ok(doc) => {
                 parsed_any = true;
-                keyed.extend(libraries_from_vdf(&doc, steam_root, warnings));
+                keyed.extend(libraries_from_vdf(
+                    &doc,
+                    steam_root,
+                    warnings,
+                    stale_libraries,
+                ));
             }
             Err(err) => {
                 warnings.push(vdf_warning(err, WarningKind::MalformedVdf, None));
@@ -216,6 +361,7 @@ fn libraries_from_vdf(
     doc: &VdfDocument,
     steam_root: &Path,
     warnings: &mut Vec<Warning>,
+    stale_libraries: &mut u32,
 ) -> Vec<(String, PathBuf)> {
     let Some(table) = doc.root.as_table() else {
         warnings.push(Warning::new(
@@ -237,11 +383,7 @@ fn libraries_from_vdf(
                 if path.is_dir() {
                     out.push((key.clone(), path));
                 } else {
-                    warnings.push(Warning::new(
-                        WarningKind::UnreadableLibrary,
-                        None,
-                        "a library path listed in VDF is not a directory",
-                    ));
+                    *stale_libraries = stale_libraries.saturating_add(1);
                 }
             }
             None => warnings.push(Warning::new(
@@ -425,7 +567,12 @@ fn load_game(
         }
         Confine::Ready(path) => path,
     };
-    let scan_out = find_sodb_files(&install_dir, scan);
+    let exe_dir = table
+        .get("Executable")
+        .or_else(|| table.get("executable"))
+        .and_then(VdfValue::as_str)
+        .and_then(exe_parent_dir);
+    let scan_out = find_sodb_files(&install_dir, scan, exe_dir.as_deref());
     extra_warnings.extend(scan_out.warnings);
 
     Ok(LoadOutcome::Game(LoadedGame {
@@ -436,6 +583,25 @@ fn load_game(
         },
         extra_warnings,
     }))
+}
+
+/// Parent directory of a manifest `Executable`, relative to the install dir.
+///
+/// `game.exe` has no parent folder (the install root is already scanned first).
+/// Backslashes are normalized so a Windows manifest is testable on Linux.
+/// Absolute paths and `..` are ignored.
+fn exe_parent_dir(raw: &str) -> Option<PathBuf> {
+    let normalized = raw.replace('\\', "/");
+    if !is_plain_relative_installdir(&normalized) {
+        return None;
+    }
+    let path = Path::new(&normalized);
+    let parent = path.parent()?;
+    if parent.as_os_str().is_empty() {
+        None
+    } else {
+        Some(parent.to_path_buf())
+    }
 }
 
 /// `installdir` must be a non-empty relative name made only of `Normal`

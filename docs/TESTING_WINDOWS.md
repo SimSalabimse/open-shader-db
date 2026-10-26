@@ -1,5 +1,11 @@
 # Try the Windows CLI on one installed game
 
+**`sodb_files=0` is expected on Steam games.** SODB files are made by
+the developer and delivered by a store. Steam delivery is not available
+today (announced as "soon", with no date). A count of zero is a valid
+result. Do not look for a `.sodb` inside a Steam install folder. See
+[SODB_SOURCES.md](SODB_SOURCES.md).
+
 This is a short check for issue #9: run `osdb-cli` on **one** real game
 install. Close all games before running discover (it reads every
 installed game's folder, read-only). The tool never attaches to a game
@@ -46,13 +52,17 @@ anti-cheat**. If you are not sure, skip that title. Single-player,
 offline titles are the intended target. Do not pick a live-service or
 protected online title.
 
-If your game shows `sodb_files=0`, stop and send that count. Packed
-game archives are not scanned.
+`sodb_files=0` for that Steam game is a successful discover result.
+Packed game archives are not scanned. Steps that need a `.sodb` file
+are skipped unless you already have one (a developer capture, or a
+folder you pass to `--sodb-dir`).
 
-Real Steam folders, Windows registry Steam lookup, and real game SODBs
-are **UNVERIFIED**. Coverage against a real index: **UNVERIFIED** (no
-index exists yet). Whether a runtime accepts a rebuilt SODB, and
-shaders inside packed archives, are **UNVERIFIED**.
+Where the Xbox app leaves SODB files on disk is **UNVERIFIED** (no
+public document). Windows registry Steam lookup is **UNVERIFIED**.
+Coverage against a real index is **UNVERIFIED** (no index exists yet).
+Whether a runtime accepts a rebuilt SODB, and shaders inside packed
+archives, are **UNVERIFIED**. Whether any Steam depot ships a `.sodb`
+anyway is **UNVERIFIED**.
 
 ## Commands (in this order)
 
@@ -65,13 +75,24 @@ place):
 .\osdb-cli.exe discover --show-paths
 ```
 
-Human lines look like:
+Human lines look like this when the game has no SODB, which is the
+expected Steam result. The info line is printed once for the whole
+run, not once per game:
 
 ```
-NameFromSteam  app=123  build=456  sodb_files=1
-  install: <path on your PC; do not send>
-  sodb: <path on your PC; do not send>
+NameFromSteam  app=123  build=456  sodb_files=0
+info: no SODB files found (expected for games from Steam today)
 ```
+
+`--show-paths` adds an install line. Do not send that line. A
+`sodb_files=1` line only appears when a scanned folder really contains
+a `.sodb` file.
+
+Stale library entries (a path in `libraryfolders.vdf` that is not a
+directory) are one info line with a count and no paths, for example
+`info: 6 library paths listed in VDF are not directories`. A walk that
+stops early is also one info line and names the bound, for example
+`info: stopped SODB scan after a walk bound (files=0, entries=0, time=1)`.
 
 If nothing is installed where the tool looks:
 
@@ -91,7 +112,7 @@ community index yet. If you do not have one, skip this step and write
 **UNVERIFIED**. If you do have an index:
 
 ```
-.\osdb-cli.exe coverage --sodb "C:\Program Files (x86)\Steam\steamapps\common\Game\x.sodb" --index "$env:USERPROFILE\osdb-test\index.json"
+.\osdb-cli.exe coverage --sodb "<path-to-sodb>" --index "$env:USERPROFILE\osdb-test\index.json"
 ```
 
 Printed shape (counts vary). The last three lines are always these
@@ -120,14 +141,14 @@ Index: unsigned (signature verification arrives in a later milestone)
 uppercase fails with `malformed hex in record file`:
 
 ```
-(Get-FileHash "C:\Program Files (x86)\Steam\steamapps\common\Game\game.exe" -Algorithm SHA256).Hash.ToLower()
+(Get-FileHash "<path-to-game-exe>" -Algorithm SHA256).Hash.ToLower()
 ```
 
 Paste that as `--exe-hash`. If you leave it out, step 6 prints
 `build identity is incomplete`.
 
 ```
-.\osdb-cli.exe records extract --sodb "C:\Program Files (x86)\Steam\steamapps\common\Game\x.sodb" --out "$env:USERPROFILE\osdb-test\records.json" --game-id title1 --version 1 --exe-hash <paste lowercase hash>
+.\osdb-cli.exe records extract --sodb "<path-to-sodb>" --out "$env:USERPROFILE\osdb-test\records.json" --game-id title1 --version 1 --exe-hash <paste lowercase hash>
 ```
 
 `--game-id` / `--version` must be 1–128 graphic ASCII with no space,
@@ -139,7 +160,7 @@ prints nothing. If a root-signature blob was skipped, stderr is
 **4. Scan local shaders** (counts only):
 
 ```
-.\osdb-cli.exe shaders scan --sodb "C:\Program Files (x86)\Steam\steamapps\common\Game\x.sodb"
+.\osdb-cli.exe shaders scan --sodb "<path-to-sodb>"
 ```
 
 Exact line shape (numbers **UNVERIFIED** on a real game):
@@ -156,7 +177,7 @@ files. Do not use both `--dir` and `--sodb`.)
 **5. Rebuild** (local file with bytecode; **do not share it**):
 
 ```
-.\osdb-cli.exe rebuild --records "$env:USERPROFILE\osdb-test\records.json" --sodb "C:\Program Files (x86)\Steam\steamapps\common\Game\x.sodb" --out "$env:USERPROFILE\osdb-test\rebuilt.sodb"
+.\osdb-cli.exe rebuild --records "$env:USERPROFILE\osdb-test\records.json" --sodb "<path-to-sodb>" --out "$env:USERPROFILE\osdb-test\rebuilt.sodb"
 ```
 
 Stderr (exact first line):
@@ -195,9 +216,17 @@ only after you have read the preview.
 ## Success
 
 - The `.exe` hash matches the maintainer's message.
-- Discover ran. If `sodb_files=0`, you stopped and sent that count.
-- Later steps either printed the count lines above or a short error
-  with **no** file path in it.
+- Discover ran. `sodb_files=0` on a Steam game is a successful result.
+  You should see the one info line that no SODB files were found, not
+  one warning per game.
+- If every game is zero, skip coverage, extract, scan, rebuild, and
+  upload preview unless you have a `.sodb` from somewhere else
+  (`discover --sodb-dir "<path-to-folder>"`). Optional:
+  `discover --xbox-games` also looks for a folder named `XboxGames` on
+  each drive root. That layout is **UNVERIFIED**.
+- Later steps either printed the count lines above, were skipped
+  because there was no SODB, or printed a short error with **no** file
+  path in it.
 - Game files were not modified. You did not send shader bytes, a
   rebuilt `.sodb`, or anything from the game folder.
 
@@ -206,7 +235,8 @@ only after you have read the preview.
 - **Discover empty:** Steam may not be in a default location. Try
   `.\osdb-cli.exe discover --steam-root "C:\Program Files (x86)\Steam" --show-paths`.
   Windows registry lookup is compiled in but **UNVERIFIED**.
-- **`sodb_files=0`:** stop and send that count.
+- **`sodb_files=0`:** expected for Steam. Send the count. Do not treat
+  it as a failure. Skip later steps that need a `.sodb` file.
 - **Coverage error:** missing index is expected. Skip it.
 - **Extract / scan / rebuild / upload error:** copy the one-line
   message only if it has no path and no username.

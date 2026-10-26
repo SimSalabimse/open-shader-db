@@ -80,6 +80,135 @@ fn discover_json_runs_against_missing_root() {
     assert!(!stdout.contains(missing.to_string_lossy().as_ref()));
 }
 
+fn write_sodb_header(path: &std::path::Path) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let mut buf = vec![0_u8; 100];
+    buf[..16].copy_from_slice(b"SQLite format 3\0");
+    buf[18] = 1;
+    buf[19] = 1;
+    buf[60..64].copy_from_slice(&SODB_USER_VERSION.to_be_bytes());
+    buf[68..72].copy_from_slice(&SODB_APPLICATION_ID.to_be_bytes());
+    std::fs::write(path, buf).unwrap();
+}
+
+#[test]
+fn discover_help_lists_sodb_dir_and_xbox_games() {
+    let out = bin().args(["discover", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("--sodb-dir"));
+    assert!(stdout.contains("--xbox-games"));
+    assert!(!stdout.contains("os-user"));
+}
+
+#[test]
+fn discover_human_says_no_sodb_once_and_collapses_stale_libraries() {
+    let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let base =
+        std::env::temp_dir().join(format!("user-alice-fixture-cli-{}-{n}", std::process::id()));
+    let steam = base.join("steam");
+    let gone = base.join("gone-drive");
+    let steamapps = steam.join("steamapps");
+    std::fs::create_dir_all(steamapps.join("common").join("GameOne")).unwrap();
+    let esc = |path: &std::path::Path| {
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
+    let vdf = format!(
+        "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n\t\"1\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n}}\n",
+        esc(&gone),
+        esc(&steam)
+    );
+    std::fs::write(steamapps.join("libraryfolders.vdf"), vdf).unwrap();
+    std::fs::write(
+        steamapps.join("appmanifest_100.acf"),
+        "\"AppState\"\n{\n\t\"appid\"\t\t\"100\"\n\t\"name\"\t\t\"GameOne\"\n\t\"installdir\"\t\t\"GameOne\"\n\t\"buildid\"\t\t\"1\"\n}\n",
+    )
+    .unwrap();
+
+    let out = bin()
+        .arg("discover")
+        .arg("--steam-root")
+        .arg(&steam)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&base);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stdout.contains("sodb_files=0"));
+    assert_eq!(
+        stdout
+            .matches("no SODB files found (expected for games from Steam today)")
+            .count(),
+        1
+    );
+    assert!(stdout.contains("info: 1 library path listed in VDF is not a directory"));
+    assert!(!stdout.contains("gone-drive"));
+    assert!(!stdout.contains("user-alice-fixture"));
+    assert!(!stderr.contains("gone-drive"));
+    assert!(!stderr.contains("user-alice-fixture"));
+    assert!(!stderr.contains("warning: 1 library path"));
+    assert!(!stdout.contains("warning:"));
+}
+
+#[test]
+fn discover_sodb_dir_counts_extension_and_hides_the_path() {
+    let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let base = std::env::temp_dir().join(format!("osdb-cli-capture-{}-{n}", std::process::id()));
+    let capture = base.join("capture");
+    write_sodb_header(&capture.join("cap.sodb"));
+    write_sodb_header(&capture.join("not.db"));
+    let out = bin()
+        .arg("discover")
+        .arg("--steam-root")
+        .arg(base.join("missing-steam"))
+        .arg("--sodb-dir")
+        .arg(&capture)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&base);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stdout.contains("explicit SODB folder  sodb_files=1"));
+    assert!(!stdout.contains("capture"));
+    assert!(!stderr.contains("capture"));
+    assert!(!stdout.contains(base.to_string_lossy().as_ref()));
+}
+
+#[test]
+fn discover_xbox_games_flag_runs_without_printing_paths() {
+    let missing = temp_path("-no-steam");
+    let out = bin()
+        .arg("discover")
+        .arg("--steam-root")
+        .arg(&missing)
+        .arg("--xbox-games")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(!stdout.contains(missing.to_string_lossy().as_ref()));
+    assert!(stdout.contains("folder_scans"));
+}
+
 fn create_sodb() -> TempFile {
     let path = temp_path(".sodb");
     let conn = Connection::open(&path).unwrap();
