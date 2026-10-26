@@ -113,10 +113,12 @@ Pinned in `schemas/limits.v1.json`, `crates/upload` `Limits`, and
 The 16-character cap can only affect `schema_version`. Counts, timestamps, and hashes are strings or array lengths, so no other field can reach it.
 
 64 MiB stays the local cap so a full record file can still be previewed.
-A max valid version 2 manifest (150 000 description hashes, 400 000
-bytecode hashes, and 50 000 pipeline hashes) is bounded at
-40 800 349 bytes from the empty synthetic manifest, under 64 MiB and
-over 8 MiB.
+The largest version 2 manifest this tree builds (150 000 description
+hashes, 400 000 bytecode hashes, and 50 000 pipeline hashes) is
+40 200 346 bytes from the empty synthetic manifest. The closed-form
+upper bound `empty + slots * (per_hash + 1)` is 40 800 349 bytes (it
+counts a comma for every hash, including the first of each list).
+Both are under 64 MiB and over 8 MiB.
 The Worker **wire cap** is 8 MiB (not an isolate-size budget). A 53-64
 MiB document is refused before parse; see [Memory](#memory) for measured
 peaks under that wire cap. A full version 2 payload does not fit on the

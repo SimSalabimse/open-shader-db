@@ -235,7 +235,7 @@ boundary. Typed errors never echo rejected field values.
 
 | Limit | Default | Purpose |
 | --- | ---: | --- |
-| Local JSON bytes | 64 MiB | Client preview. A max valid version 2 document (150 000 + 400 000 + 50 000 hashes) is bounded at 40 800 349 bytes from the empty synthetic manifest (`empty + slots * (per_hash + 1)`), which is under this cap. |
+| Local JSON bytes | 64 MiB | Client preview. The largest version 2 document this tree builds (150 000 description hashes, 400 000 bytecode hashes, and 50 000 pipeline hashes, from the empty synthetic manifest) is 40 200 346 bytes. The closed-form upper bound `empty + slots * (per_hash + 1)` is 40 800 349 bytes; it counts a comma for every hash, including the first of each list. Both are under this cap. |
 | Wire JSON bytes | 8 MiB | Worker request body, before parse (128 MB isolate). That full version 2 document does not fit on the wire. |
 | Description hashes | 150 000 | `records.max_records` (50 000) × 3 keys |
 | Bytecode hashes | 400 000 | `records.max_records` (50 000) × 8 stages |
@@ -259,3 +259,13 @@ the record file when present, or from the flags. `--out` requires
 `--out` uses the same atomic helper as the other commands
 (same-file refusal, symlink refusal, temp file, fsync, rename).
 The command prints the preview and a notice that nothing is sent.
+
+Before that preview is printed, and before `--out` writes, the command
+compares the canonical manifest to the 8 MiB wire cap (`8388608` bytes).
+The cap itself is unchanged. A larger manifest is not written and the
+preview is not printed. The error names the manifest size, the limit,
+and that this manifest would be rejected by the upload server; nothing
+was written. It does not include a path. `--allow-oversize` is the
+local-only escape: the preview is printed and `--out` may write, and
+stderr says the manifest is over the wire limit and nothing was sent.
+The upload server would still reject those bytes.

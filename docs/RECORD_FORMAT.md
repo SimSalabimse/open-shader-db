@@ -141,8 +141,10 @@ The preimage is the UTF-8 bytes of one JSON object, with no BOM, no
 whitespace, and no trailing newline. SHA-256 covers those bytes, not
 their hex encoding. There is no length prefix and no domain separator.
 
-Rules, applied by `serde_json::to_value` on the record (object keys land
-in a `BTreeMap`) then `serde_json::to_vec` after deleting two keys:
+`osdb_records` writes these bytes with its own encoder. It does not call
+`serde_json` to format the preimage, and it does not build a
+`serde_json` map, so the crate feature `preserve_order` cannot change a
+byte. Keys below are written in UTF-8 lexicographic order on purpose.
 
 1. Delete `app_key` and `version`. No other field is renamed or removed
    except the omissions below. `version` here is `groups.Version` on the
@@ -161,24 +163,106 @@ in a `BTreeMap`) then `serde_json::to_vec` after deleting two keys:
    `unsupported_container`).
 7. Every other record field is present. An absent optional value is JSON
    `null` (not omitted).
-8. Integers are decimal JSON numbers with no leading zero, fraction, or
-   exponent. `0` is `0`.
-9. Finite floats use serde_json 1's default number format (shortest
-   round trip). A value that is an integer in magnitude but stored as
-   `f64` still has a fraction: `0.0`, `1.5`. Negative zero is the
-   distinct token `-0.0`. Exponents are not used for the vectors below.
-10. Strings use serde_json escaping: `"` and `\` are escaped, solidus
-    is not, control characters are `\u00XX`. The vectors below need no
-    escapes.
-11. A non-finite float (`NaN`, `+Inf`, `-Inf`) cannot be encoded. There
-    is no object preimage. The hash is SHA-256 of the four bytes `null`
-    (`6e756c6c`), which is
+8. Integers (`i64` fields, including those inside descriptor objects)
+   are decimal JSON numbers with no leading zero, fraction, or exponent.
+   `0` is `0`. A negative value has a leading `-`. The most negative
+   `i64` is `-9223372036854775808`.
+9. Finite floats are spelled from the IEEE-754 binary64 bits already
+   stored on the record, by the procedure in the next section. A value
+   that is an integer in magnitude but stored as `f64` still has a
+   fraction: `0.0`, `1.0`, `1.5`. Negative zero is the distinct token
+   `-0.0`. This is not `serde_json`'s formatter.
+10. Strings escape `"` as `\"` and `\` as `\\`. Solidus is not escaped.
+    Each byte in `0x00`..=`0x1F` is `\u00` plus two lowercase hex digits
+    (`\n` is `\u000a`, not a short escape). No other byte is escaped.
+    The golden vectors need no escapes.
+11. A non-finite float (`NaN`, `+Inf`, `-Inf`) on any of the three
+    rasterizer fields cannot be encoded. There is no object preimage.
+    The hash is SHA-256 of the four bytes `null` (`6e756c6c`), which is
     `74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b`.
     A file the loader accepted does not contain a non-finite float.
 
 Two records that differ only in `app_key` and `version` have the same
 preimage and the same hash. Filling a descriptor table does not change
 the hash.
+
+### Finite `f64` spelling
+
+The only `f64` fields on a pipeline record are `rasterizer.depth_bias`,
+`rasterizer.depth_bias_clamp`, and `rasterizer.slope_scaled_depth_bias`.
+The encoder reads those bits. It does not parse a JSON number.
+
+**In-memory value, not the file text.** Extract stores the SQLite REAL,
+which is already binary64. A D3D bias is often binary32; widening
+(`f32 as f64`) is exact, and that exact binary64 is what extract holds.
+The record **file** writer still emits JSON with `serde_json`. The
+record **loader** parses those decimals with `serde_json`'s concise
+parser, which is not correctly rounded: for some widened values it
+returns a binary64 one ulp away from the widened bits. That is a
+pre-existing loader limitation (the hash function does not change it).
+`pipeline_content_hash` hashes the bits on the struct it is given — the
+exact widened value on an extracted record, the loader's value on a
+loaded record. An outside tool reproduces the hash from those bits
+using the rules below. Re-parsing the decimal with a different
+converter does not.
+
+Pinned misread (also the widened golden vector below): f32 bits
+`3005d789` widen to f64 bits `3e00baf120000000`. Both this encoder and
+the record-file writer spell that value `4.869141201346849e-10`. The
+loader parses that token as bits `3e00baf11fffffff`, which this encoder
+spells `4.869141201346848e-10`.
+
+Procedure for one finite value. An implementation that follows it and
+checks candidates with a correctly rounded round-ties-to-even
+binary64 parser (IEEE-754 default) produces the same token.
+
+1. Bits `0x0000000000000000` (`+0.0`) spell `0.0`. Bits
+   `0x8000000000000000` (`-0.0`) spell `-0.0`. Stop.
+2. Remember the sign. Continue with the absolute value.
+3. Integer significand and binary power. `exp` is bits 62..=52,
+   `frac` is bits 51..=0.
+   - `exp == 0` (subnormal): significand = `frac`, power = `-1074`.
+   - otherwise: significand = `frac + 2^52`, power = `exp - 1075`
+     (`1075 = 1023 + 52`).
+4. Exact decimal digits.
+   - power ≥ 0: `N = significand × 2^power`. The value is the integer `N`.
+   - power < 0: `N = significand × 5^(-power)`. The value is `N × 10^power`.
+   - Write `N` in decimal with no leading zeros. `F` is that digit count.
+     `T` is the number of trailing zeros, with `T < F`. Drop them. The
+     remaining digits are `d0…d(L-1)` with `d0 ≠ 0`.
+   - Scientific exponent `k` is `F - 1` when power ≥ 0, and
+     `F - 1 + power` when power < 0. The value is `d0.d1… × 10^k`.
+     Dropping trailing zeros does not change `k`.
+5. Shortest round trip. For length `L` from 1 through `min(17, digit count)`,
+   round the exact digits to `L` digits, half to even:
+   - first dropped digit `< 5`: truncate;
+   - `> 5`, or `= 5` with any later non-zero digit: round up;
+   - `= 5` with every later digit zero: round up if and only if the last
+     kept digit is odd.
+   - A carry out of `d0` becomes the digit `1` followed by `L - 1` zeros,
+     and `k` increases by 1.
+   - Spell that candidate (step 6). Accept the smallest `L` whose spelling
+     converts back to the original bits, sign bit included. A finite
+     binary64 always has such an `L` of at most 17.
+6. Spelling of digits `d0…d(L-1)` and exponent `k`. A negative original
+   value gets one leading `-`.
+   - Plain form when `-4 ≤ k ≤ 15`:
+     - `k ≥ 0` and `k ≥ L - 1`: digits, then `k - (L - 1)` zeros, then
+       `.0`. Examples: `1.0`, `10.0`, `1000000000000000.0` (`10^15`).
+     - `k ≥ 0` and `k < L - 1`: digits `0` through `k`, `.`, the rest.
+       Example: `1.5`.
+     - `k < 0`: `0.`, then `-k - 1` zeros, then the digits.
+       Example: `0.0001` (`10^-4`, `k = -4`).
+   - Exponent form otherwise: `d0`, then `.` and the remaining digits
+     only when `L > 1`, then `e`, then `+` when `k ≥ 0` and `-` when
+     `k < 0`, then `|k|` in decimal with no leading zeros. A one-digit
+     significand has no decimal point. Examples: `1e+16`, `1e-5`,
+     `1e-7`, `4.869141201346849e-10`.
+
+`10^15` is plain (`1000000000000000.0`). `10^16` is exponent (`1e+16`).
+`10^-4` is plain (`0.0001`). `10^-5` and `10^-7` are exponent (`1e-5`,
+`1e-7`), for the binary64 values of those decimals (each of those four
+tokens round-trips to the bits of the Rust `f64` literal).
 
 ### Golden vectors
 
@@ -248,6 +332,44 @@ Rasterizer `depth_bias` is `1.5`, `depth_bias_clamp` is `-0.0`, and
 ```
 
 SHA-256: `e1f347fd625cc1c8755fa8f10cb5dc74da72208bbf501aee594b32586742fae0`
+
+The four preimages above are unchanged by the explicit encoder: they
+contain no exponent, and `1.5`, `0.0`, and `-0.0` spell the same way.
+
+#### Exponents, including negative zero
+
+`depth_bias` is the binary64 value of `10^16` (`1e+16`),
+`depth_bias_clamp` is the binary64 value of `10^-7` (`1e-7`), and
+`slope_scaled_depth_bias` is `-0.0`. Every integer rasterizer field is
+`0`.
+
+```json
+{"blend":null,"bytecode_hashes":{},"depth_stencil":null,"dsv_format":null,"flags":null,"ib_strip_cut_value":null,"input_layout":null,"node_mask":null,"primitive_topology":null,"rasterizer":{"conservative_raster":0,"cull_mode":0,"depth_bias":1e+16,"depth_bias_clamp":1e-7,"depth_clip_enable":0,"fill_mode":0,"forced_sample_count":0,"front_counter_clockwise":0,"line_rasterization_mode":0,"slope_scaled_depth_bias":-0.0},"render_target_formats":null,"root_signature":null,"sample_desc":null,"sample_mask":null,"stream_out":null,"view_instancing":null}
+```
+
+```text
+7b22626c656e64223a6e756c6c2c2262797465636f64655f686173686573223a7b7d2c2264657074685f7374656e63696c223a6e756c6c2c226473765f666f726d6174223a6e756c6c2c22666c616773223a6e756c6c2c2269625f73747269705f6375745f76616c7565223a6e756c6c2c22696e7075745f6c61796f7574223a6e756c6c2c226e6f64655f6d61736b223a6e756c6c2c227072696d69746976655f746f706f6c6f6779223a6e756c6c2c22726173746572697a6572223a7b22636f6e7365727661746976655f726173746572223a302c2263756c6c5f6d6f6465223a302c2264657074685f62696173223a31652b31362c2264657074685f626961735f636c616d70223a31652d372c2264657074685f636c69705f656e61626c65223a302c2266696c6c5f6d6f6465223a302c22666f726365645f73616d706c655f636f756e74223a302c2266726f6e745f636f756e7465725f636c6f636b77697365223a302c226c696e655f726173746572697a6174696f6e5f6d6f6465223a302c22736c6f70655f7363616c65645f64657074685f62696173223a2d302e307d2c2272656e6465725f7461726765745f666f726d617473223a6e756c6c2c22726f6f745f7369676e6174757265223a6e756c6c2c2273616d706c655f64657363223a6e756c6c2c2273616d706c655f6d61736b223a6e756c6c2c2273747265616d5f6f7574223a6e756c6c2c22766965775f696e7374616e63696e67223a6e756c6c7d
+```
+
+SHA-256: `1cf3ea8044bef955acd52a0f9ed19eabf6a4a1f9742ad3b9e023be859e29e16d`
+
+#### Widened f32, exact bits and the loader's bits
+
+`depth_bias` is f32 `3005d789` widened to f64 `3e00baf120000000`
+(`4.869141201346849e-10`). `depth_bias_clamp` is the value the record
+loader returns for that token, f64 `3e00baf11fffffff`
+(`4.869141201346848e-10`). `slope_scaled_depth_bias` is `0.0`. The hash
+is of those in-memory bits.
+
+```json
+{"blend":null,"bytecode_hashes":{},"depth_stencil":null,"dsv_format":null,"flags":null,"ib_strip_cut_value":null,"input_layout":null,"node_mask":null,"primitive_topology":null,"rasterizer":{"conservative_raster":0,"cull_mode":0,"depth_bias":4.869141201346849e-10,"depth_bias_clamp":4.869141201346848e-10,"depth_clip_enable":0,"fill_mode":0,"forced_sample_count":0,"front_counter_clockwise":0,"line_rasterization_mode":0,"slope_scaled_depth_bias":0.0},"render_target_formats":null,"root_signature":null,"sample_desc":null,"sample_mask":null,"stream_out":null,"view_instancing":null}
+```
+
+```text
+7b22626c656e64223a6e756c6c2c2262797465636f64655f686173686573223a7b7d2c2264657074685f7374656e63696c223a6e756c6c2c226473765f666f726d6174223a6e756c6c2c22666c616773223a6e756c6c2c2269625f73747269705f6375745f76616c7565223a6e756c6c2c22696e7075745f6c61796f7574223a6e756c6c2c226e6f64655f6d61736b223a6e756c6c2c227072696d69746976655f746f706f6c6f6779223a6e756c6c2c22726173746572697a6572223a7b22636f6e7365727661746976655f726173746572223a302c2263756c6c5f6d6f6465223a302c2264657074685f62696173223a342e383639313431323031333436383439652d31302c2264657074685f626961735f636c616d70223a342e383639313431323031333436383438652d31302c2264657074685f636c69705f656e61626c65223a302c2266696c6c5f6d6f6465223a302c22666f726365645f73616d706c655f636f756e74223a302c2266726f6e745f636f756e7465725f636c6f636b77697365223a302c226c696e655f726173746572697a6174696f6e5f6d6f6465223a302c22736c6f70655f7363616c65645f64657074685f62696173223a302e307d2c2272656e6465725f7461726765745f666f726d617473223a6e756c6c2c22726f6f745f7369676e6174757265223a6e756c6c2c2273616d706c655f64657363223a6e756c6c2c2273616d706c655f6d61736b223a6e756c6c2c2273747265616d5f6f7574223a6e756c6c2c22766965775f696e7374616e63696e67223a6e756c6c7d
+```
+
+SHA-256: `762d76dbfc66de83ea604a198a728bdd8f1b5c711abd98190c55c739cd486332`
 
 ## Which fields are copied as raw bytes
 

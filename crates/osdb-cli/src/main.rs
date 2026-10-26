@@ -197,6 +197,7 @@ impl fmt::Debug for Cli {
                     out: _,
                     force,
                     yes_i_reviewed,
+                    allow_oversize,
                 } => f
                     .debug_struct("UploadPrepare")
                     .field("records", &"<redacted>")
@@ -206,6 +207,7 @@ impl fmt::Debug for Cli {
                     .field("out", &"<redacted>")
                     .field("force", force)
                     .field("yes_i_reviewed", yes_i_reviewed)
+                    .field("allow_oversize", allow_oversize)
                     .finish(),
             },
         }
@@ -259,6 +261,10 @@ enum UploadCommand {
         /// Required with `--out`. Confirms the preview was reviewed.
         #[arg(long)]
         yes_i_reviewed: bool,
+        /// Local only. Emit the preview even when it exceeds the 8 MiB
+        /// upload wire cap. The upload server would still reject it.
+        #[arg(long)]
+        allow_oversize: bool,
     },
 }
 
@@ -391,6 +397,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     out,
                     force,
                     yes_i_reviewed,
+                    allow_oversize,
                 },
         } => {
             let loaded = osdb_records::load(&records)?;
@@ -404,6 +411,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             let manifest = builder.build()?;
             let preview = osdb_upload::UploadPreview::from_manifest(&manifest)?;
+            let got = u64::try_from(preview.canonical_bytes().len()).unwrap_or(u64::MAX);
+            let max = osdb_upload::WIRE_MAX_JSON_BYTES;
+            if got > max {
+                if !allow_oversize {
+                    return Err(format!(
+                        "upload manifest is {got} bytes, over the {max} byte wire limit; this manifest would be rejected by the upload server; nothing was written"
+                    )
+                    .into());
+                }
+                eprintln!(
+                    "local-only: manifest is {got} bytes, over the {max} byte wire limit; --allow-oversize was set and nothing was sent"
+                );
+            }
             let mut stdout = std::io::stdout().lock();
             write!(stdout, "{}", preview.as_text())?;
             if let Some(path) = out {
@@ -685,6 +705,7 @@ mod tests {
                     out: Some(PathBuf::from("/tmp/os-user-manifest.json")),
                     force: false,
                     yes_i_reviewed: true,
+                    allow_oversize: false,
                 },
             },
         };

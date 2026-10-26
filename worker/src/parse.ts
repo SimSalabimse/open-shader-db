@@ -355,13 +355,6 @@ function parseRootObject(cur: Cursor, limits: ParseLimits): Result<RootFields> {
           pipeline = value.value;
           break;
         }
-        if (schemaVersion !== undefined) {
-          const skipped = skipJsonValue(cur);
-          if (!skipped.ok) {
-            return skipped;
-          }
-          break;
-        }
         const start = cur.pos;
         const skipped = skipJsonValue(cur);
         if (!skipped.ok) {

@@ -3,7 +3,7 @@
 //! Hostile-input, privacy, determinism, and schema tests.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use osdb_records::{
     AppKeyHex, BuildIdentity, PipelineStateRecord, RecordFile, Sha256, StageHashes,
@@ -697,6 +697,108 @@ fn builder_rss_stays_flat_with_duplicate_hashes() {
 }
 
 #[test]
+fn pending_pipeline_hashes_are_typed_and_capped() {
+    let mut json = sample_json();
+    json["schema_version"] = serde_json::json!(2);
+    json["pipeline_hashes"] = serde_json::json!([0]);
+    let err = UploadManifest::parse(&compact(&json)).unwrap_err();
+    assert_eq!(err.code(), "INVALID_JSON");
+
+    json["pipeline_hashes"] = serde_json::json!([{}]);
+    let err = UploadManifest::parse(&compact(&json)).unwrap_err();
+    assert_eq!(err.code(), "INVALID_JSON");
+
+    json["pipeline_hashes"] = serde_json::json!(["a".repeat(65)]);
+    let err = UploadManifest::parse(&compact(&json)).unwrap_err();
+    assert_eq!(err.code(), "WRONG_HEX_LENGTH");
+    assert!(err.to_string().contains("65"));
+    assert!(!err.to_string().contains(&"a".repeat(65)));
+
+    let mut limits = Limits::DEFAULT;
+    limits.max_pipeline_hashes = 2;
+    json["pipeline_hashes"] =
+        serde_json::json!(["11".repeat(32), "22".repeat(32), "33".repeat(32),]);
+    let err = UploadManifest::parse_with_limits(&compact(&json), limits).unwrap_err();
+    assert_eq!(err.code(), "TOO_MANY_HASHES");
+
+    json["schema_version"] = serde_json::json!(3);
+    json["pipeline_hashes"] = serde_json::json!(["AA".repeat(32)]);
+    let err = UploadManifest::parse(&compact(&json)).unwrap_err();
+    assert_eq!(err.code(), "UNSUPPORTED_SCHEMA_VERSION");
+
+    json["schema_version"] = serde_json::json!(1);
+    json["pipeline_hashes"] = serde_json::json!(["11".repeat(32)]);
+    let err = UploadManifest::parse(&compact(&json)).unwrap_err();
+    assert_eq!(err.code(), "UNKNOWN_FIELD");
+}
+
+#[test]
+fn pending_pipeline_hashes_rejects_hostile_values_with_bounded_rss() {
+    #[cfg(target_os = "linux")]
+    if run_rss_isolated("pending_pipeline_hashes_rejects_hostile_values_with_bounded_rss") {
+        return;
+    }
+    check_hostile(
+        repeat_body(br#"{"pipeline_hashes":["#, b"0,", b"0]}"),
+        "INVALID_JSON",
+    );
+    check_hostile(
+        repeat_body(br#"{"pipeline_hashes":["#, b"{},", b"{}]}"),
+        "INVALID_JSON",
+    );
+    check_hostile(
+        repeat_body(br#"{"pipeline_hashes":[""#, b"a", br#""]}"#),
+        "WRONG_HEX_LENGTH",
+    );
+}
+
+fn repeat_body(prefix: &[u8], item: &[u8], suffix: &[u8]) -> Vec<u8> {
+    let target = 60 * 1024 * 1024;
+    let mut body = Vec::with_capacity(target + item.len() + suffix.len());
+    body.extend_from_slice(prefix);
+    while body.len() + item.len() + suffix.len() < target {
+        body.extend_from_slice(item);
+    }
+    body.extend_from_slice(suffix);
+    body
+}
+
+fn check_hostile(body: Vec<u8>, code: &str) {
+    assert!(
+        body.len() > 50 * 1024 * 1024 && body.len() < 64 * 1024 * 1024,
+        "hostile body is {} bytes",
+        body.len()
+    );
+    let start = Instant::now();
+    #[cfg(target_os = "linux")]
+    let before = rss_bytes().expect("rss");
+    let err = UploadManifest::parse(&body).unwrap_err();
+    #[cfg(target_os = "linux")]
+    let after = rss_bytes().expect("rss");
+    assert_eq!(err.code(), code, "{err}");
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "hostile parse took {:?}",
+        start.elapsed()
+    );
+    let shown = err.to_string();
+    assert!(!shown.contains("pipeline_hashes"));
+    assert!(shown.len() < 200, "{shown}");
+    #[cfg(target_os = "linux")]
+    {
+        let growth = after.saturating_sub(before);
+        assert!(
+            growth < 64 * 1024 * 1024,
+            "RSS grew by {growth} bytes (before {before}, after {after})"
+        );
+        assert!(
+            after < 256 * 1024 * 1024,
+            "RSS {after} bytes exceeds 256 MiB"
+        );
+    }
+}
+
+#[test]
 fn hashset_debug_prints_count_only() {
     let set = HashSet::from_unsorted(vec![sha_up(1), sha_up(2)], 10).unwrap();
     let text = format!("{set:?}");
@@ -774,13 +876,16 @@ fn default_caps_cover_a_full_record_file() {
     let slots =
         DEFAULT_MAX_DESCRIPTION_HASHES + DEFAULT_MAX_BYTECODE_HASHES + DEFAULT_MAX_PIPELINE_HASHES;
     let worst = empty + slots * (per_hash + 1);
+    // `worst` counts a separator for every hash, including the first of each
+    // list. A real build of these three lists is 40 200 346 bytes.
+    assert_eq!(worst, 40_800_349, "upper bound of a max valid v2 document");
     assert!(
         worst <= DEFAULT_MAX_JSON_BYTES,
-        "max valid v2 needs {worst} bytes, cap is {DEFAULT_MAX_JSON_BYTES}"
+        "upper bound of a max valid v2 is {worst} bytes, cap is {DEFAULT_MAX_JSON_BYTES}"
     );
     assert!(
         worst > WIRE_MAX_JSON_BYTES,
-        "max valid v2 must stay above the 8 MiB wire cap"
+        "upper bound of a max valid v2 must stay above the 8 MiB wire cap"
     );
     assert_eq!(DEFAULT_MAX_BYTECODE_HASHES, 400_000);
 }

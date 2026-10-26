@@ -2,11 +2,11 @@
 
 //! UploadManifest type, canonical JSON, and untrusted-byte parsing.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::fmt;
 
-use serde::de::{self, Deserializer, MapAccess, Visitor};
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use crate::build::{BuildId, ExeHash, GameId, GameVersion};
@@ -169,6 +169,8 @@ impl UploadManifest {
 
 thread_local! {
     static LAST_TYPED_ERROR: RefCell<Option<Error>> = const { RefCell::new(None) };
+    /// Cap for a `pipeline_hashes` array read before `schema_version` is known.
+    static PIPELINE_STRING_CAP: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Parse an upload manifest from memory. No filesystem I/O.
@@ -193,6 +195,7 @@ pub fn parse_with_limits(bytes: &[u8], limits: Limits) -> Result<UploadManifest,
         return Err(Error::InvalidInteger);
     }
     LAST_TYPED_ERROR.with(|slot| slot.borrow_mut().take());
+    PIPELINE_STRING_CAP.with(|cap| cap.set(limits.max_pipeline_hashes));
     let raw = {
         let mut de = serde_json::Deserializer::from_slice(bytes);
         let raw: RawManifest =
@@ -385,7 +388,7 @@ impl<'de> Visitor<'de> for RawManifestVisitor {
         let mut bytecode_hashes = None;
         let mut ownership = None;
         let mut pipeline_hashes: Option<Vec<Sha256Hex>> = None;
-        let mut pipeline_pending: Option<serde_json::Value> = None;
+        let mut pipeline_pending: Option<Vec<String>> = None;
         while let Some(key) = map.next_key::<String>()? {
             if !seen.insert(key.clone()) {
                 return Err(store_typed(Error::DuplicateKey));
@@ -399,9 +402,9 @@ impl<'de> Visitor<'de> for RawManifestVisitor {
                         return Err(store_typed(Error::UnknownField));
                     }
                     if found == u64::from(SCHEMA_VERSION) {
-                        if let Some(value) = pipeline_pending.take() {
+                        if let Some(strings) = pipeline_pending.take() {
                             pipeline_hashes =
-                                Some(pipeline_from_value(value).map_err(store_typed)?);
+                                Some(parse_pending_hashes(strings).map_err(store_typed)?);
                         }
                     }
                     schema_version = Some(found);
@@ -435,10 +438,12 @@ impl<'de> Visitor<'de> for RawManifestVisitor {
                         pipeline_hashes = Some(map.next_value::<RawHashes>()?.0);
                     }
                     Some(_) => {
-                        let _ignored: serde_json::Value = map.next_value()?;
+                        // Not version 1 or 2. Read typed strings (same cap) and
+                        // drop them so the unsupported-version error wins.
+                        let _ignored = map.next_value::<PendingHashStrings>()?;
                     }
                     None => {
-                        pipeline_pending = Some(map.next_value()?);
+                        pipeline_pending = Some(map.next_value::<PendingHashStrings>()?.0);
                     }
                 },
                 _ => return Err(store_typed(Error::UnknownField)),
@@ -458,9 +463,96 @@ impl<'de> Visitor<'de> for RawManifestVisitor {
     }
 }
 
-fn pipeline_from_value(value: serde_json::Value) -> Result<Vec<Sha256Hex>, Error> {
-    let raw = RawHashes::deserialize(value).map_err(take_typed_error)?;
-    Ok(raw.0)
+fn parse_pending_hashes(strings: Vec<String>) -> Result<Vec<Sha256Hex>, Error> {
+    let mut hashes = Vec::with_capacity(strings.len());
+    for text in strings {
+        hashes.push(Sha256Hex::parse(&text)?);
+    }
+    Ok(hashes)
+}
+
+/// SHA-256 hex is 64 characters. Longer strings are rejected before they are copied.
+const MAX_PENDING_HASH_CHARS: usize = 64;
+
+/// `pipeline_hashes` read before the version is known: strings only, with the
+/// caller's count cap. Non-strings fail as `INVALID_JSON` on the first element.
+/// A `serde_json::Value` would retain every element (numbers, objects, one
+/// huge string) and a junk document near the 64 MiB local cap can reach
+/// hundreds of megabytes of RSS.
+struct PendingHashStrings(Vec<String>);
+
+impl<'de> Deserialize<'de> for PendingHashStrings {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_seq(PendingHashStringsVisitor)
+    }
+}
+
+struct PendingHashStringsVisitor;
+
+impl<'de> Visitor<'de> for PendingHashStringsVisitor {
+    type Value = PendingHashStrings;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an array of hash strings")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let cap = PIPELINE_STRING_CAP.with(Cell::get);
+        let mut out = Vec::new();
+        while let Some(text) = seq.next_element_seed(CappedHashString)? {
+            let len = u64::try_from(out.len()).unwrap_or(u64::MAX);
+            if len >= cap {
+                return Err(store_typed(Error::TooManyHashes {
+                    max: cap,
+                    got: cap.saturating_add(1),
+                }));
+            }
+            out.push(text);
+        }
+        Ok(PendingHashStrings(out))
+    }
+}
+
+struct CappedHashString;
+
+impl<'de> DeserializeSeed<'de> for CappedHashString {
+    type Value = String;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<String, D::Error> {
+        deserializer.deserialize_str(CappedHashStringVisitor)
+    }
+}
+
+struct CappedHashStringVisitor;
+
+impl<'de> Visitor<'de> for CappedHashStringVisitor {
+    type Value = String;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a hash string")
+    }
+
+    fn visit_borrowed_str<E: de::Error>(self, value: &'de str) -> Result<String, E> {
+        capped_hash_string(value)
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E> {
+        capped_hash_string(value)
+    }
+
+    fn visit_string<E: de::Error>(self, value: String) -> Result<String, E> {
+        if value.len() > MAX_PENDING_HASH_CHARS {
+            return Err(store_typed(Error::WrongHexLength { got: value.len() }));
+        }
+        Ok(value)
+    }
+}
+
+fn capped_hash_string<E: de::Error>(value: &str) -> Result<String, E> {
+    if value.len() > MAX_PENDING_HASH_CHARS {
+        return Err(store_typed(Error::WrongHexLength { got: value.len() }));
+    }
+    Ok(value.to_string())
 }
 
 fn parse_u64<E: de::Error>(value: serde_json::Value) -> Result<u64, E> {

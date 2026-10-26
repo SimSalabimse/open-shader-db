@@ -702,6 +702,77 @@ fn extract_records_with_build() -> TempFile {
     records
 }
 
+fn sha_at(n: u64) -> osdb_records::Sha256 {
+    let mut bytes = [0_u8; 32];
+    bytes[..8].copy_from_slice(&n.to_be_bytes());
+    osdb_records::Sha256::from_bytes(bytes)
+}
+
+/// Enough unique bytecode and pipeline hashes that the canonical manifest
+/// exceeds the 8 MiB wire cap. Description tables stay empty.
+fn oversize_record_file() -> TempFile {
+    let count = 14_100_u64;
+    let mut records = Vec::with_capacity(usize::try_from(count).unwrap());
+    for i in 0..count {
+        let base = i * 8;
+        let stages = osdb_records::StageHashes {
+            vs: Some(sha_at(base)),
+            ps: Some(sha_at(base + 1)),
+            hs: Some(sha_at(base + 2)),
+            ds: Some(sha_at(base + 3)),
+            gs: Some(sha_at(base + 4)),
+            as_stage: Some(sha_at(base + 5)),
+            ms: Some(sha_at(base + 6)),
+            cs: Some(sha_at(base + 7)),
+        };
+        records.push(osdb_records::PipelineStateRecord {
+            app_key: osdb_records::AppKeyHex::parse_hex(&format!("{i:08x}")).unwrap(),
+            version: 0,
+            bytecode_hashes: stages,
+            unresolved_stages: Vec::new(),
+            root_signature: None,
+            root_signature_skip: None,
+            input_layout: None,
+            depth_stencil: None,
+            blend: None,
+            rasterizer: None,
+            render_target_formats: None,
+            view_instancing: None,
+            stream_out: None,
+            sample_desc: None,
+            sample_mask: None,
+            ib_strip_cut_value: None,
+            primitive_topology: None,
+            dsv_format: None,
+            node_mask: None,
+            flags: None,
+        });
+    }
+    let file = osdb_records::RecordFile {
+        format_version: osdb_records::FORMAT_VERSION,
+        build: osdb_records::BuildIdentity::new(
+            Some(osdb_records::GameId::parse("synthetic").unwrap()),
+            Some(osdb_records::GameVersion::parse("1.0.0").unwrap()),
+            Some(
+                osdb_records::ExeHash::parse_hex(
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                )
+                .unwrap(),
+            ),
+        ),
+        root_signatures: std::collections::BTreeMap::new(),
+        input_layouts: std::collections::BTreeMap::new(),
+        stream_outputs: std::collections::BTreeMap::new(),
+        records,
+    };
+    let bytes = osdb_records::encode_record_file(&file).unwrap();
+    let dest = TempFile {
+        path: temp_path("-records.json"),
+    };
+    std::fs::write(&dest.path, bytes).unwrap();
+    dest
+}
+
 #[test]
 fn upload_prepare_help_lists_out_and_yes_i_reviewed() {
     let out = bin()
@@ -715,6 +786,7 @@ fn upload_prepare_help_lists_out_and_yes_i_reviewed() {
     assert!(stdout.contains("--out"));
     assert!(stdout.contains("--yes-i-reviewed"));
     assert!(stdout.contains("--force"));
+    assert!(stdout.contains("--allow-oversize"));
     assert!(stdout.contains("Nothing is sent") || stdout.contains("nothing is sent"));
 }
 
@@ -755,6 +827,104 @@ fn upload_prepare_prints_preview_and_writes_same_bytes() {
     assert!(!String::from_utf8_lossy(&out.stderr).contains(records.path.to_string_lossy().as_ref()));
     let parsed = osdb_upload::UploadManifest::parse(&file).unwrap();
     assert_eq!(parsed.schema_version, osdb_upload::SCHEMA_VERSION);
+}
+
+#[test]
+fn upload_prepare_checks_wire_cap_before_writing() {
+    let records = oversize_record_file();
+    let dest = TempFile {
+        path: temp_path("-manifest.json"),
+    };
+    let path_text = records.path.display().to_string();
+    let refused = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("synthetic")
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--yes-i-reviewed")
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8(refused.stderr).unwrap();
+    let stdout = String::from_utf8(refused.stdout).unwrap();
+    assert!(stderr
+        .contains("this manifest would be rejected by the upload server; nothing was written"));
+    assert!(stderr.contains("8388608"));
+    assert!(stderr.contains("bytes"));
+    assert!(!stderr.contains(&path_text));
+    assert!(!stdout.contains("Canonical JSON"));
+    assert!(!stdout.contains(&path_text));
+    assert!(!dest.path.exists());
+
+    let allowed = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("synthetic")
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--yes-i-reviewed")
+        .arg("--allow-oversize")
+        .output()
+        .unwrap();
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    let stderr = String::from_utf8(allowed.stderr).unwrap();
+    let stdout = String::from_utf8(allowed.stdout).unwrap();
+    assert!(stderr.contains("local-only"));
+    assert!(stderr.contains("8388608"));
+    assert!(stderr.contains("nothing was sent"));
+    assert!(!stderr.contains(&path_text));
+    assert!(!stdout.contains(&path_text));
+    assert!(stdout.contains("Canonical JSON"));
+    let file = std::fs::read(&dest.path).unwrap();
+    assert!(file.len() > 8 * 1024 * 1024, "wrote {} bytes", file.len());
+    let start = stdout.find("Canonical JSON:").unwrap();
+    let json = stdout[start + "Canonical JSON:".len()..].trim();
+    assert_eq!(json.as_bytes(), file.as_slice());
+}
+
+#[test]
+fn upload_prepare_allow_oversize_keeps_small_manifests() {
+    let records = extract_records_with_build();
+    let dest = TempFile {
+        path: temp_path("-manifest.json"),
+    };
+    let out = bin()
+        .arg("upload")
+        .arg("prepare")
+        .arg("--records")
+        .arg(&records.path)
+        .arg("--build-id")
+        .arg("synthetic")
+        .arg("--out")
+        .arg(&dest.path)
+        .arg("--yes-i-reviewed")
+        .arg("--allow-oversize")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(!stderr.contains("wire limit"));
+    assert!(!stderr.contains(&records.path.display().to_string()));
+    let file = std::fs::read(&dest.path).unwrap();
+    assert!(file.len() < 8 * 1024 * 1024);
+    assert!(file
+        .windows(b"schema_version".len())
+        .any(|w| w == b"schema_version"));
 }
 
 #[test]

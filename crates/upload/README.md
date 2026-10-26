@@ -58,7 +58,7 @@ manifests still parse and carry no `pipeline_hashes`.
 
 | Limit | Default | Purpose |
 | --- | ---: | --- |
-| `max_json_bytes` | 64 MiB | Local preview. Max valid v2 is bounded at 40 800 349 bytes. |
+| `max_json_bytes` | 64 MiB | Local preview. Largest built v2 is 40 200 346 bytes; upper bound is 40 800 349. |
 | `WIRE_MAX_JSON_BYTES` | 8 MiB | Worker request body, before parse. A full v2 does not fit. |
 | `max_description_hashes` | 150 000 | `50 000` records × 3 description keys |
 | `max_bytecode_hashes` | 400 000 | `50 000` records × 8 bytecode stages |
