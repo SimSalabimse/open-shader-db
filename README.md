@@ -124,6 +124,7 @@ See [LICENSE-PROPOSAL.md](LICENSE-PROPOSAL.md) for rationale.
 - [CONTRIBUTING.md](CONTRIBUTING.md) – How to contribute
 - [SECURITY.md](SECURITY.md) – Security policy and reporting
 - [docs/CAPTURE_SODB.md](docs/CAPTURE_SODB.md) – Optional local capture with Microsoft's d3dconfig, then osdb-cli
+- [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) – Data-source red lines for uploads and later readers
 
 ## References
 
