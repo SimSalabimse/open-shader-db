@@ -51,7 +51,7 @@ pub fn discover_default() -> crate::Discovery {
     discover_default_with_options(&crate::DiscoverOptions::default())
 }
 
-/// Like [`discover_default`], plus explicit SODB folders and drive roots from `options`.
+/// Like [`discover_default`], plus explicit SODB folders and Xbox folders from `options`.
 #[must_use]
 pub fn discover_default_with_options(options: &crate::DiscoverOptions) -> crate::Discovery {
     for root in default_steam_roots() {
@@ -74,28 +74,15 @@ pub fn discover_default_with_options(options: &crate::DiscoverOptions) -> crate:
     found
 }
 
-/// Drive roots to join with `XboxGames`.
+/// Drive roots this crate will scan on its own.
 ///
-/// On Windows this is every `A:\`..`Z:\` that is currently a directory (inferred
-/// stand-in for "local fixed drives"; this crate does not call a drive-type
-/// API). Other platforms return an empty list so tests inject their own roots.
+/// Always empty. Restricting the list to fixed local drives needs
+/// `GetDriveTypeW` (`DRIVE_FIXED`). That call is not in the standard library.
+/// This crate forbids `unsafe` and does not take a new dependency for it, so
+/// it does not probe `A:\`..`Z:\`. Pass the folder with `--xbox-games <dir>`.
 #[must_use]
 pub fn default_fixed_drive_roots() -> Vec<PathBuf> {
-    #[cfg(windows)]
-    {
-        let mut out = Vec::new();
-        for letter in b'A'..=b'Z' {
-            let root = PathBuf::from(format!("{}:\\", letter as char));
-            if root.is_dir() {
-                out.push(root);
-            }
-        }
-        out
-    }
-    #[cfg(not(windows))]
-    {
-        Vec::new()
-    }
+    Vec::new()
 }
 
 /// `XboxGames` directories that exist under `drive_roots`.

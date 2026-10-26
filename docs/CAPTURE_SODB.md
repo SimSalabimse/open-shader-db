@@ -66,11 +66,14 @@ Play, then exit. The Learn sample says the file written is the path
 from `pso-db-path`. These sources do not name a default folder.
 **UNVERIFIED:** any landing place other than the path you set.
 
-When you are done, clear the settings (Learn sample):
+When you are done, clear the settings. The Learn sample page shows:
 
 ```
 d3dconfig.exe --reset
 ```
+
+The samples readme also lists `d3dconfig.exe --reset --confirm`, which
+clears the settings without a prompt.
 
 The samples readme adds a checkpoint that folds a write-ahead log back
 into the SODB. The Learn sample page does not mention this command:

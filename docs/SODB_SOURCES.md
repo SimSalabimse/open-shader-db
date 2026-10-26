@@ -18,7 +18,7 @@ Labels: **verified** means the cited page says it. **Inferred** means a conclusi
 - Steam delivery is not available today. It was announced as "soon", with no date. **Verified** from the 2026-10-21 post above; the lack of a date is part of that post.
 - **Inferred:** a normal Steam install has no `.sodb` file today, unless a developer shipped one inside the depot or someone captured one with `d3dconfig`. No public evidence was found that Steam depots ship `.sodb` files (**UNVERIFIED** either way). A read-only check of one Windows PC (about 30 Steam apps across 3 libraries) reported `sodb_files=0` for every game, which matches this reading. Raising the scan limit would not create a file the store never delivered.
 - This project reads SODB files wherever they already exist: an Xbox app install, if the file is on disk; a file a developer or tester captured with `d3dconfig`; or a later store delivery. The scan does not download files and does not attach to a game.
-- **UNVERIFIED:** where the Xbox app leaves SODB files on disk. No public document describes that layout. `discover --xbox-games` only checks for a directory named `XboxGames` on a drive root (`C:\XboxGames`, and the same name on other drive roots). That name is not a confirmed SODB location.
+- **UNVERIFIED:** where the Xbox app leaves SODB files on disk. No public document describes that layout. `discover --xbox-games` scans only a folder you pass. It does not probe drive letters, because telling a fixed drive from another volume needs a Windows API this project does not call. A directory name is not a confirmed SODB location.
 
 ## Safeguards
 

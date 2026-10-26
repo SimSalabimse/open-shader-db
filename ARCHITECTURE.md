@@ -647,7 +647,7 @@ interface DataBundle {
 3. **What can SODB consumers do with an index?** If we publish description hashes but not bytecode:
    - Users can verify a local SODB, when they have one, against community consensus
    - Users cannot build an SODB from our data alone
-   - Storefronts deliver SODBs. Steam delivery was announced as "soon", with no date, and is not available today (see [docs/SODB_SOURCES.md](docs/SODB_SOURCES.md)). Where the Xbox app leaves the file on disk is **UNVERIFIED**
+   - Developers submit SODBs to the store, and the store delivers precompiled shaders to players. Steam delivery was announced as "soon", with no date, and is not available today (see [docs/SODB_SOURCES.md](docs/SODB_SOURCES.md)). Where the Xbox app leaves the file on disk is **UNVERIFIED**
    - Our value: verification, coverage reporting, trust signal
 
 ### Consensus and validation

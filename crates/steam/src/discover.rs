@@ -24,10 +24,9 @@ pub struct DiscoverOptions {
     pub scan: ScanLimits,
     /// Folders of `.sodb` files captured outside a Steam install.
     pub sodb_dirs: Vec<PathBuf>,
-    /// Drive roots to check for a `XboxGames` directory. Empty skips that scan.
-    /// Tests pass a temp list; the CLI passes [`crate::default_fixed_drive_roots`]
-    /// only when asked.
-    pub xbox_drive_roots: Vec<PathBuf>,
+    /// Folders the user named with `--xbox-games`. Each one is walked as given.
+    /// Empty skips that scan. This crate does not probe drive letters.
+    pub xbox_dirs: Vec<PathBuf>,
 }
 
 /// Discover games under `steam_root`.
@@ -101,9 +100,9 @@ pub fn discover_with_options(steam_root: Option<&Path>, options: &DiscoverOption
             &mut warnings,
         ));
     }
-    for dir in crate::roots::xbox_games_dirs(&options.xbox_drive_roots) {
+    for dir in &options.xbox_dirs {
         folder_scans.push(scan_extra_folder(
-            &dir,
+            dir,
             FolderScanKind::XboxGames,
             options.scan,
             &mut warnings,
@@ -182,13 +181,40 @@ fn scan_extra_folder(
     scan: ScanLimits,
     warnings: &mut Vec<Warning>,
 ) -> FolderScan {
-    let outcome = find_sodb_files(dir, scan, None);
+    if let Some(message) = extra_folder_problem(kind, dir) {
+        warnings.push(Warning::new(
+            WarningKind::UnreadableInstallDir,
+            None,
+            message,
+        ));
+        return FolderScan {
+            kind,
+            root: LocalPath::new(dir.to_path_buf()),
+            sodb_files: Vec::new(),
+        };
+    }
+    // User-named roots are not Steam installs, so the asset-directory skip
+    // does not apply. Depth, file, entry, and time bounds still do.
+    let outcome = find_sodb_files(dir, scan, None, false);
     warnings.extend(outcome.warnings);
     FolderScan {
         kind,
         root: LocalPath::new(dir.to_path_buf()),
         sodb_files: outcome.files,
     }
+}
+
+/// Path-free reason a user-named folder cannot be walked. `None` when `dir` is a directory.
+fn extra_folder_problem(kind: FolderScanKind, dir: &Path) -> Option<&'static str> {
+    if dir.is_dir() {
+        return None;
+    }
+    Some(match (kind, dir.is_file()) {
+        (FolderScanKind::ExplicitDir, true) => "--sodb-dir must be a folder",
+        (FolderScanKind::ExplicitDir, false) => "--sodb-dir folder not found or not a directory",
+        (FolderScanKind::XboxGames, true) => "--xbox-games must be a folder",
+        (FolderScanKind::XboxGames, false) => "--xbox-games folder not found or not a directory",
+    })
 }
 
 /// Count of walk-bound stops, with no paths and no per-game lines.
@@ -572,7 +598,7 @@ fn load_game(
         .or_else(|| table.get("executable"))
         .and_then(VdfValue::as_str)
         .and_then(exe_parent_dir);
-    let scan_out = find_sodb_files(&install_dir, scan, exe_dir.as_deref());
+    let scan_out = find_sodb_files(&install_dir, scan, exe_dir.as_deref(), true);
     extra_warnings.extend(scan_out.warnings);
 
     Ok(LoadOutcome::Game(LoadedGame {

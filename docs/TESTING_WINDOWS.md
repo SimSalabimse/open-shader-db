@@ -225,8 +225,12 @@ only after you have read the preview.
   upload preview unless you have a `.sodb` from somewhere else
   (`discover --sodb-dir "<path-to-folder>"`). How to capture one is in
   [CAPTURE_SODB.md](CAPTURE_SODB.md). Optional:
-  `discover --xbox-games` also looks for a folder named `XboxGames` on
-  each drive root. That layout is **UNVERIFIED**.
+  `discover --xbox-games "<path-to-folder>"` scans a folder you name.
+  The tool does not probe drive letters. That on-disk layout is
+  **UNVERIFIED**. A missing `--sodb-dir` prints
+  `--sodb-dir folder not found or not a directory` and does not print
+  the path. A file instead of a folder prints
+  `--sodb-dir must be a folder`.
 - Later steps either printed the count lines above, were skipped
   because there was no SODB, or printed a short error with **no** file
   path in it.

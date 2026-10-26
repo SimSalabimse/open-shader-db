@@ -995,6 +995,7 @@ fn walk_swap_race_never_counts_outside_file() {
                 ..ScanLimits::default()
             },
             None,
+            true,
         );
         assert!(
             out.files
@@ -1291,7 +1292,6 @@ fn explicit_sodb_dir_and_xbox_roots_are_path_free_in_json() {
     );
     let drive_c = fx.base.join("C");
     let drive_d = fx.base.join("D");
-    let drive_e = fx.base.join("E");
     fs::create_dir_all(drive_c.join("XboxGames").join("Title")).unwrap();
     write_sodb_header(
         &drive_c.join("XboxGames").join("Title").join("game.sodb"),
@@ -1299,12 +1299,11 @@ fn explicit_sodb_dir_and_xbox_roots_are_path_free_in_json() {
         SODB_APPLICATION_ID,
     );
     fs::create_dir_all(drive_d.join("XboxGames")).unwrap();
-    fs::create_dir_all(&drive_e).unwrap();
     let found = discover_with_options(
         None,
         &DiscoverOptions {
             sodb_dirs: vec![capture],
-            xbox_drive_roots: vec![drive_c, drive_d, drive_e, fx.base.join("missing-drive")],
+            xbox_dirs: vec![drive_c.join("XboxGames"), drive_d.join("XboxGames")],
             ..DiscoverOptions::default()
         },
     );
@@ -1330,8 +1329,103 @@ fn explicit_sodb_dir_and_xbox_roots_are_path_free_in_json() {
     assert!(!rendered.contains("capture"));
 }
 
-#[cfg(not(windows))]
 #[test]
-fn default_fixed_drive_roots_are_empty_off_windows() {
+fn default_fixed_drive_roots_do_not_probe_drive_letters() {
     assert!(crate::default_fixed_drive_roots().is_empty());
+}
+
+#[test]
+fn xbox_dir_walks_content_folders_inside_the_depth_bound() {
+    let fx = empty_fixture();
+    let root = fx.base.join("XboxGames");
+    write_sodb_header(
+        &root.join("A").join("Content").join("game.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    write_sodb_header(
+        &root.join("B").join("Content").join("Bin").join("x.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    write_sodb_header(
+        &root.join("C").join("x.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let found = discover_with_options(
+        None,
+        &DiscoverOptions {
+            xbox_dirs: vec![root],
+            ..DiscoverOptions::default()
+        },
+    );
+    assert!(found
+        .warnings
+        .iter()
+        .all(|w| w.kind() != WarningKind::SodbScanLimited));
+    assert_eq!(found.folder_scans.len(), 1);
+    let names: Vec<_> = found.folder_scans[0]
+        .sodb_files
+        .iter()
+        .map(|p| {
+            p.as_path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+        })
+        .collect();
+    assert_eq!(names, ["game.sodb", "x.sodb", "x.sodb"]);
+}
+
+#[test]
+fn sodb_dir_counts_a_file_under_audio() {
+    let fx = empty_fixture();
+    let capture = fx.base.join("capture");
+    write_sodb_header(
+        &capture.join("Audio").join("b.sodb"),
+        SODB_USER_VERSION,
+        SODB_APPLICATION_ID,
+    );
+    let found = discover_with_options(
+        None,
+        &DiscoverOptions {
+            sodb_dirs: vec![capture],
+            ..DiscoverOptions::default()
+        },
+    );
+    assert_eq!(found.folder_scans.len(), 1);
+    assert_eq!(found.folder_scans[0].sodb_files.len(), 1);
+    assert!(found.folder_scans[0]
+        .sodb_files
+        .iter()
+        .any(|p| p.as_path().ends_with("b.sodb")));
+}
+
+#[test]
+fn missing_sodb_dir_warns_without_a_path() {
+    let fx = empty_fixture();
+    let missing = fx.base.join("no-such-capture");
+    let file = fx.base.join("one.sodb");
+    write_sodb_header(&file, SODB_USER_VERSION, SODB_APPLICATION_ID);
+    let found = discover_with_options(
+        None,
+        &DiscoverOptions {
+            sodb_dirs: vec![missing, file],
+            ..DiscoverOptions::default()
+        },
+    );
+    let messages: Vec<_> = found.warnings.iter().map(|w| w.message()).collect();
+    assert!(messages.contains(&"--sodb-dir folder not found or not a directory"));
+    assert!(messages.contains(&"--sodb-dir must be a folder"));
+    assert!(found
+        .folder_scans
+        .iter()
+        .all(|scan| scan.sodb_files.is_empty()));
+    let rendered = format!("{found:?}");
+    assert!(!rendered.contains("no-such-capture"));
+    assert!(!rendered.contains("one.sodb"));
+    let json = serde_json::to_string(&found.upload_safe()).unwrap();
+    assert!(!json.contains("no-such-capture"));
+    assert!(!json.contains("one.sodb"));
 }

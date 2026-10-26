@@ -66,9 +66,10 @@ tables or retain bytecode.
 The walk is breadth-first. Files in the install root are checked
 first, then files in the directory of the manifest `Executable` (when
 that key is a plain relative path), then every other depth-1
-directory, then depth 2, before anything deeper. Directory names
-`Content`, `Paks`, `Movies`, `Videos`, `Audio`, `Sounds`, `Textures`,
-and `Streaming` are not entered. That skip is a heuristic (inferred)
+directory, then depth 2, before anything deeper. On a Steam install
+walk, directory names `Content`, `Paks`, `Movies`, `Videos`, `Audio`,
+`Sounds`, `Textures`, and `Streaming` are not entered. That skip is a
+heuristic (inferred)
 so a large asset tree does not spend the file budget; it is not a
 claim that an SODB cannot exist there. The executable directory and
 its parents are still entered.
@@ -87,11 +88,15 @@ two paths is counted once.
 Library paths listed in `libraryfolders.vdf` that are not directories
 become one info line with a count. The line does not include the paths.
 
-`discover --sodb-dir` (repeatable) scans a folder with the same reader
-and the same bounds. `discover --xbox-games` also scans a directory
-named `XboxGames` on each existing drive root. On non-Windows tests the
-drive list is injected; the default list is empty. Where an Xbox app
-install leaves SODB files is **UNVERIFIED**.
+`discover --sodb-dir` and `discover --xbox-games` (each repeatable) scan
+a folder you name with the same reader and the same bounds. Those walks
+do not skip `Content`, `Audio`, and the other large-folder names. That
+skip applies only to a Steam install. The tool does not probe drive
+letters (`default_fixed_drive_roots` is empty): fixed-drive detection
+needs a Windows API this crate does not call. Where an Xbox app install
+leaves SODB files is **UNVERIFIED**. A missing `--sodb-dir` warns
+`--sodb-dir folder not found or not a directory` and does not print the
+path. A file passed as `--sodb-dir` warns `--sodb-dir must be a folder`.
 
 On Unix, candidate files are opened with `O_NOFOLLOW | O_NONBLOCK |
 O_NOCTTY`. The opened handle's metadata must report a regular file;

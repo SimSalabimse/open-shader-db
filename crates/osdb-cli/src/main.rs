@@ -12,8 +12,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use osdb_steam::{
-    default_fixed_drive_roots, discover_default_with_options, discover_with_options,
-    scan_bound_summary, DiscoverOptions, Discovery, FolderScanKind, WarningKind,
+    discover_default_with_options, discover_with_options, scan_bound_summary, DiscoverOptions,
+    Discovery, FolderScanKind, WarningKind,
 };
 
 mod output;
@@ -42,7 +42,7 @@ enum Command {
     ///
     /// Steam installs are not expected to contain `.sodb` files today. Pass
     /// `--sodb-dir` for a folder a developer or tester already captured, or
-    /// `--xbox-games` to also look for a `XboxGames` directory on each drive root.
+    /// `--xbox-games` with a folder to scan. Drive letters are not probed.
     Discover {
         /// Steam install root. When omitted, platform default locations are tried.
         #[arg(long)]
@@ -56,9 +56,13 @@ enum Command {
         /// Folder of `.sodb` files to scan (repeatable). Same bounds as a game walk.
         #[arg(long)]
         sodb_dir: Vec<PathBuf>,
-        /// Also scan a `XboxGames` folder on each existing drive root (read-only).
+        /// Folder to scan for `.sodb` files (repeatable). Not a drive letter.
+        ///
+        /// This tool does not probe drives. Fixed-drive detection needs a
+        /// Windows API this binary does not call. Pass the folder yourself.
+        /// Where an Xbox app leaves SODB files is unverified.
         #[arg(long)]
-        xbox_games: bool,
+        xbox_games: Vec<PathBuf>,
     },
     /// Extract pipeline-state records from a local SODB (hashes only, never bytecode).
     Records {
@@ -130,14 +134,14 @@ impl fmt::Debug for Cli {
                 show_paths,
                 json,
                 sodb_dir: _,
-                xbox_games,
+                xbox_games: _,
             } => f
                 .debug_struct("Discover")
                 .field("steam_root", &"<redacted>")
                 .field("show_paths", show_paths)
                 .field("json", json)
                 .field("sodb_dir", &"<redacted>")
-                .field("xbox_games", xbox_games)
+                .field("xbox_games", &"<redacted>")
                 .finish(),
             Command::Coverage {
                 sodb: _,
@@ -340,11 +344,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let options = DiscoverOptions {
                 sodb_dirs: sodb_dir,
-                xbox_drive_roots: if xbox_games {
-                    default_fixed_drive_roots()
-                } else {
-                    Vec::new()
-                },
+                xbox_dirs: xbox_games,
                 ..DiscoverOptions::default()
             };
             let found = match steam_root.as_deref() {
@@ -659,13 +659,13 @@ mod tests {
                 show_paths: false,
                 json: true,
                 sodb_dir: vec![PathBuf::from("/home/os-user/capture")],
-                xbox_games: false,
+                xbox_games: vec![PathBuf::from("/home/os-user/XboxGames")],
             },
         };
         let text = format!("{discover:?}");
         assert!(text.contains("<redacted>"));
         assert!(!text.contains("os-user"));
-        assert!(text.contains("xbox_games: false"));
+        assert!(text.contains("xbox_games: \"<redacted>\""));
 
         let coverage = Cli {
             command: Command::Coverage {

@@ -191,22 +191,62 @@ fn discover_sodb_dir_counts_extension_and_hides_the_path() {
 #[test]
 fn discover_xbox_games_flag_runs_without_printing_paths() {
     let missing = temp_path("-no-steam");
+    let folder = temp_path("-xbox");
+    std::fs::create_dir_all(&folder).unwrap();
     let out = bin()
         .arg("discover")
         .arg("--steam-root")
         .arg(&missing)
         .arg("--xbox-games")
+        .arg(&folder)
         .arg("--json")
         .output()
         .unwrap();
+    let _ = std::fs::remove_dir_all(&folder);
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(!stdout.contains(missing.to_string_lossy().as_ref()));
+    assert!(!stdout.contains(folder.to_string_lossy().as_ref()));
+    assert!(!stderr.contains(folder.to_string_lossy().as_ref()));
     assert!(stdout.contains("folder_scans"));
+    assert!(stdout.contains("xbox_games"));
+}
+
+#[test]
+fn discover_sodb_dir_missing_or_file_warns_without_a_path() {
+    let missing_steam = temp_path("-no-steam");
+    let missing_dir = temp_path("-missing-sodb-dir");
+    let file = temp_path(".sodb");
+    write_sodb_header(&file);
+    let out = bin()
+        .arg("discover")
+        .arg("--steam-root")
+        .arg(&missing_steam)
+        .arg("--sodb-dir")
+        .arg(&missing_dir)
+        .arg("--sodb-dir")
+        .arg(&file)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&file);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("warning: --sodb-dir folder not found or not a directory"));
+    assert!(stderr.contains("warning: --sodb-dir must be a folder"));
+    assert!(!stdout.contains(missing_dir.to_string_lossy().as_ref()));
+    assert!(!stderr.contains(missing_dir.to_string_lossy().as_ref()));
+    assert!(!stdout.contains(file.to_string_lossy().as_ref()));
+    assert!(!stderr.contains(file.to_string_lossy().as_ref()));
 }
 
 fn create_sodb() -> TempFile {

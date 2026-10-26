@@ -4,9 +4,11 @@
 //!
 //! The walk is breadth-first: the install root, then every depth-1 directory,
 //! then every depth-2 directory, before anything deeper. Only names that end
-//! in `.sodb` are opened. Directory names that are usually large asset trees
-//! are not entered. That skip is a heuristic (inferred), not a claim that an
-//! SODB cannot live there.
+//! in `.sodb` are opened. On a Steam install walk, directory names that are
+//! usually large asset trees are not entered. That skip is a heuristic
+//! (inferred), not a claim that an SODB cannot live there. A folder the user
+//! named (`--sodb-dir` or `--xbox-games`) is walked in full, still inside the
+//! same depth, file, entry, and time bounds.
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::{self, Metadata};
@@ -100,10 +102,14 @@ pub(crate) fn is_under_root(path: &Path, root: &Path) -> bool {
 /// `canonicalize` succeeds and the target is still under the canonical install
 /// dir. File symlinks are never followed. Every `read_dir` and `.sodb` probe
 /// re-checks [`is_under_root`].
+///
+/// `skip_huge_asset_dirs` is for an automatically discovered Steam install.
+/// User-named roots pass `false` and are walked fully, inside `limits`.
 pub(crate) fn find_sodb_files(
     install_dir: &Path,
     limits: ScanLimits,
     exe_dir: Option<&Path>,
+    skip_huge_asset_dirs: bool,
 ) -> ScanOutcome {
     let mut files = Vec::new();
     let mut warnings = Vec::new();
@@ -195,14 +201,16 @@ pub(crate) fn find_sodb_files(
                 if !mark_meta(&meta, &canon, &mut visited) {
                     continue;
                 }
-                if depth < limits.max_depth && !skip_huge_asset_dir(&canon, &root, exe_dir) {
+                if depth < limits.max_depth
+                    && !skip_huge_asset_dir(&canon, &root, exe_dir, skip_huge_asset_dirs)
+                {
                     children.push(canon);
                 }
             } else if ft.is_dir() {
                 if depth < limits.max_depth
                     && is_under_root(&path, &root)
                     && mark_visited(&path, &mut visited)
-                    && !skip_huge_asset_dir(&path, &root, exe_dir)
+                    && !skip_huge_asset_dir(&path, &root, exe_dir, skip_huge_asset_dirs)
                 {
                     children.push(path);
                 }
@@ -404,7 +412,15 @@ fn has_sodb_extension(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("sodb"))
 }
 
-fn skip_huge_asset_dir(dir: &Path, root: &Path, exe_dir: Option<&Path>) -> bool {
+fn skip_huge_asset_dir(
+    dir: &Path,
+    root: &Path,
+    exe_dir: Option<&Path>,
+    skip_huge_asset_dirs: bool,
+) -> bool {
+    if !skip_huge_asset_dirs {
+        return false;
+    }
     let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
         return false;
     };

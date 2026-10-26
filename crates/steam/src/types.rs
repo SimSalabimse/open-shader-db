@@ -224,7 +224,7 @@ impl Note {
 pub enum FolderScanKind {
     /// `discover --sodb-dir` (a developer or tester capture).
     ExplicitDir,
-    /// A directory named `XboxGames` on a drive root the caller supplied.
+    /// A folder the user passed to `discover --xbox-games`.
     XboxGames,
 }
 

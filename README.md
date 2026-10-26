@@ -69,7 +69,7 @@ already has these commands (synthetic / fixture tested; not a full
 product):
 
 - `inspect <file.sodb>` — print SODB hashes as JSON
-- `discover` — list Steam games and SODB counts (JSON never includes paths). `sodb_files=0` is the expected Steam result today. `--sodb-dir` scans a folder you already have; `--xbox-games` also looks for a directory named `XboxGames` on drive roots (on-disk layout **UNVERIFIED**)
+- `discover` — list Steam games and SODB counts (JSON never includes paths). `sodb_files=0` is the expected Steam result today. `--sodb-dir <folder>` and `--xbox-games <folder>` scan a folder you name (repeatable). The tool does not probe drive letters. Where an Xbox app leaves SODB files is **UNVERIFIED**. The large-folder skip applies only to Steam installs; a folder you name is walked fully, inside the same bounds.
 - `coverage --sodb <file> --index <file>` — compare a local SODB to an
   unsigned coverage index (hashes and counts only)
 - `records extract --sodb <file>` — write local pipeline-state records
