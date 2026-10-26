@@ -1,0 +1,13 @@
+{
+  "_comment": "NOT DEPLOYED. Fill in your own account and bucket. Staging objects expire after 90 days.",
+  "rules": [
+    {
+      "id": "expire-staging-90-days",
+      "enabled": true,
+      "prefix": "",
+      "expiration": {
+        "days": 90
+      }
+    }
+  ]
+}

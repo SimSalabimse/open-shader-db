@@ -16,13 +16,13 @@
         "game_id": {
           "maxLength": 128,
           "minLength": 1,
-          "pattern": "^[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$",
+          "pattern": "^(?!\\.\\.?$)[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$",
           "type": "string"
         },
         "version": {
           "maxLength": 128,
           "minLength": 1,
-          "pattern": "^[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$",
+          "pattern": "^(?!\\.\\.?$)[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$",
           "type": "string"
         }
       },
@@ -61,7 +61,7 @@
         "pattern": "^[0-9a-f]{64}$",
         "type": "string"
       },
-      "maxItems": 400000,
+      "maxItems": 150000,
       "type": "array",
       "uniqueItems": true
     },

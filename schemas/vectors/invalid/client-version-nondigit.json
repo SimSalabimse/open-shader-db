@@ -1,0 +1,20 @@
+{
+  "verdict": "reject",
+  "error_code": "INVALID_CLIENT_VERSION",
+  "body": {
+    "bytecode_hashes": [],
+    "build_id": {
+      "exe_hash": "00000000000000000000000000000000000000000000000000000000000000ee",
+      "game_id": "synthetic",
+      "version": "1.0.0"
+    },
+    "client_version": "1.2.a",
+    "collected_hour": "2026-10-25T14:00:00Z",
+    "description_hashes": [],
+    "ownership": {
+      "kind": "unchallenged",
+      "reason": "no_server_challenge"
+    },
+    "schema_version": 1
+  }
+}

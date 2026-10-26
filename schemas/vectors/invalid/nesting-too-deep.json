@@ -1,0 +1,5 @@
+{
+  "verdict": "reject",
+  "error_code": "NESTING_TOO_DEEP",
+  "body_text": "[[[[[[[[[null]]]]]]]]]"
+}

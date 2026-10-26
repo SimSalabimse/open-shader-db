@@ -1,0 +1,15 @@
+{
+  "_comment": "NOT DEPLOYED. Fill in your own account and Logpush destination. Use this exact allowlist only. Do not add Event, Exceptions, or connecting-address fields. workers_trace_events has no ClientIP field; Event would carry request headers (including X-Turnstile-Token) and Cloudflare cf data.",
+  "dataset": "workers_trace_events",
+  "output_options": {
+    "field_names": [
+      "EventType",
+      "Outcome",
+      "ScriptName",
+      "Logs",
+      "CPUTimeMs",
+      "WallTimeMs",
+      "EventTimestampMs"
+    ]
+  }
+}

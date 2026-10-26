@@ -9,7 +9,7 @@ pub enum Error {
     #[error("upload manifest exceeds size limit of {max} bytes (got {got})")]
     ManifestTooLarge { max: u64, got: u64 },
 
-    /// A hash list exceeded [`crate::Limits::max_hashes_per_list`].
+    /// A hash list exceeded its [`crate::Limits`] cap.
     #[error("hash count exceeds limit of {max} (got {got})")]
     TooManyHashes { max: u64, got: u64 },
 
@@ -100,4 +100,37 @@ pub enum Error {
     /// Opening or parsing the record file failed.
     #[error(transparent)]
     Records(#[from] osdb_records::Error),
+}
+
+impl Error {
+    /// Stable machine code shared with the ingest Worker and golden vectors.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::ManifestTooLarge { .. } => "MANIFEST_TOO_LARGE",
+            Self::TooManyHashes { .. } => "TOO_MANY_HASHES",
+            Self::UnsortedOrDuplicateHashes => "UNSORTED_OR_DUPLICATE_HASHES",
+            Self::NonCanonicalJson => "NON_CANONICAL_JSON",
+            Self::UnsupportedSchemaVersion { .. } => "UNSUPPORTED_SCHEMA_VERSION",
+            Self::MalformedHex => "MALFORMED_HEX",
+            Self::WrongHexLength { .. } => "WRONG_HEX_LENGTH",
+            Self::DuplicateKey => "DUPLICATE_KEY",
+            Self::UnknownField => "UNKNOWN_FIELD",
+            Self::MissingField => "MISSING_FIELD",
+            Self::TrailingGarbage => "TRAILING_GARBAGE",
+            Self::InvalidJson => "INVALID_JSON",
+            Self::NestingTooDeep { .. } => "NESTING_TOO_DEEP",
+            Self::InvalidBuildId => "INVALID_BUILD_ID",
+            Self::IncompleteBuildId => "INCOMPLETE_BUILD_ID",
+            Self::ByteOrderMark => "BYTE_ORDER_MARK",
+            Self::InvalidInteger => "INVALID_INTEGER",
+            Self::InvalidTimestamp => "INVALID_TIMESTAMP",
+            Self::TimestampOutOfRange => "TIMESTAMP_OUT_OF_RANGE",
+            Self::InvalidClientVersion => "INVALID_CLIENT_VERSION",
+            Self::UnknownOwnershipKind => "UNKNOWN_OWNERSHIP_KIND",
+            Self::UnknownOwnershipReason => "UNKNOWN_OWNERSHIP_REASON",
+            Self::CanonicalJson => "CANONICAL_JSON",
+            Self::Records(_) => "RECORDS",
+        }
+    }
 }

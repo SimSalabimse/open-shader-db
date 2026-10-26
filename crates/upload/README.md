@@ -6,7 +6,8 @@ Local anonymized upload-manifest types and preview for open-shader-db
 The crate builds an [`UploadManifest`] from a `records extract` file
 and shows a preview of the **exact bytes** that would later be sent.
 There is **no network client**, no HTTP crate, and no submit command.
-A later Worker (issue #12) will validate the same schema.
+The Worker in `worker/` validates the same rules (built and tested,
+not deployed).
 
 The implementation is written from this repository's architecture notes.
 It does not reuse code from SCSKiller.
@@ -50,8 +51,10 @@ documented and UNVERIFIED for consensus.
 
 | Limit | Default | Purpose |
 | --- | ---: | --- |
-| `max_json_bytes` | 64 MiB | Reject oversized wire JSON (fits two 400 000-hash lists) |
-| `max_hashes_per_list` | 400 000 | `50 000` records × 8 bytecode stages |
+| `max_json_bytes` | 64 MiB | Local preview; two full hash lists fit |
+| `WIRE_MAX_JSON_BYTES` | 8 MiB | Worker request body, before parse |
+| `max_description_hashes` | 150 000 | `50 000` records × 3 description keys |
+| `max_bytecode_hashes` | 400 000 | `50 000` records × 8 bytecode stages |
 | `max_json_nesting` | 8 | Reject deep JSON |
 
 Other hardening:

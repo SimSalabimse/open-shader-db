@@ -1,0 +1,567 @@
+{
+  "count": 106,
+  "vectors": [
+    {
+      "path": "invalid/april-31.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/backslash-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/byte-order-mark.json",
+      "verdict": "reject",
+      "error_code": "BYTE_ORDER_MARK"
+    },
+    {
+      "path": "invalid/century-leap-2100.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/challenge-non-hex.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
+    },
+    {
+      "path": "invalid/client-version-33.json",
+      "verdict": "reject",
+      "error_code": "INVALID_CLIENT_VERSION"
+    },
+    {
+      "path": "invalid/client-version-empty-part.json",
+      "verdict": "reject",
+      "error_code": "INVALID_CLIENT_VERSION"
+    },
+    {
+      "path": "invalid/client-version-nondigit.json",
+      "verdict": "reject",
+      "error_code": "INVALID_CLIENT_VERSION"
+    },
+    {
+      "path": "invalid/colon-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/day-0.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/day-32.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/dot-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/dot-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/dotdot-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/dotdot-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/duplicate-build-id-key.json",
+      "verdict": "reject",
+      "error_code": "DUPLICATE_KEY"
+    },
+    {
+      "path": "invalid/duplicate-hashes.json",
+      "verdict": "reject",
+      "error_code": "UNSORTED_OR_DUPLICATE_HASHES"
+    },
+    {
+      "path": "invalid/duplicate-key.json",
+      "verdict": "reject",
+      "error_code": "DUPLICATE_KEY"
+    },
+    {
+      "path": "invalid/duplicate-ownership-key.json",
+      "verdict": "reject",
+      "error_code": "DUPLICATE_KEY"
+    },
+    {
+      "path": "invalid/escaped-ident-overlong.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/exe-binding-with-reason.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/four-part-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_CLIENT_VERSION"
+    },
+    {
+      "path": "invalid/full-timestamp.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/hex-length-63.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
+    },
+    {
+      "path": "invalid/hex-length-65.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
+    },
+    {
+      "path": "invalid/hex-non-hex.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
+      "path": "invalid/hour-24.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/huge-number-token.json",
+      "verdict": "reject",
+      "error_code": "INVALID_INTEGER"
+    },
+    {
+      "path": "invalid/impossible-date.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/invalid-escape.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/leading-zero-schema-version.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/leap-feb-30.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/lone-surrogate.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/lowercase-z.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/minutes-14-10.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/missing-comma-build-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/missing-comma-hashes.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/missing-comma-ownership.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/missing-comma-root.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/missing-field.json",
+      "verdict": "reject",
+      "error_code": "MISSING_FIELD"
+    },
+    {
+      "path": "invalid/month-13.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/nesting-depth-8.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/nesting-too-deep.json",
+      "verdict": "reject",
+      "error_code": "NESTING_TOO_DEEP"
+    },
+    {
+      "path": "invalid/non-hex-exe-hash.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
+      "path": "invalid/nonascii-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/nonzero-minutes.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/nonzero-seconds.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/nov-31.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/odd-exe-hash.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
+    },
+    {
+      "path": "invalid/overlong-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/ownership-unknown-key.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/path-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/schema-version-16-digits.json",
+      "verdict": "reject",
+      "error_code": "UNSUPPORTED_SCHEMA_VERSION"
+    },
+    {
+      "path": "invalid/schema-version-2.json",
+      "verdict": "reject",
+      "error_code": "UNSUPPORTED_SCHEMA_VERSION"
+    },
+    {
+      "path": "invalid/schema-version-float.json",
+      "verdict": "reject",
+      "error_code": "INVALID_INTEGER"
+    },
+    {
+      "path": "invalid/schema-version-negative.json",
+      "verdict": "reject",
+      "error_code": "INVALID_INTEGER"
+    },
+    {
+      "path": "invalid/seconds-14-00-10.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/short-hex.json",
+      "verdict": "reject",
+      "error_code": "WRONG_HEX_LENGTH"
+    },
+    {
+      "path": "invalid/space-game-id.json",
+      "verdict": "reject",
+      "error_code": "INVALID_BUILD_ID"
+    },
+    {
+      "path": "invalid/trailing-garbage.json",
+      "verdict": "reject",
+      "error_code": "TRAILING_GARBAGE"
+    },
+    {
+      "path": "invalid/truncated.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/unchallenged-challenge.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/unknown-build-field.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/unknown-field.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_FIELD"
+    },
+    {
+      "path": "invalid/unknown-ownership-kind.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_OWNERSHIP_KIND"
+    },
+    {
+      "path": "invalid/unknown-ownership-reason.json",
+      "verdict": "reject",
+      "error_code": "UNKNOWN_OWNERSHIP_REASON"
+    },
+    {
+      "path": "invalid/unquoted-value.json",
+      "verdict": "reject",
+      "error_code": "INVALID_JSON"
+    },
+    {
+      "path": "invalid/unsorted-hashes.json",
+      "verdict": "reject",
+      "error_code": "UNSORTED_OR_DUPLICATE_HASHES"
+    },
+    {
+      "path": "invalid/uppercase-exe-hash.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
+      "path": "invalid/uppercase-hex.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
+      "path": "invalid/uppercase-high-nibble.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
+      "path": "invalid/uppercase-low-nibble.json",
+      "verdict": "reject",
+      "error_code": "MALFORMED_HEX"
+    },
+    {
+      "path": "invalid/year-0000.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "invalid/year-1969.json",
+      "verdict": "reject",
+      "error_code": "INVALID_TIMESTAMP"
+    },
+    {
+      "path": "valid-text/brackets-in-string.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/brackets-in-string.json"
+    },
+    {
+      "path": "valid-text/escaped-exe-hash.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/escaped-exe-hash.json"
+    },
+    {
+      "path": "valid-text/escaped-ident-max.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/escaped-ident-max.json"
+    },
+    {
+      "path": "valid-text/escaped-ident.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/escaped-ident.json"
+    },
+    {
+      "path": "valid-text/escaped-key-name.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/escaped-key-name.json"
+    },
+    {
+      "path": "valid-text/escaped-quote-long-digits.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/escaped-quote-long-digits.json"
+    },
+    {
+      "path": "valid-text/leading-space-hashes.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/leading-space-hashes.json"
+    },
+    {
+      "path": "valid-text/pretty-exe-binding.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/pretty-exe-binding.json"
+    },
+    {
+      "path": "valid-text/pretty-hashes.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/pretty-hashes.json"
+    },
+    {
+      "path": "valid-text/pretty-printed.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/pretty-printed.json"
+    },
+    {
+      "path": "valid-text/sorted-root-unsorted-build-id.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/sorted-root-unsorted-build-id.json"
+    },
+    {
+      "path": "valid-text/sorted-root-unsorted-ownership.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/sorted-root-unsorted-ownership.json"
+    },
+    {
+      "path": "valid-text/unsorted-build-id-keys.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/unsorted-build-id-keys.json"
+    },
+    {
+      "path": "valid-text/unsorted-keys.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/unsorted-keys.json"
+    },
+    {
+      "path": "valid-text/unsorted-ownership-keys.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/unsorted-ownership-keys.json"
+    },
+    {
+      "path": "valid-text/uppercase-u-escape.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/uppercase-u-escape.json"
+    },
+    {
+      "path": "valid-text/ws-before-colon-comma.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid-text/ws-before-colon-comma.json"
+    },
+    {
+      "path": "valid/brackets-game-id.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/brackets-game-id.json"
+    },
+    {
+      "path": "valid/client-version-32.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/client-version-32.json"
+    },
+    {
+      "path": "valid/day-31.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/day-31.json"
+    },
+    {
+      "path": "valid/exe-binding.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/exe-binding.json"
+    },
+    {
+      "path": "valid/leap-day-2024.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/leap-day-2024.json"
+    },
+    {
+      "path": "valid/leap-day.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/leap-day.json"
+    },
+    {
+      "path": "valid/max-ident.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/max-ident.json"
+    },
+    {
+      "path": "valid/minimal.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/minimal.json"
+    },
+    {
+      "path": "valid/month-1.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/month-1.json"
+    },
+    {
+      "path": "valid/month-12.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/month-12.json"
+    },
+    {
+      "path": "valid/nov-30.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/nov-30.json"
+    },
+    {
+      "path": "valid/oct-31.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/oct-31.json"
+    },
+    {
+      "path": "valid/sorted-hashes.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/sorted-hashes.json"
+    },
+    {
+      "path": "valid/year-1970.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/year-1970.json"
+    },
+    {
+      "path": "valid/year-9999.json",
+      "verdict": "accept",
+      "error_code": null,
+      "stored": "stored/valid/year-9999.json"
+    }
+  ]
+}

@@ -23,8 +23,10 @@ pub use client::ClientVersion;
 pub use error::Error;
 pub use hash::Sha256Hex;
 pub use limits::{
-    Limits, BYTECODE_STAGES_PER_RECORD, DEFAULT_MAX_HASHES_PER_LIST, DEFAULT_MAX_JSON_BYTES,
-    DESCRIPTION_HASHES_PER_RECORD,
+    Limits, BYTECODE_STAGES_PER_RECORD, DEFAULT_MAX_BYTECODE_HASHES,
+    DEFAULT_MAX_DESCRIPTION_HASHES, DEFAULT_MAX_HASHES_PER_LIST, DEFAULT_MAX_JSON_BYTES,
+    DEFAULT_PER_BUILD_UPLOAD_CAP, DESCRIPTION_HASHES_PER_RECORD, LIMITS_JSON,
+    MAX_NUMBER_TOKEN_CHARS, WIRE_MAX_JSON_BYTES,
 };
 pub use manifest::{parse_with_limits, HashSet, UploadManifest, SCHEMA_VERSION};
 pub use ownership::{OwnershipProof, UnchallengedReason};

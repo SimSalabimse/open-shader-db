@@ -4,8 +4,9 @@ This is the on-wire JSON schema for the anonymized upload payload
 produced by `osdb-cli upload prepare` and parsed by `osdb-upload`.
 
 **Schema version:** `schema_version: 1`  
-**Scope:** local preview and (later) Worker ingest. This crate does
-not send bytes. There is no HTTP client in this repository.
+**Scope:** local preview and Worker ingest (`worker/`, built and
+tested, not deployed). This crate does not send bytes. There is no
+HTTP client in this repository.
 
 **Data licence:** published staging objects (when that exists later)
 would be dedicated to the public domain under
@@ -17,7 +18,7 @@ repository are synthetic and CC0.
 [ARCHITECTURE.md](../ARCHITECTURE.md) sketches a logical
 `UploadManifest` with `descriptions` objects and a string
 `proofOfOwnership`. Schema version 1 is the allowlist that the client
-and the future Worker both check:
+and the Worker (`worker/`, built and tested, not deployed) both check:
 
 - one integer `schema_version`
 - one structured `build_id` (`game_id`, `version`, `exe_hash`)
@@ -39,8 +40,15 @@ Trailing tokens after the JSON value are rejected. A UTF-8 BOM
 
 The machine-readable schema is
 [schemas/upload_manifest.v1.json](../schemas/upload_manifest.v1.json).
-`osdb-upload` builds the same document from its Rust types. A drift
-test fails if either side changes.
+That file is **hand-maintained**. It is not generated from the Rust
+types. A drift test fails if the checked-in file and the hand-written
+`document()` helper disagree.
+
+The JSON Schema is **looser** than the Rust and Worker parsers. It
+does not encode hash sort order, real calendar dates, byte or nesting
+caps, or canonical form. The Worker must not rely on the schema
+alone; it uses the same typed parse as `osdb-upload`. Shared golden
+vectors live in [schemas/vectors/](../schemas/vectors/).
 
 Canonical encoding is compact JSON with object keys sorted
 lexicographically. The same validated input always produces the same
@@ -77,8 +85,8 @@ bytes. The preview and `--out` file are those bytes.
 | `build_id.exe_hash` | string | 64-character lowercase hex SHA-256. |
 | `client_version` | string | `major.minor.patch` of ASCII digits. |
 | `collected_hour` | string | `YYYY-MM-DDTHH:00:00Z` only. The constructor floors a clock instant to the UTC hour and discards the original instant. |
-| `description_hashes` | array | Sorted unique 64-character lowercase hex. Cap 400 000. Unsorted or duplicate entries are rejected. |
-| `bytecode_hashes` | array | Same rules as `description_hashes`. |
+| `description_hashes` | array | Sorted unique 64-character lowercase hex. Cap 150 000. Unsorted or duplicate entries are rejected. |
+| `bytecode_hashes` | array | Same rules as `description_hashes`, cap 400 000. |
 | `ownership` | object | `unchallenged` or `exe_binding_v1` (see below). |
 
 ## Which record fields become hashes
@@ -121,7 +129,9 @@ and then prints the full JSON. `--out` writes the same bytes.
 
 ## Proof of ownership
 
-`ownership` is a versioned enum so the Worker can validate one schema.
+`ownership` is a versioned enum. The Worker parses the same allowlist
+as `osdb-upload` (not the JSON Schema alone) and records the claim as
+`UNVERIFIED`. It never verifies a proof and never claims to.
 
 ### `unchallenged`
 
@@ -175,8 +185,8 @@ These claims are **not** made by the code or tests:
 - That `description_hashes` from record descriptor keys match SODB
   CanonicalHasher hashes or a future consensus index
 - Real game record files, real Steam installs, or a network path
-- Cloudflare ingest, Turnstile, rate limits, or IP-log omission
-  (those belong to later M2 issues)
+- That the Worker is deployed, or that Turnstile / rate limits /
+  Logpush are live (those are built and tested as placeholders only)
 
 ## Privacy
 
@@ -197,9 +207,12 @@ boundary. Typed errors never echo rejected field values.
 
 | Limit | Default | Purpose |
 | --- | ---: | --- |
-| JSON bytes | 64 MiB | Same as the record-file byte cap; two full hash lists fit |
-| Hashes per list | 400 000 | `records.max_records` (50 000) × 8 bytecode stages |
+| Local JSON bytes | 64 MiB | Client preview; two full hash lists fit |
+| Wire JSON bytes | 8 MiB | Worker request body, before parse (128 MB isolate) |
+| Description hashes | 150 000 | `records.max_records` (50 000) × 3 keys |
+| Bytecode hashes | 400 000 | `records.max_records` (50 000) × 8 stages |
 | JSON nesting | 8 | Reject deep documents |
+| Per-build uploads | 64 | Staging objects per game and BuildId prefix |
 
 Larger caps are library-only.
 

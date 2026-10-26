@@ -132,26 +132,42 @@ interface ClientTool {
 
 **Purpose:** Receive uploads, validate format, store in staging
 
+**Status:** Built and tested in `worker/` (TypeScript, zero runtime
+dependencies). **Not deployed.** Config uses placeholders only. Design
+contract: [docs/WORKER_DESIGN.md](docs/WORKER_DESIGN.md).
+
 **Key responsibilities:**
-- Accept HTTP POST with upload manifest
-- Validate JSON schema and hash formats
+- Accept `POST /v1/upload` with an UploadManifest v1 JSON body
+- Parse untrusted bytes into a typed manifest (same rules as
+  `osdb-upload`; do not use the JSON Schema alone)
+- Verify a Turnstile token (injected fetch in tests; omit `remoteip`)
+- Write canonical manifest bytes to staging (R2 layout, or a reviewed PR)
+- Return an upload receipt with manifest-derived fields only
+- Record ownership as `UNVERIFIED` (never verify, never claim to)
+
+**Not in this Worker (later, do not stub):**
 - Check hashes against shipped game lists (anti-poisoning)
-- Write to staging store (Cloudflare R2 or GitHub PR)
-- Return upload receipt (no contributor tracking)
+- Ownership challenge verification
+- Consensus or publishing
 
 **Implementation notes:**
 - Stateless: no sessions, no cookies
-- Rate limiting via Cloudflare's built-in rules (temporary, not stored)
-- Turnstile challenge for bot detection (ephemeral, not persistent)
-- Per-build upload cap (limit uploads per BuildId)
+- Rate limiting: wrangler rate-limit binding with one constant key
+  (`v1-upload`). The binding is approximate and counted per Cloudflare
+  location; a single client can consume the whole budget for everyone
+  at that location. No IP counters in our storage.
+- Turnstile: ephemeral; token is never stored or logged
+- Per-build upload cap: count objects under the R2 prefix (approximate
+  under races)
+- 8 MiB wire body cap before parse; 64 MiB remains the local client cap
+- No read of hop-identifying headers or `request.cf` properties
 
 **Type sketch:**
 ```typescript
 interface IngestWorker {
-  handleUpload(manifest: UploadManifest): UploadReceipt | Error
-  validateSchema(manifest: unknown): manifest is UploadManifest
-  checkHashList(hashes: ShaderHash[], gameId: GameId): boolean
-  writeToStaging(manifest: UploadManifest): void
+  handleUpload(request: Request): UploadReceipt | ErrorBody
+  parseManifest(bytes: Uint8Array): UploadManifest | ErrorCode
+  writeToStaging(canonical: Uint8Array, key: string): void
 }
 ```
 
@@ -466,12 +482,18 @@ interface DataBundle {
 5. **Client shows preview:** GUI displays what will be uploaded (no personal data)
 6. **User approves:** Explicitly confirms upload
 7. **Client POSTs manifest:** Sends JSON to ingest worker (HTTPS)
-8. **Worker validates:** Checks schema, proof of ownership
+8. **Worker records the claim:** Parses the manifest and stores the
+   ownership object as `UNVERIFIED`. It does not check proof of
+   ownership.
 9. **Worker stores:** Writes to staging (R2 or GitHub PR)
 10. **Client receives receipt:** Confirmation (no tracking ID)
 
 **Privacy guarantees:**
-- Worker logs omit IP addresses (configure Cloudflare Logpush accordingly)
+- This Worker does not persist IPs or fingerprints. Cloudflare itself
+  may still log request metadata at the edge; that is outside this
+  repository's control. Our Logpush template is an exact low-risk
+  field allowlist and omits `Event` (which would carry headers and
+  `cf` data).
 - No game paths in manifest
 - No machine identifiers
 - Timestamp rounded to hour
@@ -545,7 +567,11 @@ interface DataBundle {
 
 ### IP address handling
 
-- **Cloudflare Worker logs:** Configure Logpush to omit `ClientIP` field
+- **Cloudflare Worker logs:** Use the committed Logpush allowlist
+  (`EventType`, `Outcome`, `ScriptName`, `Logs`, `CPUTimeMs`,
+  `WallTimeMs`, `EventTimestampMs`). Do not export `Event` or
+  `Exceptions`. Cloudflare edge logs outside that job are not in our
+  control.
 - **Rate limiting:** Handled by Cloudflare at edge (temporary in-memory, not persisted to storage)
 - **Turnstile:** Bot detection at edge (ephemeral, no persistent fingerprinting)
 - **No correlation:** IP not stored with uploads
@@ -554,7 +580,9 @@ interface DataBundle {
 
 - **Staging data:** Retained until validated or 90 days (whichever is sooner)
 - **Published indexes:** Retained indefinitely (immutable releases)
-- **Worker logs:** Configured with no ClientIP field; retained per Cloudflare retention policy
+- **Worker logs:** Logpush template is the low-risk allowlist above;
+  Workers Logs are disabled in `wrangler.toml`. Cloudflare may still
+  retain its own edge logs.
 
 ### Legal considerations
 

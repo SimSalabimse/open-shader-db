@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::build::{BuildId, ExeHash, GameId, GameVersion};
 use crate::client::ClientVersion;
 use crate::hash::Sha256Hex;
+use crate::limits::MAX_NUMBER_TOKEN_CHARS;
 use crate::ownership::{OwnershipProof, UnchallengedReason};
 use crate::time::UtcHour;
 use crate::{Error, Limits};
@@ -27,7 +28,7 @@ pub struct HashSet {
 }
 
 impl HashSet {
-    /// Sort, deduplicate, and enforce [`Limits::max_hashes_per_list`].
+    /// Sort, deduplicate, and enforce a caller-supplied hash-list cap.
     pub fn from_unsorted(mut hashes: Vec<Sha256Hex>, max_hashes: u64) -> Result<Self, Error> {
         let got = u64::try_from(hashes.len()).unwrap_or(u64::MAX);
         if got > max_hashes {
@@ -180,6 +181,9 @@ pub fn parse_with_limits(bytes: &[u8], limits: Limits) -> Result<UploadManifest,
             max: limits.max_json_nesting,
         });
     }
+    if number_token_exceeds(bytes, MAX_NUMBER_TOKEN_CHARS) {
+        return Err(Error::InvalidInteger);
+    }
     LAST_TYPED_ERROR.with(|slot| slot.borrow_mut().take());
     let raw = {
         let mut de = serde_json::Deserializer::from_slice(bytes);
@@ -237,6 +241,68 @@ fn json_nesting_depth(bytes: &[u8]) -> u32 {
     max
 }
 
+fn number_token_exceeds(bytes: &[u8], max_chars: usize) -> bool {
+    let mut in_str = false;
+    let mut escape = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if in_str {
+            if escape {
+                escape = false;
+            } else if byte == b'\\' {
+                escape = true;
+            } else if byte == b'"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_str = true;
+            i += 1;
+            continue;
+        }
+        if byte == b'-' || byte.is_ascii_digit() {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+                if i.saturating_sub(start) > max_chars {
+                    return true;
+                }
+            }
+            if i < bytes.len() && bytes[i] == b'.' {
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                    if i.saturating_sub(start) > max_chars {
+                        return true;
+                    }
+                }
+            }
+            if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+                i += 1;
+                if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+                    i += 1;
+                }
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                    if i.saturating_sub(start) > max_chars {
+                        return true;
+                    }
+                }
+            }
+            if i.saturating_sub(start) > max_chars {
+                return true;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
 struct RawManifest {
     schema_version: u64,
     build_id: BuildId,
@@ -262,11 +328,11 @@ impl RawManifest {
             collected_hour: self.collected_hour,
             description_hashes: HashSet::from_sorted_unique(
                 self.description_hashes,
-                limits.max_hashes_per_list,
+                limits.max_description_hashes,
             )?,
             bytecode_hashes: HashSet::from_sorted_unique(
                 self.bytecode_hashes,
-                limits.max_hashes_per_list,
+                limits.max_bytecode_hashes,
             )?,
             ownership: self.ownership,
         })

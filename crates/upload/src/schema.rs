@@ -35,12 +35,18 @@ pub const UTC_HOUR_PATTERN: &str = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:00:00Z$
 pub const CLIENT_VERSION_PATTERN: &str = "^[0-9]+\\.[0-9]+\\.[0-9]+$";
 
 /// Game id / version identifier pattern (ASCII graphic minus `/`, `\\`, `:`).
-pub const IDENT_PATTERN: &str = "^[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$";
+pub const IDENT_PATTERN: &str =
+    "^(?!\\.\\.?$)[\\x21-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]{1,128}$";
 
 /// Hand-maintained JSON Schema (draft-07). `maxItems` follows [`Limits::DEFAULT`].
+///
+/// This schema is looser than the Rust and Worker parsers: it does not
+/// encode sort order, real calendar dates, byte or nesting caps, or
+/// canonical form.
 #[must_use]
 pub fn document() -> serde_json::Value {
-    let max_hashes = Limits::DEFAULT.max_hashes_per_list;
+    let max_description = Limits::DEFAULT.max_description_hashes;
+    let max_bytecode = Limits::DEFAULT.max_bytecode_hashes;
     serde_json::json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
         "$id": "https://github.com/SimSalabimse/open-shader-db/schemas/upload_manifest.v1.json",
@@ -50,7 +56,7 @@ pub fn document() -> serde_json::Value {
         "additionalProperties": false,
         "required": MANIFEST_FIELDS,
         "properties": {
-            "bytecode_hashes": hash_array_schema(max_hashes),
+            "bytecode_hashes": hash_array_schema(max_bytecode),
             "build_id": {
                 "type": "object",
                 "additionalProperties": false,
@@ -71,7 +77,7 @@ pub fn document() -> serde_json::Value {
                 "pattern": UTC_HOUR_PATTERN,
                 "description": "UTC hour boundary. Minutes and seconds are always 00."
             },
-            "description_hashes": hash_array_schema(max_hashes),
+            "description_hashes": hash_array_schema(max_description),
             "ownership": {
                 "oneOf": [
                     {
