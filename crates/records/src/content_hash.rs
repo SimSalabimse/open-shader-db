@@ -373,8 +373,11 @@ fn push_f64(buf: &mut Vec<u8>, value: f64) {
     buf.extend_from_slice(&tmp[..n]);
 }
 
-/// Shortest correctly-rounded spelling of a finite `f64`.
+/// First digit count whose spelling round-trips to the same bits.
 ///
+/// Not always the shortest token. At a power of two a shorter spelling
+/// can exist: `2^-24` is `5.9604644775390625e-8`, while
+/// `5.960464477539063e-8` is shorter and the same bits.
 /// See `docs/RECORD_FORMAT.md`. `out` must hold at least 48 bytes.
 /// Returns the length written.
 fn format_finite(value: f64, out: &mut [u8]) -> usize {
@@ -686,6 +689,8 @@ mod tests {
     const EXPONENTS_HASH: &str = "1cf3ea8044bef955acd52a0f9ed19eabf6a4a1f9742ad3b9e023be859e29e16d";
     const WIDENED_PREIMAGE: &str = r#"{"blend":null,"bytecode_hashes":{},"depth_stencil":null,"dsv_format":null,"flags":null,"ib_strip_cut_value":null,"input_layout":null,"node_mask":null,"primitive_topology":null,"rasterizer":{"conservative_raster":0,"cull_mode":0,"depth_bias":4.869141201346849e-10,"depth_bias_clamp":4.869141201346848e-10,"depth_clip_enable":0,"fill_mode":0,"forced_sample_count":0,"front_counter_clockwise":0,"line_rasterization_mode":0,"slope_scaled_depth_bias":0.0},"render_target_formats":null,"root_signature":null,"sample_desc":null,"sample_mask":null,"stream_out":null,"view_instancing":null}"#;
     const WIDENED_HASH: &str = "762d76dbfc66de83ea604a198a728bdd8f1b5c711abd98190c55c739cd486332";
+    const POW2_PREIMAGE: &str = r#"{"blend":null,"bytecode_hashes":{},"depth_stencil":null,"dsv_format":null,"flags":null,"ib_strip_cut_value":null,"input_layout":null,"node_mask":null,"primitive_topology":null,"rasterizer":{"conservative_raster":0,"cull_mode":0,"depth_bias":5.9604644775390625e-8,"depth_bias_clamp":0.0,"depth_clip_enable":0,"fill_mode":0,"forced_sample_count":0,"front_counter_clockwise":0,"line_rasterization_mode":0,"slope_scaled_depth_bias":0.0},"render_target_formats":null,"root_signature":null,"sample_desc":null,"sample_mask":null,"stream_out":null,"view_instancing":null}"#;
+    const POW2_HASH: &str = "2c0d22eaf23a6c63b357548f678f61d198a1e3825b5026ebb9e05cadc1633de3";
     const NULL_HASH: &str = "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
 
     fn blank(app_key: &str, version: u32) -> PipelineStateRecord {
@@ -846,12 +851,21 @@ mod tests {
         assert_eq!(writer, "4.869141201346849e-10");
         let loaded: f64 = serde_json::from_str(&writer).unwrap();
         assert_eq!(exact.to_bits(), 0x3e00_baf1_2000_0000);
-        assert_eq!(loaded.to_bits(), 0x3e00_baf1_1fff_ffff);
+        assert_eq!(loaded.to_bits(), exact.to_bits());
+        let adjacent = f64::from_bits(0x3e00_baf1_1fff_ffff);
         assert_vector(
             "widened",
-            &zero_raster(exact, loaded, 0.0),
+            &zero_raster(exact, adjacent, 0.0),
             WIDENED_PREIMAGE,
             WIDENED_HASH,
+        );
+        let pow2 = f64::from(f32::from_bits(0x3380_0000));
+        assert_eq!(pow2.to_bits(), 0x3e70_0000_0000_0000);
+        assert_vector(
+            "pow2",
+            &zero_raster(pow2, 0.0, 0.0),
+            POW2_PREIMAGE,
+            POW2_HASH,
         );
         let doc = include_str!("../../../docs/RECORD_FORMAT.md");
         assert!(doc.contains(NULL_HASH));
@@ -920,6 +934,16 @@ mod tests {
         assert_eq!(spell(1e-5), "1e-5");
         assert_eq!(spell(1e-7), "1e-7");
         assert_eq!(spell(-1.5), "-1.5");
+        let pow2 = f64::from_bits(0x3e70_0000_0000_0000);
+        let pow2_token = "5.9604644775390625e-8";
+        let shorter = "5.960464477539063e-8";
+        assert_eq!(spell(pow2), pow2_token);
+        assert!(shorter.len() < pow2_token.len());
+        assert_eq!(shorter.parse::<f64>().unwrap().to_bits(), pow2.to_bits());
+        let doc = include_str!("../../../docs/RECORD_FORMAT.md");
+        assert!(doc.contains("First round-tripping digit count"));
+        assert!(doc.contains(pow2_token));
+        assert!(doc.contains(shorter));
         for value in [f64::MIN_POSITIVE, f64::MAX, f64::from_bits(1), 0.1, -0.1] {
             let text = spell(value);
             let parsed: f64 = text.parse().unwrap();

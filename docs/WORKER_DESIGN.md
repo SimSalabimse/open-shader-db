@@ -116,8 +116,9 @@ The 16-character cap can only affect `schema_version`. Counts, timestamps, and h
 The largest version 2 manifest this tree builds (150 000 description
 hashes, 400 000 bytecode hashes, and 50 000 pipeline hashes) is
 40 200 346 bytes from the empty synthetic manifest. The closed-form
-upper bound `empty + slots * (per_hash + 1)` is 40 800 349 bytes (it
-counts a comma for every hash, including the first of each list).
+upper bound `empty + slots * (per_hash + 1)` is 40 800 349 bytes. The
+per-hash figure (67) already includes the separating comma; the `+ 1`
+is one extra byte per slot on top of that.
 Both are under 64 MiB and over 8 MiB.
 The Worker **wire cap** is 8 MiB (not an isolate-size budget). A 53-64
 MiB document is refused before parse; see [Memory](#memory) for measured
