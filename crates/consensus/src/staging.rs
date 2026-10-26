@@ -431,6 +431,9 @@ fn load_candidate(
     }
     let mut file = match open_regular_nonblocking(path) {
         Ok(file) => file,
+        // `O_NOFOLLOW` reports a raced symlink as `ELOOP` on Unix. Other
+        // targets refuse symlinks with the `symlink_metadata` check above.
+        #[cfg(unix)]
         Err(OpenFail::Symlink) => return Err(CandidateFail::Skip(SkipReason::Symlink)),
         Err(OpenFail::NotRegular) => return Err(CandidateFail::Skip(SkipReason::NotRegularFile)),
         Err(OpenFail::Io) => return Err(CandidateFail::Fatal(Error::Io)),
@@ -468,6 +471,7 @@ fn load_candidate(
 enum OpenFail {
     Io,
     NotRegular,
+    #[cfg(unix)]
     Symlink,
 }
 
